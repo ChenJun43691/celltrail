@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: celltrail_db
+    environment:
+      POSTGRES_USER: celltrail
+      POSTGRES_PASSWORD: celltrail
+      POSTGRES_DB: celltrail
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U celltrail -d celltrail"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: celltrail_redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  tileserver:
+    image: ghcr.io/consbio/mbtileserver:latest
+    container_name: celltrail_tiles
+    ports:
+      - "8080:8000"
+    environment:
+      - TILE_DIR=/data
+      - VERBOSE=true
+    volumes:
+      - /Users/chenguanjun/Desktop/Python程序開發/CellTrail/data/tiles:/data:ro
+    restart: unless-stopped
+
+    
+
+
+volumes:
+  db_data:
