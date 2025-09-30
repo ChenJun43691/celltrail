@@ -1,101 +1,750 @@
-cat > index.html <<'HTML'
 <!doctype html>
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CellTrail 地圖（最小版）</title>
+  <title>CellTrail 地圖（多檔/分色/路徑模擬/距離）</title>
+
   <link rel="stylesheet"
         href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
         crossorigin=""/>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
+
   <style>
     html, body { height: 100%; margin: 0; }
     #map { position: fixed; inset: 0; }
-    .control {
-      position: absolute; top:10px; left:10px; z-index:1000;
-      background:#fff; padding:10px 12px; border-radius:10px;
-      box-shadow:0 2px 8px rgba(0,0,0,.2);
-      font:14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial;
+
+    .control{
+      position:absolute;top:10px;left:10px;z-index:1000;background:#fff;
+      padding:10px 12px;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.2);
+      font:14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial;max-width:420px
     }
-    .control label { display:block; margin-bottom:6px; }
-    .control input { width:220px; padding:4px 6px; margin-left:6px; }
-    .control button { margin-top:6px; padding:6px 10px; }
-    .control #status { margin-left:8px; color:#555; }
+    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .row > *{margin:2px 0}
+    .control input[type="text"]{width:200px;padding:4px 6px}
+    .control input[type="number"]{width:90px}
+    .small{font-size:12px;color:#666}
+    .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle}
+
+    .bar{
+      position:fixed;left:50%;transform:translateX(-50%);bottom:12px;z-index:1000;background:#fff;
+      padding:8px 12px;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.2);font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial;
+      display:flex;align-items:center;gap:10px
+    }
+    .idx-badge{
+      background:#222;color:#fff;border-radius:999px;padding:2px 6px;font-size:12px;line-height:1;box-shadow:0 1px 4px rgba(0,0,0,.25)
+    }
+    .series-line{display:flex;align-items:center;gap:8px;margin:4px 0}
+    .swatch{width:12px;height:12px;border-radius:2px;display:inline-block;border:1px solid rgba(0,0,0,.2)}
+    .series-title{min-width:110px;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .series-tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+    .link { color:#06c; text-decoration:underline; cursor:pointer }
+    .danger { color:#d00 }
+
+    @media (max-width: 768px){
+      .control{ left:8px; right:8px; max-width:none; width:calc(100% - 16px); max-height:60vh; overflow:auto; border-radius:8px; }
+      .row{ gap:6px; }
+      .control input[type="text"]{ width:100%; }
+    }
+
+    .toggle-btn{
+      position:fixed; top:10px; left:10px; z-index:1100; background:#fff; border:1px solid rgba(0,0,0,.15);
+      border-radius:8px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,.2); font-size:18px; line-height:1;
+    }
+    .control.hidden{ display:none; }
+
+    .toast{ position:fixed; left:50%; transform:translateX(-50%); bottom:84px; z-index:1100; background:#333; color:#fff; padding:8px 12px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.25); opacity:.95; }
+    .toast.success{ background:#2e7d32; }
+    .toast.error{ background:#d32f2f; }
+    .toast.info{ background:#333; }
+    @media (max-width: 768px){ .toggle-btn{ top:8px; left:8px; } }
+
+    /* 上傳區 */
+    .dropzone{ padding:12px; border:2px dashed #aaa; border-radius:8px; text-align:center; cursor:pointer; background:#fafafa }
+    .dropzone.dragover{ border-color:#007aff; background:#eef6ff }
+    #uploadList{ margin:6px 0 0 0; padding-left:18px }
+    #uploadList li{ margin:2px 0 }
+
+    /* 雙把手時間條 */
+    #timeRange{ width:300px; max-width:58vw }
+    @media (max-width:768px){ #timeRange{ width:70vw } }
+
+    /* 面板底部資訊 */
+    .footer-line{ color:#555; }
   </style>
 </head>
 <body>
   <div id="map"></div>
+
+  <button id="panelToggle" class="toggle-btn" title="顯示/隱藏控制面板">☰</button>
+
   <div class="control">
-    <label>Project ID <input id="projectId" value="demo_case" /></label>
-    <label>Target ID  <input id="targetId"  value="msisdn_001" /></label>
-    <button id="loadBtn">載入</button>
-    <span id="status"></span>
+    <div class="row">
+      <label>Project ID <input id="projectId" type="text" value="demo_case" /></label>
+      <label>Target ID  <input id="targetId"  type="text" value="" placeholder="留空=整個專案；填入=只看此 target" /></label>
+    </div>
+    <div class="row">
+      <button id="loadBtn">顯示資料（從資料庫）</button>
+      <span id="status" class="small"></span>
+    </div>
+    <div class="small">上傳/新增資料請使用下方「上傳」區塊；本區只負責從資料庫顯示。Target ID 留空 = 顯示整個專案；填入 = 僅顯示該 target。</div>
+
+    <hr/>
+
+    <div class="row">
+      <label><input type="checkbox" id="showAcc" checked /> 精度圓</label>
+      <label><input type="checkbox" id="showSector" checked /> 扇形</label>
+      <span class="small" id="totalDistLabel"></span>
+    </div>
+
+    <div class="row">
+      <label>扇形角度
+        <input type="range" id="angleInput" min="20" max="120" step="5" value="60" />
+        <span id="angleVal" class="small">60°</span>
+      </label>
+      <label>扇形最小半徑（m）
+        <input type="number" id="minRadiusInput" min="50" step="50" value="250" />
+      </label>
+    </div>
+
+    <div class="legend small" style="margin-top:6px">
+      每檔固定色（按上傳順序、同一 Project 會記住）：
+      <span class="swatch" style="background:#ff3b30"></span>紅、
+      <span class="swatch" style="background:#ff9500"></span>橙、
+      <span class="swatch" style="background:#34c759"></span>綠、
+      <span class="swatch" style="background:#007aff"></span>藍、
+      <span class="swatch" style="background:#af52de"></span>紫
+    </div>
+
+    <hr/>
+
+    <div class="row">
+      <label><input type="checkbox" id="onlyStops" /> 僅顯示停留時間及地點</label>
+    </div>
+
+    <hr/>
+
+    <div class="row" style="justify-content:space-between;width:100%">
+      <b>資料組（最多 5 檔）</b>
+      <span class="small">
+        <span class="link" id="allShow">全部顯示</span> /
+        <span class="link" id="allHide">全部隱藏</span> /
+        <span class="link" id="allRouteOn">全部路徑</span> /
+        <span class="link" id="allRouteOff">關閉路徑</span> /
+        <span class="link" id="recenterBtn">定位到資料</span>
+      </span>
+    </div>
+    <div id="seriesPanel"></div>
+
+    <hr/>
+
+    <!-- 上傳（單一上傳框，可多檔＋拖放） -->
+    <div id="uploader" class="row" style="flex-direction:column;align-items:stretch;gap:8px;width:100%">
+      <div id="dropzone" class="dropzone">拖放檔案到此或點擊選擇（可多檔：CSV / Excel / PDF）</div>
+      <input type="file" id="upl" accept=".csv,.txt,.tsv,.xlsx,.xls,.pdf" multiple hidden />
+      <div class="row">
+        <input type="text" id="tid" placeholder="target_id（全檔共用；留空=以檔名）" />
+        <button id="btnUpload">上傳</button>
+      </div>
+      <ul id="uploadList" class="small"></ul>
+    </div>
+    <div class="small">支援 CSV / Excel / PDF。後端以 <b>時間</b>＋<b>地址</b> 為主、cell_id 為輔。未填 target_id 時，以上傳檔名（去副檔名）作為 target_id。</div>
+
+    <hr/>
+    <!-- 底部資訊列 -->
+    <div class="small footer-line">
+      製作人：高市刑大冠鈞　｜　mail：<a href="mailto:e43691@kcg.gov.tw">e43691@kcg.gov.tw</a>
+      <br>
+      <span id="counterText">使用次數統計載入中…</span>
+    </div>
   </div>
+
+  <!-- 底部時間範圍 -->
+  <div class="bar">
+    <span id="timeLabel">時間軸：全部</span>
+    <div id="timeRange"></div>
+  </div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
           crossorigin=""></script>
+  <script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
+
   <script>
-   const TILE_URL = 'http://127.0.0.1:8080/services/TaiwanEMap6/tiles/{z}/{x}/{y}.png';
-   const API_BASE = 'http://127.0.0.1:8000/api';
+    // === 基本設定 ===
+    const TILE_URL  = 'http://127.0.0.1:8080/services/TaiwanEMap6/tiles/{z}/{x}/{y}.png';
+    const API_BASE  = 'http://127.0.0.1:8000/api';
+    const SERIES_COLORS = ['#ff3b30', '#ff9500', '#34c759', '#007aff', '#af52de'];
+    const OSRM_SERVERS = [
+      'https://router.project-osrm.org/route/v1/driving/',
+      'https://routing.openstreetmap.de/routed-car/route/v1/driving/'
+    ];
+
+    let SECTOR_ANGLE_DEG = 60;
+    let MIN_SECTOR_RADIUS = 250;
+    let SHOW_ACC = true, SHOW_SECTOR = true;
+    let ONLY_STOPS = false;
 
     const map = L.map('map', { preferCanvas:true }).setView([23.7,121], 7);
     L.tileLayer(TILE_URL, { maxZoom:15, attribution:'© NLSC 國土測繪中心', crossOrigin:true }).addTo(map);
+    // ✅ 避免和左側漢堡鈕重疊：把縮放控制移到右上角
+    map.zoomControl.setPosition('topright');
 
-    const markers = L.layerGroup().addTo(map);
-    const circles = L.layerGroup().addTo(map);
-    const line = L.polyline([], { color:'#0a84ff', weight:3 }).addTo(map);
+    map.createPane('paneRoute').style.zIndex  = 420;
+    map.createPane('paneTrack').style.zIndex  = 430;
+    map.createPane('paneOver').style.zIndex   = 440;
+    map.createPane('panePoints').style.zIndex = 450;
+    map.createPane('paneStops').style.zIndex  = 460;
 
-    function fmt(v){ return v==null ? '' : String(v); }
+    const $ = id => document.getElementById(id);
+    const fmt = v => v==null ? '' : String(v);
+    const toDate = s => s ? new Date(s) : null;
+    const safeIdFor = id => 'dist_' + String(id).replace(/[^\w\-:.]/g, '_');
 
-    async function load() {
-      markers.clearLayers(); circles.clearLayers(); line.setLatLngs([]);
-      const projectId = document.getElementById('projectId').value.trim();
-      const targetId  = document.getElementById('targetId').value.trim();
-      const url = new URL(`${API_BASE}/projects/${encodeURIComponent(projectId)}/map-layers`);
-      if (targetId) url.searchParams.set('target_id', targetId);
+    function fmtROC(dt){
+      if (!dt) return '';
+      const y = dt.getFullYear() - 1911;
+      const pad = n => String(n).padStart(2,'0');
+      return `${y}年${dt.getMonth()+1}月${dt.getDate()}日 ${pad(dt.getHours())}時${pad(dt.getMinutes())}分${pad(dt.getSeconds())}秒`;
+    }
+    function distM(a,b){
+      const R=6378137, toRad=t=>t*Math.PI/180;
+      const dLat=toRad(b[0]-a[0]), dLng=toRad(b[1]-a[1]);
+      const la1=toRad(a[0]), la2=toRad(b[0]);
+      const h=Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLng/2)**2;
+      return 2*R*Math.asin(Math.sqrt(h));
+    }
+    function sumDist(pts){ let s=0; for(let i=1;i<pts.length;i++) s+=distM(pts[i-1], pts[i]); return Math.round(s); }
 
-      document.getElementById('status').textContent = '載入中…';
-      try {
-        const res = await fetch(url, { headers:{'Accept':'application/json'} });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const geo = await res.json();
+    // --- Toast ---
+    let __toastTimer=null;
+    function showToast(msg, type='info', timeout=1800){
+      let el = document.querySelector('.toast');
+      if (!el){
+        el = document.createElement('div');
+        el.className = 'toast';
+        document.body.appendChild(el);
+      }
+      el.className = 'toast ' + type;
+      el.textContent = msg;
+      clearTimeout(__toastTimer);
+      __toastTimer = setTimeout(()=>{ try{ el.remove(); }catch{} }, timeout);
+    }
 
-        const pts = [];
-        (geo.features || []).forEach(f => {
-          if (!f?.geometry?.coordinates) return;
-          const [lng, lat] = f.geometry.coordinates;
-          if (typeof lat !== 'number' || typeof lng !== 'number') return;
-          pts.push([lat, lng]);
+    // --- 跟著面板的收合鈕 ---
+    function updateTogglePosition(){
+      const panel = document.querySelector('.control');
+      const btn = $('panelToggle');
+      if (!panel || !btn) return;
+      if (panel.classList.contains('hidden')) {
+        btn.style.left = '10px';
+      } else {
+        const rect = panel.getBoundingClientRect();
+        const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+        let left = (rect.right ? rect.right + 10 : 10);
+        if (left > vw - 56) left = vw - 56;
+        if (left < 10) left = 10;
+        btn.style.left = Math.round(left) + 'px';
+      }
+      btn.style.right = 'auto';
+    }
 
-          const p = f.properties || {};
-          const m = L.circleMarker([lat,lng], { radius:4, color:'#ff3b30', weight:1, fillOpacity:.7 });
-          m.bindPopup(`
-            <div style="min-width:240px">
-              <b>${fmt(p.target_id)}</b><br/>
-              ${fmt(p.cell_addr)}<br/>
-              ${fmt(p.start_ts)} → ${fmt(p.end_ts)}<br/>
-              cell_id: ${fmt(p.cell_id)} azimuth: ${fmt(p.azimuth)}°<br/>
-              精度≈ ${fmt(p.accuracy_m)} m
-            </div>`);
-          markers.addLayer(m);
+    // --- color persistence per project ---
+    function colorKey(){
+      const pid = $('projectId')?.value?.trim() || 'default';
+      return `ct_colors_v1::${pid}`;
+    }
+    function loadColorMap(){
+      try{ return JSON.parse(localStorage.getItem(colorKey())||'{}'); }catch(e){ return {}; }
+    }
+    function saveColorMap(map){
+      try{ localStorage.setItem(colorKey(), JSON.stringify(map)); }catch(e){}
+    }
+    let colorMap = loadColorMap();
 
-          const acc = Number(p.accuracy_m);
-          if (!Number.isNaN(acc) && acc > 0) {
-            circles.addLayer(L.circle([lat,lng], { radius:acc, color:'#ff9f0a', weight:1, fillOpacity:.08 }));
+    // 扇形
+    function sector(lat, lng, azimuthDeg, radiusMeters=300, angleDeg=60, steps=36){
+      const toRad=d=>d*Math.PI/180, toDeg=r=>r*180/Math.PI;
+      const R=6378137, d=radiusMeters/R, φ1=toRad(lat), λ1=toRad(lng);
+      const start=azimuthDeg-angleDeg/2, end=azimuthDeg+angleDeg/2;
+      const pts=[[lat,lng]];
+      for(let i=0;i<=steps;i++){
+        const brg=toRad(start+(end-start)*i/steps);
+        const sinφ2=Math.sin(φ1)*Math.cos(d)+Math.cos(φ1)*Math.sin(d)*Math.cos(brg);
+        const φ2=Math.asin(sinφ2);
+        const y=Math.sin(brg)*Math.sin(d)*Math.cos(φ1);
+        const x=Math.cos(d)-Math.sin(φ1)*sinφ2;
+        const λ2=λ1+Math.atan2(y,x);
+        pts.push([toDeg(φ2), ((toDeg(λ2)+540)%360)-180]);
+      }
+      return L.polygon(pts,{pane:'paneOver', color:'#34c759', weight:1, fillOpacity:.08});
+    }
+
+    // ===== Series 結構 =====
+    const seriesMap = new Map(); // key=target_id
+    function getSeriesColor(id){
+      if (colorMap[id]) return colorMap[id];
+      const used = new Set(Object.values(colorMap));
+      let color = SERIES_COLORS.find(c => !used.has(c)) || SERIES_COLORS[Object.keys(colorMap).length % SERIES_COLORS.length];
+      colorMap[id] = color;
+      saveColorMap(colorMap);
+      return color;
+    }
+
+    function rmLayer(lyr){ try{ if(lyr && map.hasLayer(lyr)) map.removeLayer(lyr); }catch{} }
+    function disposeSeries(s){ if(!s||!s.layers) return; rmLayer(s.layers.points); rmLayer(s.layers.over); rmLayer(s.layers.stops); rmLayer(s.layers.track); rmLayer(s.layers.route); }
+    function disposeAllSeries(){ for(const s of seriesMap.values()) disposeSeries(s); seriesMap.clear(); }
+
+    // 載入與時間篩
+    let tMin=null, tMax=null;
+    let shouldFit = true;
+    let rangePct = [0, 100];
+
+    function parseAndGroup(geo){
+      disposeAllSeries();
+      tMin=tMax=null;
+
+      (geo.features||[]).forEach(f=>{
+        const coords=f?.geometry?.coordinates; if(!coords) return;
+        const [lng,lat]=coords;
+        const p=f.properties||{};
+        const id = String(p.target_id||'unknown');
+        const start=toDate(p.start_ts), end=toDate(p.end_ts);
+        const acc=Number(p.accuracy_m||0);
+        if(!seriesMap.has(id)){
+          const color = getSeriesColor(id);
+          seriesMap.set(id,{
+            color, visible:true, showTrack:true, showRoute:false,
+            records:[],
+            layers:{
+              points:L.layerGroup().addTo(map),
+              over:L.layerGroup().addTo(map),
+              stops:L.layerGroup().addTo(map),
+              track:L.polyline([], { pane:'paneTrack', color, weight:3, opacity:.9 }).addTo(map),
+              route:L.polyline([], { pane:'paneRoute', color, weight:3, dashArray:'6 6', opacity:.9 }).addTo(map)
+            },
+            lastRouteKey:'', abort:null, distM:0
+          });
+        }
+        seriesMap.get(id).records.push({ lat, lng, acc, az:Number(p.azimuth), props:p, start, end });
+
+        if(start){
+          if(!tMin || start<tMin) tMin=start;
+          if(!tMax || start>tMax) tMax=start;
+        }
+      });
+
+      for (const s of seriesMap.values()){
+        s.records.sort((a,b)=> (a.start||0)-(b.start||0));
+      }
+
+      const rangeEl = $('timeRange');
+      if (tMin && tMax && tMax > tMin){
+        if (!rangeEl.noUiSlider){
+          noUiSlider.create(rangeEl, {
+            start: [0, 100],
+            connect: true,
+            range: { min: 0, max: 100 },
+            step: 1,
+            behaviour: 'drag'
+          });
+          const debouncedRender = (fn => { let t=null; return ()=>{ clearTimeout(t); t=setTimeout(fn,220); }; })(render);
+          rangeEl.noUiSlider.on('update', (values)=>{
+            rangePct = values.map(v => Number(v));
+            const r = currentRange();
+            $('timeLabel').textContent = r
+              ? `時間軸：${tMin.toISOString()} → ${r[1].toISOString()}`
+              : '時間軸：全部';
+            debouncedRender();
+          });
+          rangeEl.noUiSlider.on('change', ()=> render());
+        }else{
+          rangeEl.noUiSlider.set([0, 100]);
+        }
+        $('timeLabel').textContent = `時間軸：${tMin.toISOString()} → ${tMax.toISOString()}（全部）`;
+      }else{
+        if (rangeEl.noUiSlider) rangeEl.noUiSlider.set([0, 100]);
+        $('timeLabel').textContent = '時間軸：無';
+      }
+
+      shouldFit = true;
+    }
+
+    function currentRange(){
+      if(!tMin||!tMax) return null;
+      const [a,b] = rangePct;
+      const tStart = new Date(tMin.getTime() + (tMax - tMin) * (a/100));
+      const tEnd   = new Date(tMin.getTime() + (tMax - tMin) * (b/100));
+      return [tStart, tEnd];
+    }
+
+    async function drawRouteInto(pts, series){
+      series.layers.route.setLatLngs([]);
+      if (series.abort) { try { series.abort.abort(); } catch {} }
+      if (!pts || pts.length < 2) return;
+
+      const cleaned = pts.filter((p, i, a) => i === 0 || p[0] !== a[i-1][0] || p[1] !== a[i-1][1]);
+      if (cleaned.length < 2) return;
+
+      const maxPts = 25, n = cleaned.length;
+      const idxs = n <= maxPts
+        ? cleaned.map((_, i) => i)
+        : Array.from({ length: maxPts }, (_, i) => Math.round(i * (n - 1) / (maxPts - 1)));
+      const coordStr = idxs.map(i => `${cleaned[i][1]},${cleaned[i][0]}`).join(';');
+
+      let lastErr = null;
+      for (const BASE of OSRM_SERVERS){
+        const controller = new AbortController();
+        series.abort = controller;
+        try {
+          const resp = await fetch(`${BASE}${coordStr}?overview=full&geometries=geojson`, {
+            signal: controller.signal,
+            mode: 'cors'
+          });
+          if (!resp.ok) throw new Error(`OSRM ${resp.status} @ ${BASE}`);
+          const data = await resp.json();
+          if (data?.code !== 'Ok' || !data?.routes?.[0]?.geometry?.coordinates?.length) {
+            throw new Error(`OSRM response not Ok @ ${BASE}`);
           }
-        });
-
-        if (pts.length) { line.setLatLngs(pts); map.fitBounds(L.latLngBounds(pts), { padding:[40,40] }); }
-        document.getElementById('status').textContent = pts.length ? `載入完成：${pts.length} 點` : '沒有資料';
-      } catch (e) {
-        console.error(e);
-        document.getElementById('status').textContent = '讀取失敗（看 Console）';
+          const latlngs = data.routes[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+          series.layers.route.setLatLngs(latlngs);
+          return;
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      if (lastErr && lastErr.name !== 'AbortError') {
+        console.warn('路徑模擬失敗（已嘗試備援）:', lastErr);
       }
     }
-    document.getElementById('loadBtn').addEventListener('click', load);
-    load();
+
+    function refreshSeriesPanel(){
+      const el = $('seriesPanel');
+      el.innerHTML = '';
+      for (const [id, s] of seriesMap){
+        const line = document.createElement('div');
+        line.className = 'series-line';
+        line.innerHTML = `
+          <span class="swatch" style="background:${s.color}"></span>
+          <label><input type="checkbox" data-k="vis" data-id="${id}" ${s.visible?'checked':''}/> 顯示</label>
+          <span class="series-title" title="${id}">${id}</span>
+          <span class="series-tools">
+            <label class="small"><input type="checkbox" data-k="trk" data-id="${id}" ${s.showTrack?'checked':''}/> 直線</label>
+            <label class="small"><input type="checkbox" data-k="rte" data-id="${id}" ${s.showRoute?'checked':''}/> 路徑</label>
+            <span class="small" id="${safeIdFor(id)}"></span>
+            <span class="small">｜</span>
+            <span class="small link" data-k="solo" data-id="${id}">只看</span>
+            <span class="small">·</span>
+            <span class="small link" data-k="focus" data-id="${id}">聚焦</span>
+            <span class="small">·</span>
+            <span class="small link danger" data-k="del" data-id="${id}">刪除</span>
+          </span>
+        `;
+        el.appendChild(line);
+      }
+
+      el.querySelectorAll('input[type="checkbox"]').forEach(cb=>{
+        cb.addEventListener('change', ()=>{
+          const id = cb.dataset.id;
+          const s = seriesMap.get(id);
+          if (!s) return;
+          if (cb.dataset.k === 'vis') s.visible = cb.checked;
+          if (cb.dataset.k === 'trk') s.showTrack = cb.checked;
+          if (cb.dataset.k === 'rte') s.showRoute = cb.checked;
+          render();
+        });
+      });
+
+      el.querySelectorAll('[data-k="solo"]').forEach(a=>{
+        a.addEventListener('click', ()=>{
+          const keepId = a.dataset.id;
+          for (const [id, s] of seriesMap){ s.visible = (id === keepId); }
+          refreshSeriesPanel();
+          render();
+        });
+      });
+      el.querySelectorAll('[data-k="focus"]').forEach(a=>{
+        a.addEventListener('click', ()=>{
+          const s = seriesMap.get(a.dataset.id);
+          if (!s) return;
+          const pts = s.records
+            .map(r => [r.lat, r.lng])
+            .filter(([lat,lng]) => Number.isFinite(lat) && Number.isFinite(lng));
+          if (pts.length){
+            map.fitBounds(L.latLngBounds(pts), { padding:[40,40] });
+          }
+        });
+      });
+
+      $('allShow').onclick = ()=>{ for(const s of seriesMap.values()) s.visible=true; render(); };
+      $('allHide').onclick = ()=>{ for(const s of seriesMap.values()) s.visible=false; render(); };
+      $('allRouteOn').onclick = ()=>{ for(const s of seriesMap.values()) s.showRoute=true; render(); };
+      $('allRouteOff').onclick = ()=>{ for(const s of seriesMap.values()) s.showRoute=false; render(); };
+    }
+
+    async function render(){
+      const range = currentRange();
+      let boundsPts = [];
+      let total = 0;
+
+      for (const [id, s] of seriesMap){
+        s.layers.points.clearLayers();
+        s.layers.over.clearLayers();
+        s.layers.stops.clearLayers();
+        s.layers.track.setLatLngs([]);
+        if (!s.showRoute) s.layers.route.setLatLngs([]);
+
+        const ensureOn = (lyr) => { if (!map.hasLayer(lyr)) lyr.addTo(map); };
+        const ensureOff= (lyr) => { if (map.hasLayer(lyr)) map.removeLayer(lyr); };
+
+        if (!s.visible){
+          ensureOff(s.layers.points); ensureOff(s.layers.over);
+          ensureOff(s.layers.stops);  ensureOff(s.layers.track);
+          ensureOff(s.layers.route);
+          continue;
+        } else {
+          ensureOn(s.layers.points); ensureOn(s.layers.over);
+          ensureOn(s.layers.stops);  ensureOn(s.layers.track);
+          ensureOn(s.layers.route);
+        }
+
+        const recs = s.records
+          .filter(r => {
+            if (!range) return true;
+            const [tStart, tEnd] = range;
+            if (!r.start) return true;
+            return r.start >= tStart && r.start <= tEnd;
+          })
+          .sort((a, b) => (a.start || 0) - (b.start || 0));
+
+        const trackPts = recs
+          .map(r => [r.lat, r.lng])
+          .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng));
+
+        let idx = 0;
+        for(const r of recs){
+          if (ONLY_STOPS){
+            idx++;
+            s.layers.stops.addLayer(L.circleMarker([r.lat,r.lng],{
+              pane:'paneStops', radius:6, color:s.color, weight:2, fillOpacity:.9
+            }));
+            const badge=L.marker([r.lat,r.lng],{
+              pane:'paneStops',
+              icon:L.divIcon({className:'',html:`<span class="idx-badge">${idx}</span>`,iconSize:[1,1],iconAnchor:[-6,14]})
+            });
+            s.layers.stops.addLayer(badge);
+            const label=`${fmtROC(r.start)}｜${fmt(r.props.cell_addr)||'停留點'}`;
+            const tip=L.tooltip({permanent:true,direction:'right',offset:[8,0],opacity:.95})
+              .setContent(label).setLatLng([r.lat,r.lng]);
+            s.layers.stops.addLayer(tip);
+          }else{
+            const p=r.props||{};
+            const dot=L.circleMarker([r.lat,r.lng],{
+              pane:'panePoints', radius:5, color:s.color, fillColor:s.color, weight:1, fillOpacity:.9
+            });
+            dot.bindPopup(`
+              <div style="min-width:260px">
+                <b>${fmt(p.target_id)}</b><br/>
+                ${fmt(p.cell_addr)}<br/>
+                ${fmt(p.start_ts)} → ${fmt(p.end_ts)}<br/>
+                cell_id: ${fmt(p.cell_id)}　azimuth: ${fmt(p.azimuth)}°<br/>
+                精度≈ ${fmt(p.accuracy_m)} m
+              </div>`);
+            s.layers.points.addLayer(dot);
+
+            if (SHOW_ACC && r.acc>0) s.layers.over.addLayer(L.circle([r.lat,r.lng],{
+              pane:'paneOver', radius:r.acc, color:s.color, weight:1, fillOpacity:.05
+            }));
+            if (SHOW_SECTOR && !Number.isNaN(r.az)){
+              const rr=Math.max(MIN_SECTOR_RADIUS, r.acc||0);
+              s.layers.over.addLayer(sector(r.lat,r.lng,r.az, rr, SECTOR_ANGLE_DEG,36));
+            }
+          }
+        }
+
+        boundsPts = boundsPts.concat(trackPts);
+
+        s.distM = trackPts.length ? sumDist(trackPts) : 0;
+        const distEl = $(safeIdFor(id));
+        if (distEl) distEl.textContent = s.showTrack && trackPts.length ? `直線 ${s.distM} m` : '';
+        if (s.showTrack) s.layers.track.setLatLngs(trackPts);
+        if (s.showTrack) total += s.distM;
+
+        if (s.showRoute && trackPts.length >= 2){
+          const key = trackPts.map(p=>p.join(',')).join(';');
+          if (key !== s.lastRouteKey){ s.lastRouteKey = key; drawRouteInto(trackPts, s); }
+        }else{
+          s.lastRouteKey = '';
+          s.layers.route.setLatLngs([]);
+        }
+      }
+
+      $('totalDistLabel').textContent = total ? `總長：${total} m` : '';
+      if (boundsPts.length && shouldFit){
+        map.fitBounds(L.latLngBounds(boundsPts), { padding:[40,40] });
+        shouldFit = false;
+      }
+    }
+
+    async function load(){
+      colorMap = loadColorMap(); // 依當前 Project ID 讀色盤
+      const projectId=$('projectId').value.trim();
+      const targetId=$('targetId').value.trim();
+      const url=new URL(`${API_BASE}/projects/${encodeURIComponent(projectId)}/map-layers`);
+      if(targetId) url.searchParams.set('target_id',targetId);
+
+      showToast('載入中…','info',1000);
+      try{
+        const res=await fetch(url,{headers:{'Accept':'application/json'}});
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        const geo=await res.json();
+        parseAndGroup(geo);
+        refreshSeriesPanel();
+        await render();
+        showToast(`載入完成：${[...seriesMap.values()].reduce((a,s)=>a+s.records.length,0)} 點（共 ${seriesMap.size} 組）`,'success',1800);
+      }catch(e){
+        console.error(e);
+        showToast('讀取失敗（請看 Console）','error',2200);
+      }
+    }
+
+    // 上傳（多檔＋拖放＋佇列）
+    let queuedFiles = [];
+    function refreshUploadList(){
+      const ul = $('uploadList');
+      ul.innerHTML = queuedFiles.map(f => `<li>${f.name}</li>`).join('');
+      const btn = $('btnUpload'); if (btn) btn.disabled = queuedFiles.length === 0;
+    }
+    function queueFiles(files){
+      for (const f of files) queuedFiles.push(f);
+      refreshUploadList();
+    }
+    const dz = $('dropzone');
+    const fileInput = $('upl');
+    dz.addEventListener('click', ()=> fileInput.click());
+    dz.addEventListener('dragover', e=>{ e.preventDefault(); dz.classList.add('dragover'); });
+    dz.addEventListener('dragleave', ()=> dz.classList.remove('dragover'));
+    dz.addEventListener('drop', e=>{
+      e.preventDefault(); dz.classList.remove('dragover');
+      queueFiles(e.dataTransfer.files || []);
+    });
+    fileInput.addEventListener('change', e=>{
+      queueFiles(e.target.files || []);
+      fileInput.value = '';
+    });
+
+    async function uploadOneFile(projectId, tid, file){
+      const fd = new FormData();
+      fd.append('project_id', projectId);
+      fd.append('target_id', tid);
+      fd.append('file', file);
+      const res = await fetch(`${API_BASE}/upload/`,{method:'POST',body:fd});
+      const txt = await res.text();
+      if(!res.ok){
+        let msg = '';
+        try{ const j=JSON.parse(txt); msg=j.detail || txt; }catch{ msg = txt || ('HTTP '+res.status); }
+        throw new Error(msg);
+      }
+    }
+    async function uploadQueued(){
+      const projectId = $('projectId').value.trim();
+      if(!projectId){ alert('請先輸入 Project ID'); return; }
+      const baseTid = $('tid').value.trim();
+      showToast('上傳中…','info',1000);
+      try{
+        for (const file of queuedFiles){
+          const tid = baseTid || file.name.replace(/\.[^.]+$/,'');
+          await uploadOneFile(projectId, tid, file);
+        }
+        queuedFiles = [];
+        refreshUploadList();
+        showToast('上傳完成，重新載入…','success',1400);
+        await load();
+      }catch(e){
+        console.error('upload failed:', e);
+        alert('上傳失敗：'+e.message);
+        showToast('上傳失敗（請看 Console）','error',2200);
+      }
+    }
+
+    // 刪除（以資料組列的 target_id 執行）
+    async function deleteSeriesById(targetId){
+      const projectId=$('projectId').value.trim();
+      if(!confirm(`確定刪除「${targetId}」？\n將移除該 target 的所有紀錄。`)) return;
+
+      const local = seriesMap.get(targetId);
+      if (local){ disposeSeries(local); seriesMap.delete(targetId); refreshSeriesPanel(); render(); }
+      map.closePopup();
+
+      showToast('刪除中…','info',1000);
+      try{
+        const url = `${API_BASE}/projects/${encodeURIComponent(projectId)}/targets/${encodeURIComponent(targetId)}`;
+        const res = await fetch(url,{method:'DELETE'});
+        const txt = await res.text();
+        if(!res.ok){
+          let msg = '';
+          try{ const j=JSON.parse(txt); msg=j.detail || txt; }catch{ msg = txt || ('HTTP '+res.status); }
+          throw new Error(msg);
+        }
+        showToast('刪除完成，重新載入…','success',1400);
+        await load();
+      }catch(e){
+        console.error('delete failed:', e);
+        alert('刪除失敗：'+e.message);
+        showToast('刪除失敗（請看 Console）','error',2200);
+      }
+    }
+
+    // 使用人數／次數（前端本機必定可用；如有後端 /api/stats/hit 會顯示全站）
+    function bumpAndShowCounter(){
+      const key='ct_local_visits_v1';
+      let n = Number(localStorage.getItem(key)||0);
+      n++; localStorage.setItem(key, String(n));
+      const el=$('counterText');
+      if (el) el.textContent = `本機使用次數：${n}`;
+      // 若你之後在後端加 /api/stats/hit（回傳 {total:int}），這裡會自動顯示全站累計
+      fetch(`${API_BASE}/stats/hit`, {method:'POST'}).then(r=>r.json()).then(j=>{
+        if (j && typeof j.total === 'number' && el){
+          el.textContent += `；全站累計：${j.total}`;
+        }
+      }).catch(()=>{ /* 後端無此路由就略過 */ });
+    }
+
+    // 綁事件
+    $('loadBtn').addEventListener('click', load);
+    $('btnUpload').addEventListener('click', uploadQueued);
+
+    $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
+    $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });
+    $('onlyStops').addEventListener('change', e=>{
+      ONLY_STOPS = e.target.checked;
+      if (ONLY_STOPS) {
+        for (const s of seriesMap.values()) s.showTrack = false;
+        document.querySelectorAll('#seriesPanel input[data-k="trk"]').forEach(cb => { cb.checked = false; });
+      }
+      render();
+    });
+    $('angleInput').addEventListener('input', e=>{
+      SECTOR_ANGLE_DEG=Number(e.target.value); $('angleVal').textContent=SECTOR_ANGLE_DEG+'°'; render();
+    });
+    $('minRadiusInput').addEventListener('change', e=>{
+      const v=Number(e.target.value); MIN_SECTOR_RADIUS=Number.isFinite(v)?Math.max(0,v):250; render();
+    });
+
+    $('panelToggle').addEventListener('click', ()=>{
+      document.querySelector('.control').classList.toggle('hidden');
+      updateTogglePosition();
+    });
+    $('recenterBtn').addEventListener('click', ()=>{
+      shouldFit = true;
+      render();
+    });
+    window.addEventListener('resize', updateTogglePosition);
+
+    updateTogglePosition();
+    bumpAndShowCounter();  // ← 啟動計數器
+    load();                // ← 初次載入資料
   </script>
 </body>
 </html>
-HTML

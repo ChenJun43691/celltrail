@@ -1,0 +1,101 @@
+cat > index.html <<'HTML'
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CellTrail 地圖（最小版）</title>
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""/>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { position: fixed; inset: 0; }
+    .control {
+      position: absolute; top:10px; left:10px; z-index:1000;
+      background:#fff; padding:10px 12px; border-radius:10px;
+      box-shadow:0 2px 8px rgba(0,0,0,.2);
+      font:14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial;
+    }
+    .control label { display:block; margin-bottom:6px; }
+    .control input { width:220px; padding:4px 6px; margin-left:6px; }
+    .control button { margin-top:6px; padding:6px 10px; }
+    .control #status { margin-left:8px; color:#555; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="control">
+    <label>Project ID <input id="projectId" value="demo_case" /></label>
+    <label>Target ID  <input id="targetId"  value="msisdn_001" /></label>
+    <button id="loadBtn">載入</button>
+    <span id="status"></span>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
+  <script>
+   const TILE_URL = 'http://127.0.0.1:8080/services/TaiwanEMap6/tiles/{z}/{x}/{y}.png';
+   const API_BASE = 'http://127.0.0.1:8000/api';
+
+    const map = L.map('map', { preferCanvas:true }).setView([23.7,121], 7);
+    L.tileLayer(TILE_URL, { maxZoom:15, attribution:'© NLSC 國土測繪中心', crossOrigin:true }).addTo(map);
+
+    const markers = L.layerGroup().addTo(map);
+    const circles = L.layerGroup().addTo(map);
+    const line = L.polyline([], { color:'#0a84ff', weight:3 }).addTo(map);
+
+    function fmt(v){ return v==null ? '' : String(v); }
+
+    async function load() {
+      markers.clearLayers(); circles.clearLayers(); line.setLatLngs([]);
+      const projectId = document.getElementById('projectId').value.trim();
+      const targetId  = document.getElementById('targetId').value.trim();
+      const url = new URL(`${API_BASE}/projects/${encodeURIComponent(projectId)}/map-layers`);
+      if (targetId) url.searchParams.set('target_id', targetId);
+
+      document.getElementById('status').textContent = '載入中…';
+      try {
+        const res = await fetch(url, { headers:{'Accept':'application/json'} });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const geo = await res.json();
+
+        const pts = [];
+        (geo.features || []).forEach(f => {
+          if (!f?.geometry?.coordinates) return;
+          const [lng, lat] = f.geometry.coordinates;
+          if (typeof lat !== 'number' || typeof lng !== 'number') return;
+          pts.push([lat, lng]);
+
+          const p = f.properties || {};
+          const m = L.circleMarker([lat,lng], { radius:4, color:'#ff3b30', weight:1, fillOpacity:.7 });
+          m.bindPopup(`
+            <div style="min-width:240px">
+              <b>${fmt(p.target_id)}</b><br/>
+              ${fmt(p.cell_addr)}<br/>
+              ${fmt(p.start_ts)} → ${fmt(p.end_ts)}<br/>
+              cell_id: ${fmt(p.cell_id)} azimuth: ${fmt(p.azimuth)}°<br/>
+              精度≈ ${fmt(p.accuracy_m)} m
+            </div>`);
+          markers.addLayer(m);
+
+          const acc = Number(p.accuracy_m);
+          if (!Number.isNaN(acc) && acc > 0) {
+            circles.addLayer(L.circle([lat,lng], { radius:acc, color:'#ff9f0a', weight:1, fillOpacity:.08 }));
+          }
+        });
+
+        if (pts.length) { line.setLatLngs(pts); map.fitBounds(L.latLngBounds(pts), { padding:[40,40] }); }
+        document.getElementById('status').textContent = pts.length ? `載入完成：${pts.length} 點` : '沒有資料';
+      } catch (e) {
+        console.error(e);
+        document.getElementById('status').textContent = '讀取失敗（看 Console）';
+      }
+    }
+    document.getElementById('loadBtn').addEventListener('click', load);
+    load();
+  </script>
+</body>
+</html>
+HTML
