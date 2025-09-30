@@ -9,3 +9,6 @@ data/tiles/*
 data/uploads/*
 
 .DS_Store
+
+# local secrets
+backend/.env
