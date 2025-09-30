@@ -1,10 +1,11 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from app.services.ingest import ingest_auto, ingest_pdf
+from app.security import get_current_user
 import traceback
 
 router = APIRouter()
 
-@router.post("/")
+@router.post("/", dependencies=[Depends(get_current_user)])  # ← 登入即可上傳
 async def upload_file(
     project_id: str = Form(...),
     target_id: str = Form(...),

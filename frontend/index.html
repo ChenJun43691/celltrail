@@ -72,12 +72,43 @@
 
     /* 面板底部資訊 */
     .footer-line{ color:#555; }
+
+    /* === 登入遮罩 === */
+    .overlay{
+      position:fixed; inset:0; background:rgba(0,0,0,.55);
+      display:flex; align-items:center; justify-content:center; z-index:2000;
+    }
+    .login-card{
+      background:#fff; width:min(92vw,380px); border-radius:12px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.25);
+      font:14px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial;
+    }
+    .login-card h3{ margin:0 0 8px 0 }
+    .login-card .row{ margin-top:8px }
+    .login-card input[type="text"], .login-card input[type="password"]{ width:100%; padding:8px 10px; border:1px solid #ccc; border-radius:8px }
+    .login-card button{ padding:8px 12px; border-radius:8px; border:1px solid rgba(0,0,0,.1); background:#007aff; color:#fff; cursor:pointer }
+    .login-msg{ min-height:18px; color:#d00; margin-top:4px; }
   </style>
 </head>
 <body>
   <div id="map"></div>
 
   <button id="panelToggle" class="toggle-btn" title="顯示/隱藏控制面板">☰</button>
+
+  <!-- 登入遮罩 -->
+  <div id="loginOverlay" class="overlay" style="display:none">
+    <div class="login-card">
+      <h3>登入 CellTrail</h3>
+      <div class="small">請輸入帳號與密碼</div>
+      <div class="row" style="flex-direction:column;align-items:stretch">
+        <input id="loginUser" type="text" placeholder="帳號" autocomplete="username" />
+        <input id="loginPass" type="password" placeholder="密碼" autocomplete="current-password" />
+        <div class="row" style="justify-content:space-between">
+          <button id="loginBtn">登入</button>
+          <span id="loginMsg" class="login-msg"></span>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="control">
     <div class="row">
@@ -188,7 +219,7 @@
 
     const map = L.map('map', { preferCanvas:true }).setView([23.7,121], 7);
     L.tileLayer(TILE_URL, { maxZoom:15, attribution:'© NLSC 國土測繪中心', crossOrigin:true }).addTo(map);
-    // ✅ 避免和左側漢堡鈕重疊：把縮放控制移到右上角
+    // 避免和左側漢堡鈕重疊：把縮放控制移到右上角
     map.zoomControl.setPosition('topright');
 
     map.createPane('paneRoute').style.zIndex  = 420;
@@ -201,6 +232,50 @@
     const fmt = v => v==null ? '' : String(v);
     const toDate = s => s ? new Date(s) : null;
     const safeIdFor = id => 'dist_' + String(id).replace(/[^\w\-:.]/g, '_');
+
+    // --- Auth: Token & overlay ---
+    let TOKEN = localStorage.getItem('ct_token') || '';
+    function authHeaders(){ return TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {}; }
+    function showOverlay(on){ $('loginOverlay').style.display = on ? 'flex' : 'none'; }
+
+    async function verifyToken(){
+      if (!TOKEN) return false;
+      try{
+        const res = await fetch(`${API_BASE}/auth/me`, { headers: { ...authHeaders() } });
+        if (!res.ok) throw 0;
+        return true;
+      }catch{ return false; }
+    }
+
+    async function doLogin(){
+      const u = $('loginUser').value.trim();
+      const p = $('loginPass').value;
+      $('loginMsg').textContent = '登入中…';
+      try{
+        const fd = new FormData(); fd.append('username', u); fd.append('password', p);
+        const res = await fetch(`${API_BASE}/auth/login`, { method:'POST', body: fd });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.detail || '登入失敗');
+        TOKEN = j.access_token; localStorage.setItem('ct_token', TOKEN);
+        $('loginMsg').textContent = '';
+        showOverlay(false);
+        initAfterLogin(); // 進入主畫面
+      }catch(e){
+        $('loginMsg').textContent = (e && e.message) ? e.message : '登入失敗';
+      }
+    }
+    $('loginBtn').addEventListener('click', doLogin);
+    $('loginPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+
+    async function initAuth(){
+      const ok = await verifyToken();
+      if (ok){
+        showOverlay(false);
+        initAfterLogin();
+      }else{
+        showOverlay(true);
+      }
+    }
 
     function fmtROC(dt){
       if (!dt) return '';
@@ -250,7 +325,7 @@
       btn.style.right = 'auto';
     }
 
-    // --- color persistence per project ---
+    // --- 色盤 per project ---
     function colorKey(){
       const pid = $('projectId')?.value?.trim() || 'default';
       return `ct_colors_v1::${pid}`;
@@ -596,7 +671,7 @@
 
       showToast('載入中…','info',1000);
       try{
-        const res=await fetch(url,{headers:{'Accept':'application/json'}});
+        const res=await fetch(url,{headers:{'Accept':'application/json', ...authHeaders()}});
         if(!res.ok) throw new Error('HTTP '+res.status);
         const geo=await res.json();
         parseAndGroup(geo);
@@ -639,7 +714,7 @@
       fd.append('project_id', projectId);
       fd.append('target_id', tid);
       fd.append('file', file);
-      const res = await fetch(`${API_BASE}/upload/`,{method:'POST',body:fd});
+      const res = await fetch(`${API_BASE}/upload/`,{method:'POST',body:fd, headers: { ...authHeaders() }});
       const txt = await res.text();
       if(!res.ok){
         let msg = '';
@@ -680,7 +755,7 @@
       showToast('刪除中…','info',1000);
       try{
         const url = `${API_BASE}/projects/${encodeURIComponent(projectId)}/targets/${encodeURIComponent(targetId)}`;
-        const res = await fetch(url,{method:'DELETE'});
+        const res = await fetch(url,{method:'DELETE', headers: { ...authHeaders() }});
         const txt = await res.text();
         if(!res.ok){
           let msg = '';
@@ -696,14 +771,13 @@
       }
     }
 
-    // 使用人數／次數（前端本機必定可用；如有後端 /api/stats/hit 會顯示全站）
+    // 使用人數／次數
     function bumpAndShowCounter(){
       const key='ct_local_visits_v1';
       let n = Number(localStorage.getItem(key)||0);
       n++; localStorage.setItem(key, String(n));
       const el=$('counterText');
       if (el) el.textContent = `本機使用次數：${n}`;
-      // 若你之後在後端加 /api/stats/hit（回傳 {total:int}），這裡會自動顯示全站累計
       fetch(`${API_BASE}/stats/hit`, {method:'POST'}).then(r=>r.json()).then(j=>{
         if (j && typeof j.total === 'number' && el){
           el.textContent += `；全站累計：${j.total}`;
@@ -711,40 +785,45 @@
       }).catch(()=>{ /* 後端無此路由就略過 */ });
     }
 
-    // 綁事件
-    $('loadBtn').addEventListener('click', load);
-    $('btnUpload').addEventListener('click', uploadQueued);
+    // 綁事件（登入成功後才生效的初始化）
+    function initAfterLogin(){
+      $('loadBtn').addEventListener('click', load);
+      $('btnUpload').addEventListener('click', uploadQueued);
 
-    $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
-    $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });
-    $('onlyStops').addEventListener('change', e=>{
-      ONLY_STOPS = e.target.checked;
-      if (ONLY_STOPS) {
-        for (const s of seriesMap.values()) s.showTrack = false;
-        document.querySelectorAll('#seriesPanel input[data-k="trk"]').forEach(cb => { cb.checked = false; });
-      }
-      render();
-    });
-    $('angleInput').addEventListener('input', e=>{
-      SECTOR_ANGLE_DEG=Number(e.target.value); $('angleVal').textContent=SECTOR_ANGLE_DEG+'°'; render();
-    });
-    $('minRadiusInput').addEventListener('change', e=>{
-      const v=Number(e.target.value); MIN_SECTOR_RADIUS=Number.isFinite(v)?Math.max(0,v):250; render();
-    });
+      $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
+      $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });
+      $('onlyStops').addEventListener('change', e=>{
+        ONLY_STOPS = e.target.checked;
+        if (ONLY_STOPS) {
+          for (const s of seriesMap.values()) s.showTrack = false;
+          document.querySelectorAll('#seriesPanel input[data-k="trk"]').forEach(cb => { cb.checked = false; });
+        }
+        render();
+      });
+      $('angleInput').addEventListener('input', e=>{
+        SECTOR_ANGLE_DEG=Number(e.target.value); $('angleVal').textContent=SECTOR_ANGLE_DEG+'°'; render();
+      });
+      $('minRadiusInput').addEventListener('change', e=>{
+        const v=Number(e.target.value); MIN_SECTOR_RADIUS=Number.isFinite(v)?Math.max(0,v):250; render();
+      });
 
-    $('panelToggle').addEventListener('click', ()=>{
-      document.querySelector('.control').classList.toggle('hidden');
+      $('panelToggle').addEventListener('click', ()=>{
+        document.querySelector('.control').classList.toggle('hidden');
+        updateTogglePosition();
+      });
+      $('recenterBtn').addEventListener('click', ()=>{
+        shouldFit = true;
+        render();
+      });
+      window.addEventListener('resize', updateTogglePosition);
+
       updateTogglePosition();
-    });
-    $('recenterBtn').addEventListener('click', ()=>{
-      shouldFit = true;
-      render();
-    });
-    window.addEventListener('resize', updateTogglePosition);
+      bumpAndShowCounter();
+      load(); // 初次載入
+    }
 
-    updateTogglePosition();
-    bumpAndShowCounter();  // ← 啟動計數器
-    load();                // ← 初次載入資料
+    // 啟動：先做登入檢查
+    initAuth();
   </script>
 </body>
 </html>
