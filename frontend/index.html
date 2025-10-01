@@ -277,6 +277,7 @@
     }
     $('loginBtn').addEventListener('click', doLogin);
     $('loginPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+    $('loginUser').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
 
     // 登出
     function logout(){
@@ -725,7 +726,7 @@
       fileInput.value = '';
     });
 
-    // 同時嘗試 /upload/ 與 /upload，避免 307 redirect 讓 CORS 預檔失敗
+    // 同時嘗試 /upload/ 與 /upload，避免 307 轉址導致預檢問題
     const UPLOAD_ENDPOINTS = [`${API_BASE}/upload/`, `${API_BASE}/upload`];
 
     async function uploadOneFile(projectId, tid, file){
@@ -739,7 +740,7 @@
         try{
           const res = await fetch(url, {
             method:'POST',
-            headers: { ...authHeaders() },
+            headers: { ...authHeaders() }, // 不自行設定 Content-Type，讓瀏覽器處理 multipart 邊界
             body: fd,
             mode: 'cors'
           });
