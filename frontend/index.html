@@ -1,3 +1,4 @@
+<!-- frontend/index.html -->
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -115,10 +116,14 @@
       <label>Project ID <input id="projectId" type="text" value="demo_case" /></label>
       <label>Target ID  <input id="targetId"  type="text" value="" placeholder="留空=整個專案；填入=只看此 target" /></label>
     </div>
-    <div class="row">
+
+    <!-- 加了「登出」按鈕（右側） -->
+    <div class="row" style="width:100%">
       <button id="loadBtn">顯示資料（從資料庫）</button>
       <span id="status" class="small"></span>
+      <button id="logoutBtn" type="button" style="margin-left:auto">登出</button>
     </div>
+
     <div class="small">上傳/新增資料請使用下方「上傳」區塊；本區只負責從資料庫顯示。Target ID 留空 = 顯示整個專案；填入 = 僅顯示該 target。</div>
 
     <hr/>
@@ -219,7 +224,6 @@
 
     const map = L.map('map', { preferCanvas:true }).setView([23.7,121], 7);
     L.tileLayer(TILE_URL, { maxZoom:15, attribution:'© NLSC 國土測繪中心', crossOrigin:true }).addTo(map);
-    // 避免和左側漢堡鈕重疊：把縮放控制移到右上角
     map.zoomControl.setPosition('topright');
 
     map.createPane('paneRoute').style.zIndex  = 420;
@@ -247,13 +251,18 @@
       }catch{ return false; }
     }
 
+    // 登入：x-www-form-urlencoded
     async function doLogin(){
       const u = $('loginUser').value.trim();
       const p = $('loginPass').value;
       $('loginMsg').textContent = '登入中…';
       try{
-        const fd = new FormData(); fd.append('username', u); fd.append('password', p);
-        const res = await fetch(`${API_BASE}/auth/login`, { method:'POST', body: fd });
+        const body = new URLSearchParams({ username: u, password: p });
+        const res = await fetch(`${API_BASE}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body
+        });
         const j = await res.json();
         if (!res.ok) throw new Error(j.detail || '登入失敗');
         TOKEN = j.access_token; localStorage.setItem('ct_token', TOKEN);
@@ -266,6 +275,18 @@
     }
     $('loginBtn').addEventListener('click', doLogin);
     $('loginPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+
+    // ★★★ 新增：登出 ★★★
+    function logout(){
+      TOKEN = '';
+      localStorage.removeItem('ct_token');
+      disposeAllSeries();
+      document.getElementById('seriesPanel').innerHTML = '';
+      document.getElementById('status').textContent = '';
+      render(); // 清掉地圖圖層
+      showOverlay(true);
+      showToast('已登出','info',1200);
+    }
 
     async function initAuth(){
       const ok = await verifyToken();
@@ -307,7 +328,6 @@
       __toastTimer = setTimeout(()=>{ try{ el.remove(); }catch{} }, timeout);
     }
 
-    // --- 跟著面板的收合鈕 ---
     function updateTogglePosition(){
       const panel = document.querySelector('.control');
       const btn = $('panelToggle');
@@ -785,10 +805,10 @@
       }).catch(()=>{ /* 後端無此路由就略過 */ });
     }
 
-    // 綁事件（登入成功後才生效的初始化）
     function initAfterLogin(){
       $('loadBtn').addEventListener('click', load);
       $('btnUpload').addEventListener('click', uploadQueued);
+      $('logoutBtn').addEventListener('click', logout); // 綁定登出
 
       $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
       $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });
