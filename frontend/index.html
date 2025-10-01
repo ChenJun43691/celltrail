@@ -1,4 +1,3 @@
-<!-- frontend/index.html -->
 <!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -61,11 +60,16 @@
     .toast.info{ background:#333; }
     @media (max-width: 768px){ .toggle-btn{ top:8px; left:8px; } }
 
-    /* 上傳區 */
-    .dropzone{ padding:12px; border:2px dashed #aaa; border-radius:8px; text-align:center; cursor:pointer; background:#fafafa }
+    /* 上傳區（更直觀） */
+    .dropzone{ padding:12px; border:2px dashed #aaa; border-radius:8px; text-align:center; cursor:pointer; background:#fafafa; transition:.15s ease }
     .dropzone.dragover{ border-color:#007aff; background:#eef6ff }
-    #uploadList{ margin:6px 0 0 0; padding-left:18px }
-    #uploadList li{ margin:2px 0 }
+    .dropzone.ready{ border-color:#0b5ed7; background:#e9f2ff }
+    #uploadList{ margin:6px 0 0 0; padding-left:0; list-style:none }
+    #uploadList li{
+      margin:6px 0; background:#e9f2ff; border:1px solid #cfe2ff; color:#0b5ed7;
+      padding:6px 10px; border-radius:8px; font-size:13px;
+    }
+    #btnUpload:disabled{ opacity:.5; cursor:not-allowed }
 
     /* 雙把手時間條 */
     #timeRange{ width:300px; max-width:58vw }
@@ -85,7 +89,9 @@
     }
     .login-card h3{ margin:0 0 8px 0 }
     .login-card .row{ margin-top:8px }
-    .login-card input[type="text"], .login-card input[type="password"]{ width:100%; padding:8px 10px; border:1px solid #ccc; border-radius:8px }
+    .login-card input[type="text"], .login-card input[type="password"]{
+      width:100%; padding:8px 10px; border:1px solid #ccc; border-radius:8px; box-sizing:border-box; /* 防溢出 */
+    }
     .login-card button{ padding:8px 12px; border-radius:8px; border:1px solid rgba(0,0,0,.1); background:#007aff; color:#fff; cursor:pointer }
     .login-msg{ min-height:18px; color:#d00; margin-top:4px; }
   </style>
@@ -103,7 +109,7 @@
       <div class="row" style="flex-direction:column;align-items:stretch">
         <input id="loginUser" type="text" placeholder="帳號" autocomplete="username" />
         <input id="loginPass" type="password" placeholder="密碼" autocomplete="current-password" />
-        <div class="row" style="justify-content:space-between">
+        <div class="row" style="justify-content:space-between;width:100%">
           <button id="loginBtn">登入</button>
           <span id="loginMsg" class="login-msg"></span>
         </div>
@@ -116,14 +122,11 @@
       <label>Project ID <input id="projectId" type="text" value="demo_case" /></label>
       <label>Target ID  <input id="targetId"  type="text" value="" placeholder="留空=整個專案；填入=只看此 target" /></label>
     </div>
-
-    <!-- 加了「登出」按鈕（右側） -->
     <div class="row" style="width:100%">
       <button id="loadBtn">顯示資料（從資料庫）</button>
       <span id="status" class="small"></span>
       <button id="logoutBtn" type="button" style="margin-left:auto">登出</button>
     </div>
-
     <div class="small">上傳/新增資料請使用下方「上傳」區塊；本區只負責從資料庫顯示。Target ID 留空 = 顯示整個專案；填入 = 僅顯示該 target。</div>
 
     <hr/>
@@ -188,7 +191,6 @@
     <div class="small">支援 CSV / Excel / PDF。後端以 <b>時間</b>＋<b>地址</b> 為主、cell_id 為輔。未填 target_id 時，以上傳檔名（去副檔名）作為 target_id。</div>
 
     <hr/>
-    <!-- 底部資訊列 -->
     <div class="small footer-line">
       製作人：高市刑大冠鈞　｜　mail：<a href="mailto:e43691@kcg.gov.tw">e43691@kcg.gov.tw</a>
       <br>
@@ -268,7 +270,7 @@
         TOKEN = j.access_token; localStorage.setItem('ct_token', TOKEN);
         $('loginMsg').textContent = '';
         showOverlay(false);
-        initAfterLogin(); // 進入主畫面
+        initAfterLogin();
       }catch(e){
         $('loginMsg').textContent = (e && e.message) ? e.message : '登入失敗';
       }
@@ -276,26 +278,22 @@
     $('loginBtn').addEventListener('click', doLogin);
     $('loginPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
 
-    // ★★★ 新增：登出 ★★★
+    // 登出
     function logout(){
       TOKEN = '';
       localStorage.removeItem('ct_token');
       disposeAllSeries();
       document.getElementById('seriesPanel').innerHTML = '';
       document.getElementById('status').textContent = '';
-      render(); // 清掉地圖圖層
+      render();
       showOverlay(true);
       showToast('已登出','info',1200);
     }
 
     async function initAuth(){
       const ok = await verifyToken();
-      if (ok){
-        showOverlay(false);
-        initAfterLogin();
-      }else{
-        showOverlay(true);
-      }
+      if (ok){ showOverlay(false); initAfterLogin(); }
+      else { showOverlay(true); }
     }
 
     function fmtROC(dt){
@@ -563,13 +561,12 @@
         a.addEventListener('click', ()=>{
           const s = seriesMap.get(a.dataset.id);
           if (!s) return;
-          const pts = s.records
-            .map(r => [r.lat, r.lng])
-            .filter(([lat,lng]) => Number.isFinite(lat) && Number.isFinite(lng));
-          if (pts.length){
-            map.fitBounds(L.latLngBounds(pts), { padding:[40,40] });
-          }
+          const pts = s.records.map(r => [r.lat, r.lng]).filter(([lat,lng]) => Number.isFinite(lat) && Number.isFinite(lng));
+          if (pts.length){ map.fitBounds(L.latLngBounds(pts), { padding:[40,40] }); }
         });
+      });
+      el.querySelectorAll('[data-k="del"]').forEach(a=>{
+        a.addEventListener('click', ()=> deleteSeriesById(a.dataset.id));
       });
 
       $('allShow').onclick = ()=>{ for(const s of seriesMap.values()) s.visible=true; render(); };
@@ -621,23 +618,18 @@
         for(const r of recs){
           if (ONLY_STOPS){
             idx++;
-            s.layers.stops.addLayer(L.circleMarker([r.lat,r.lng],{
-              pane:'paneStops', radius:6, color:s.color, weight:2, fillOpacity:.9
-            }));
+            s.layers.stops.addLayer(L.circleMarker([r.lat,r.lng],{ pane:'paneStops', radius:6, color:s.color, weight:2, fillOpacity:.9 }));
             const badge=L.marker([r.lat,r.lng],{
               pane:'paneStops',
               icon:L.divIcon({className:'',html:`<span class="idx-badge">${idx}</span>`,iconSize:[1,1],iconAnchor:[-6,14]})
             });
             s.layers.stops.addLayer(badge);
             const label=`${fmtROC(r.start)}｜${fmt(r.props.cell_addr)||'停留點'}`;
-            const tip=L.tooltip({permanent:true,direction:'right',offset:[8,0],opacity:.95})
-              .setContent(label).setLatLng([r.lat,r.lng]);
+            const tip=L.tooltip({permanent:true,direction:'right',offset:[8,0],opacity:.95}).setContent(label).setLatLng([r.lat,r.lng]);
             s.layers.stops.addLayer(tip);
           }else{
             const p=r.props||{};
-            const dot=L.circleMarker([r.lat,r.lng],{
-              pane:'panePoints', radius:5, color:s.color, fillColor:s.color, weight:1, fillOpacity:.9
-            });
+            const dot=L.circleMarker([r.lat,r.lng],{ pane:'panePoints', radius:5, color:s.color, fillColor:s.color, weight:1, fillOpacity:.9 });
             dot.bindPopup(`
               <div style="min-width:260px">
                 <b>${fmt(p.target_id)}</b><br/>
@@ -648,9 +640,7 @@
               </div>`);
             s.layers.points.addLayer(dot);
 
-            if (SHOW_ACC && r.acc>0) s.layers.over.addLayer(L.circle([r.lat,r.lng],{
-              pane:'paneOver', radius:r.acc, color:s.color, weight:1, fillOpacity:.05
-            }));
+            if (SHOW_ACC && r.acc>0) s.layers.over.addLayer(L.circle([r.lat,r.lng],{ pane:'paneOver', radius:r.acc, color:s.color, weight:1, fillOpacity:.05 }));
             if (SHOW_SECTOR && !Number.isNaN(r.az)){
               const rr=Math.max(MIN_SECTOR_RADIUS, r.acc||0);
               s.layers.over.addLayer(sector(r.lat,r.lng,r.az, rr, SECTOR_ANGLE_DEG,36));
@@ -704,12 +694,18 @@
       }
     }
 
-    // 上傳（多檔＋拖放＋佇列）
+    // === 上傳（多檔＋拖放＋佇列） ===
     let queuedFiles = [];
+    function human(n){
+      if(n==null) return ''; const u=['B','KB','MB','GB'];
+      let i=0; while(n>=1024 && i<u.length-1){ n/=1024; i++; }
+      return n.toFixed(i?1:0)+' '+u[i];
+    }
     function refreshUploadList(){
       const ul = $('uploadList');
-      ul.innerHTML = queuedFiles.map(f => `<li>${f.name}</li>`).join('');
+      ul.innerHTML = queuedFiles.map(f => `<li>${f.name}（${human(f.size)}）</li>`).join('');
       const btn = $('btnUpload'); if (btn) btn.disabled = queuedFiles.length === 0;
+      dz.classList.toggle('ready', queuedFiles.length>0);
     }
     function queueFiles(files){
       for (const f of files) queuedFiles.push(f);
@@ -729,19 +725,39 @@
       fileInput.value = '';
     });
 
+    // 同時嘗試 /upload/ 與 /upload，避免 307 redirect 讓 CORS 預檔失敗
+    const UPLOAD_ENDPOINTS = [`${API_BASE}/upload/`, `${API_BASE}/upload`];
+
     async function uploadOneFile(projectId, tid, file){
       const fd = new FormData();
       fd.append('project_id', projectId);
       fd.append('target_id', tid);
       fd.append('file', file);
-      const res = await fetch(`${API_BASE}/upload/`,{method:'POST',body:fd, headers: { ...authHeaders() }});
-      const txt = await res.text();
-      if(!res.ok){
-        let msg = '';
-        try{ const j=JSON.parse(txt); msg=j.detail || txt; }catch{ msg = txt || ('HTTP '+res.status); }
-        throw new Error(msg);
+
+      let lastErr = null;
+      for (const url of UPLOAD_ENDPOINTS){
+        try{
+          const res = await fetch(url, {
+            method:'POST',
+            headers: { ...authHeaders() },
+            body: fd,
+            mode: 'cors'
+          });
+          const txt = await res.text();
+          if(!res.ok){
+            let msg = '';
+            try{ const j=JSON.parse(txt); msg=j.detail || txt; }catch{ msg = txt || ('HTTP '+res.status); }
+            throw new Error(msg);
+          }
+          return; // 成功
+        }catch(e){
+          console.warn('upload try failed @', url, e);
+          lastErr = e;
+        }
       }
+      throw lastErr || new Error('上傳失敗（網路）');
     }
+
     async function uploadQueued(){
       const projectId = $('projectId').value.trim();
       if(!projectId){ alert('請先輸入 Project ID'); return; }
@@ -758,8 +774,7 @@
         await load();
       }catch(e){
         console.error('upload failed:', e);
-        alert('上傳失敗：'+e.message);
-        showToast('上傳失敗（請看 Console）','error',2200);
+        showToast('上傳失敗：' + (e.message || '請看 Console'),'error',3000);
       }
     }
 
@@ -802,13 +817,14 @@
         if (j && typeof j.total === 'number' && el){
           el.textContent += `；全站累計：${j.total}`;
         }
-      }).catch(()=>{ /* 後端無此路由就略過 */ });
+      }).catch(()=>{});
     }
 
+    // 綁事件（登入成功後才生效的初始化）
     function initAfterLogin(){
       $('loadBtn').addEventListener('click', load);
       $('btnUpload').addEventListener('click', uploadQueued);
-      $('logoutBtn').addEventListener('click', logout); // 綁定登出
+      $('logoutBtn').addEventListener('click', logout);
 
       $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
       $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });
