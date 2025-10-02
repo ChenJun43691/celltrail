@@ -71,10 +71,15 @@ def _insert_records_to_db(records: List[Dict[str, Any]]) -> int:
         ELSE NULL
       END
     )
+    ON CONFLICT (project_id, target_id, start_ts, cell_id, lat, lng) DO NOTHING
     """
     try:
         with pool.connection() as conn:
             with conn.cursor() as cur:
+                try:
+                    cur.execute("DEALLOCATE ALL")
+                except Exception:
+                    pass
                 cur.executemany(sql, records)
         return len(records)
     except Exception as e:
