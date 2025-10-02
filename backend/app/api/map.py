@@ -1,7 +1,7 @@
 # app/api/map.py
 from fastapi import APIRouter, Query, Depends
 from typing import Optional
-from app.db.session import pool
+from app.db.session import get_conn
 from app.security import get_current_user
 
 router = APIRouter()
@@ -30,7 +30,7 @@ def project_map_layers(
     params.append(limit)
 
     feats = []
-    with pool.connection() as conn, conn.cursor() as cur:
+    with get_conn() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         for (tid, st, et, cid, addr, az, acc, lng, lat) in cur.fetchall():
             feats.append({

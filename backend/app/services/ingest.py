@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional, Iterable
 
 # 【修改點 1：額外匯入 HTTPException】
 from fastapi import HTTPException
-from app.db.session import pool
+from app.db.session import get_conn
 from app.services import geocode
 
 # ---------- 共用小工具 ----------
@@ -74,7 +74,7 @@ def _insert_records_to_db(records: List[Dict[str, Any]]) -> int:
     ON CONFLICT (project_id, target_id, start_ts, cell_id, lat, lng) DO NOTHING
     """
     try:
-        with pool.connection() as conn:
+        with get_conn() as conn:
             with conn.cursor() as cur:
                 try:
                     cur.execute("DEALLOCATE ALL")

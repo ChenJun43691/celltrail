@@ -1,7 +1,7 @@
 # app/api/targets.py
 from fastapi import APIRouter, HTTPException, Depends
 from app.security import get_current_user
-from app.db.session import pool  # 用連線池
+from app.db.session import get_conn  # 用連線池
 
 router = APIRouter()
 
@@ -9,7 +9,7 @@ router = APIRouter()
                dependencies=[Depends(get_current_user)])  # ← 登入即可刪除
 def delete_target(project_id: str, target_id: str):
     try:
-        with pool.connection() as conn, conn.cursor() as cur:
+        with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "DELETE FROM raw_traces WHERE project_id = %s AND target_id = %s",
                 (project_id, target_id),

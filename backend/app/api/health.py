@@ -16,7 +16,7 @@ def health():
     db_ok, postgis_ok, redis_ok = False, False, False
     db_version, postgis_version = None, None
     try:
-        with pool.connection() as conn:
+        with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT version();")
                 db_version = cur.fetchone()[0]
