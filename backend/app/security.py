@@ -21,11 +21,11 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 # ----- 密碼雜湊/驗證 -----
 def hash_password(plain: str) -> str:
-    """把明碼變成 bcrypt 雜湊字串，存進資料庫。"""
+    """把明碼變成 PBKDF2-SHA256 雜湊字串，存進資料庫。"""
     return pwd_context.hash(plain)
 
 def verify_password(plain: str, hashed: str) -> bool:
-    """登入時驗證密碼是否正確（支援 bcrypt）。"""
+    """登入時驗證密碼是否正確（支援 PBKDF2-SHA256）。"""
     return pwd_context.verify(plain, hashed)
 
 
