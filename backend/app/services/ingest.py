@@ -34,6 +34,15 @@ def _to_int(s: Any) -> Optional[int]:
     try: return int(s)
     except: return None
 
+# 【修改點 1：新增 _to_float 函式】
+def _to_float(s: Any) -> Optional[float]:
+    if _is_na(s): 
+        return None
+    try:
+        return float(str(s).strip())
+    except Exception:
+        return None
+
 def _guess_accuracy(addr: str | None) -> int:
     a = (addr or "")
     if ("市" in a) or ("區" in a): return 150
@@ -151,26 +160,37 @@ def ingest_auto(project_id: str, target_id: str, filename: str, file_bytes: byte
 
         accuracy_m = _guess_accuracy(cell_addr)
 
+        # 【修改點 2：使用清理函式】
         to_insert.append(dict(
             project_id=project_id, target_id=target_id,
             start_ts=start_ts, end_ts=end_ts,
             cell_id=cell_id, cell_addr=cell_addr,
             sector_name=sector_name, site_code=site_code, sector_id=sector_id,
-            azimuth=azimuth, lat=lat, lng=lng, accuracy_m=accuracy_m
+            azimuth=azimuth,
+            lat=_to_float(lat),
+            lng=_to_float(lng),
+            accuracy_m=_to_int(accuracy_m)
         ))
 
     if to_insert:
+        # 【修改點 3：替換成有型別標籤的 SQL】
         sql = """
-        INSERT INTO raw_traces
-          (project_id, target_id, start_ts, end_ts, cell_id, cell_addr,
-           sector_name, site_code, sector_id, azimuth, lat, lng, accuracy_m, geom)
-        VALUES
-          (%(project_id)s, %(target_id)s, %(start_ts)s, %(end_ts)s, %(cell_id)s, %(cell_addr)s,
-           %(sector_name)s, %(site_code)s, %(sector_id)s, %(azimuth)s, %(lat)s, %(lng)s, %(accuracy_m)s,
-           CASE WHEN %(lat)s IS NOT NULL AND %(lng)s IS NOT NULL
-                THEN ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326)
-                ELSE NULL END
-          )
+        INSERT INTO raw_traces (
+          project_id, target_id, start_ts, end_ts,
+          cell_id, cell_addr, sector_name, site_code, sector_id,
+          azimuth, lat, lng, accuracy_m, geom
+        )
+        VALUES (
+          %(project_id)s::text, %(target_id)s::text,
+          %(start_ts)s::timestamptz, %(end_ts)s::timestamptz,
+          %(cell_id)s::text, %(cell_addr)s::text, %(sector_name)s::text, %(site_code)s::text, %(sector_id)s::text,
+          %(azimuth)s::int, %(lat)s::float8, %(lng)s::float8, %(accuracy_m)s::int,
+          CASE
+            WHEN %(lat)s::float8 IS NOT NULL AND %(lng)s::float8 IS NOT NULL
+              THEN ST_SetSRID(ST_MakePoint(%(lng)s::float8, %(lat)s::float8), 4326)
+            ELSE NULL
+          END
+        )
         """
         with pool.connection() as conn:
             with conn.cursor() as cur:
@@ -262,26 +282,37 @@ def ingest_pdf(project_id: str, target_id: str, file_bytes: bytes) -> Dict[str, 
                     lng = ll[1] if ll else None
                     accuracy_m = _guess_accuracy(cell_addr)
 
+                    # 【修改點 2：使用清理函式】
                     rows.append(dict(
                         project_id=project_id, target_id=target_id,
                         start_ts=start_ts, end_ts=end_ts,
                         cell_id=cell_id, cell_addr=cell_addr,
                         sector_name=sector_name, site_code=site_code, sector_id=sector_id,
-                        azimuth=azimuth, lat=lat, lng=lng, accuracy_m=accuracy_m
+                        azimuth=azimuth,
+                        lat=_to_float(lat),
+                        lng=_to_float(lng),
+                        accuracy_m=_to_int(accuracy_m)
                     ))
 
     if rows:
+        # 【修改點 3：替換成有型別標籤的 SQL】
         sql = """
-        INSERT INTO raw_traces
-          (project_id, target_id, start_ts, end_ts, cell_id, cell_addr,
-           sector_name, site_code, sector_id, azimuth, lat, lng, accuracy_m, geom)
-        VALUES
-          (%(project_id)s, %(target_id)s, %(start_ts)s, %(end_ts)s, %(cell_id)s, %(cell_addr)s,
-           %(sector_name)s, %(site_code)s, %(sector_id)s, %(azimuth)s, %(lat)s, %(lng)s, %(accuracy_m)s,
-           CASE WHEN %(lat)s IS NOT NULL AND %(lng)s IS NOT NULL
-                THEN ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326)
-                ELSE NULL END
-          )
+        INSERT INTO raw_traces (
+          project_id, target_id, start_ts, end_ts,
+          cell_id, cell_addr, sector_name, site_code, sector_id,
+          azimuth, lat, lng, accuracy_m, geom
+        )
+        VALUES (
+          %(project_id)s::text, %(target_id)s::text,
+          %(start_ts)s::timestamptz, %(end_ts)s::timestamptz,
+          %(cell_id)s::text, %(cell_addr)s::text, %(sector_name)s::text, %(site_code)s::text, %(sector_id)s::text,
+          %(azimuth)s::int, %(lat)s::float8, %(lng)s::float8, %(accuracy_m)s::int,
+          CASE
+            WHEN %(lat)s::float8 IS NOT NULL AND %(lng)s::float8 IS NOT NULL
+              THEN ST_SetSRID(ST_MakePoint(%(lng)s::float8, %(lat)s::float8), 4326)
+            ELSE NULL
+          END
+        )
         """
         with pool.connection() as conn:
             with conn.cursor() as cur:
