@@ -14,9 +14,9 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 @router.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends()):
     """
-    接 x-www-form-urlencoded：
+    Content-Type: application/x-www-form-urlencoded
       username=...&password=...
-    回：
+    回傳：
       { "access_token": "...", "token_type": "bearer" }
     """
     user = get_user_by_username(form.username)

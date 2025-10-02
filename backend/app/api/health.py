@@ -18,11 +18,11 @@ def health():
     try:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT version();")
+                cur.execute("SELECT version();", prepare=False)
                 db_version = cur.fetchone()[0]
                 # PostGIS 若未安裝會噴錯，因此用 try 包起來
                 try:
-                    cur.execute("SELECT postgis_full_version();")
+                    cur.execute("SELECT postgis_full_version();", prepare=False)
                     postgis_version = cur.fetchone()[0]
                     postgis_ok = True
                 except Exception:
