@@ -8,7 +8,7 @@ DB_URL = os.environ.get(
     "postgresql://celltrail:celltrail@localhost:5432/celltrail"
 )
 
-# 依主機資源調整；autocommit=True
+# autocommit=True；連線池大小依主機資源調整
 pool: ConnectionPool = ConnectionPool(
     DB_URL,
     min_size=1,
@@ -19,13 +19,12 @@ pool: ConnectionPool = ConnectionPool(
 @contextmanager
 def get_conn():
     """
-    從連線池取一條連線，並關掉 psycopg3 的 server-side prepared statements。
-    這能避免 DuplicatePreparedStatement: "_pg3_x already exists"。
+    從連線池取一條連線，並關掉 psycopg3 的 server-side prepared statements，
+    避免 DuplicatePreparedStatement: "_pg3_x already exists"
     """
-    with get_conn() as conn:
+    with pool.connection() as conn:
         try:
-            # 0 = 關閉；某些版本沒有此屬性，容錯即可
-            conn.prepare_threshold = 0
+            conn.prepare_threshold = 0  # 關閉 prepared statements
         except Exception:
             pass
         yield conn

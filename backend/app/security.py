@@ -8,25 +8,19 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
-from app.db.session import get_conn  # ← 用 get_conn
+from app.db.session import get_conn  # 一律用 get_conn 關掉 prepared
 
-# 請在 Render 設定固定且足夠長的 SECRET_KEY（不要每次部署都變）
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-please")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 8 * 60  # 8 小時
+ACCESS_TOKEN_EXPIRE_MINUTES = 8 * 60
 
-# 同時支援 bcrypt 與 pbkdf2_sha256（舊資料也能驗）
-pwd_context = CryptContext(
-    schemes=["bcrypt", "pbkdf2_sha256"],
-    deprecated="auto",
-)
+pwd_context = CryptContext(schemes=["bcrypt", "pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 def hash_password(plain: str) -> str:
     return pwd_context.hash(plain)
 
 def verify_password(plain: str, hashed: str) -> bool:
-    # 防止外部依賴缺失導致 500
     try:
         return pwd_context.verify(plain, hashed)
     except Exception:
@@ -40,11 +34,9 @@ def create_access_token(data: dict, expires_delta: Optional[dt.timedelta] = None
 
 def get_user_by_username(username: str):
     sql = "SELECT id, username, password_hash, role FROM users WHERE username=%s"
-    # 關鍵：prepare=False，完全不用 prepared statements
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, (username,), prepare=False, prepare=False)
-            row = cur.fetchone()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (username,), prepare=False)  # 關閉 prepared
+        row = cur.fetchone()
     if not row:
         return None
     return {"id": row[0], "username": row[1], "password_hash": row[2], "role": row[3]}

@@ -9,15 +9,14 @@ from app.security import (
     verify_password,
 )
 
-router = APIRouter(prefix="/api/auth", tags=["auth"])
+# 注意：這裡只用 /auth，不含 /api，/api 由 main.py 統一加上
+router = APIRouter(prefix="/auth", tags=["auth"])
 
 @router.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends()):
     """
     Content-Type: application/x-www-form-urlencoded
-      username=...&password=...
-    回傳：
-      { "access_token": "...", "token_type": "bearer" }
+    username=...&password=...
     """
     user = get_user_by_username(form.username)
     if not user or not verify_password(form.password, user["password_hash"]):
