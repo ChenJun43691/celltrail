@@ -16,18 +16,15 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# ---- CORS ----
-raw = os.getenv("CORS_ORIGINS", "https://celltrail.netlify.app")
-allow_origins = []
-for o in (x.strip() for x in raw.split(",") if x.strip()):
-    o = o.rstrip("/").replace("HTTP://", "http://").replace("HTTPS://", "https://")
-    allow_origins.append(o)
-allow_origin_regex = r"^https://.*\.netlify\.app$" if os.getenv("CORS_NETLIFY_REGEX") == "1" else None
+# --- CORS (simple allowlist) ---
+raw = os.getenv("CORS_ORIGINS",
+                "https://celltrail.netlify.app,http://localhost:5500,http://127.0.0.1:5500")
+allow_origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
 
+from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
