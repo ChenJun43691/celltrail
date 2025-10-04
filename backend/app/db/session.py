@@ -3,38 +3,31 @@ import os
 from contextlib import contextmanager
 from psycopg_pool import ConnectionPool
 
-DB_URL = os.getenv("DATABASE_URL")
-if not DB_URL:
-    raise RuntimeError("DATABASE_URL is not set")
+# Render / Supabase 都會給 DATABASE_URL
+DSN = os.getenv("DATABASE_URL", "")
+# psycopg3 需要 postgresql://
+if DSN.startswith("postgres://"):
+    DSN = DSN.replace("postgres://", "postgresql://", 1)
 
-MIN_SIZE = int(os.getenv("DB_POOL_MIN", "1"))
-MAX_SIZE = int(os.getenv("DB_POOL_MAX", "10"))
-CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "10"))
-APP_NAME = os.getenv("DB_APP_NAME", "celltrail-api")
-
-# 關閉 server-side prepared statements（對 Supabase/pgBouncer 友善）
+# 關閉 server-side prepared statements，避免經過 pooler 出問題
 pool = ConnectionPool(
-    conninfo=DB_URL,
-    min_size=MIN_SIZE,
-    max_size=MAX_SIZE,
-    kwargs={
-        "prepare_threshold": 0,
-        "connect_timeout": CONNECT_TIMEOUT,
-        "application_name": APP_NAME,
-    },
+    conninfo=DSN,
+    min_size=1,
+    max_size=5,
+    kwargs={"prepare_threshold": 0},
+    open=False,   # 啟動時再 open
 )
 
 @contextmanager
 def get_conn():
     """
-    用法：
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(...)
+    取得同步連線；with get_conn() as conn: ...
     """
-    try:
-        pool.open()   # 多次 open() 安全
-    except Exception:
-        pass
+    if pool.closed:
+        try:
+            pool.open()
+        except Exception:
+            # 讓上層決定是否要 fail；此處不吞例外
+            raise
     with pool.connection() as conn:
         yield conn
