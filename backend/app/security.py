@@ -1,3 +1,4 @@
+# backend/app/security.py
 import os
 import datetime as dt
 from typing import Optional
@@ -20,6 +21,7 @@ pwd_context = CryptContext(
     deprecated="auto",
 )
 
+# 注意：tokenUrl 必須對應到 main.py 的路由前綴（/api + /auth/login）
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
@@ -45,8 +47,8 @@ def create_access_token(data: dict, expires_delta: Optional[dt.timedelta] = None
 def get_user_by_username(username: str):
     sql = "SELECT id, username, password_hash, role FROM users WHERE username=%s"
     with get_conn() as conn, conn.cursor() as cur:
-        # 關掉 server-side prepared statements（對 Supabase pooler 友善）
-        cur.execute(sql, (username,), prepare=False)
+        # psycopg3 沒有 prepare 參數；關閉 prepared statements 已在 get_conn() 完成
+        cur.execute(sql, (username,))
         row = cur.fetchone()
     if not row:
         return None
@@ -59,7 +61,7 @@ def verify_password_db(username: str, plain: str) -> bool:
     """
     sql = "SELECT crypt(%s, password_hash) = password_hash AS ok FROM users WHERE username=%s"
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, (plain, username), prepare=False)
+        cur.execute(sql, (plain, username))
         row = cur.fetchone()
         return bool(row and row[0])
 

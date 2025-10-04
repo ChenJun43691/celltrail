@@ -173,7 +173,7 @@ def _insert_records(records: List[Dict[str, Any]]) -> int:
         with get_conn() as conn:
             with conn.cursor() as cur:
                 # 關鍵：關掉 server-side prepared statement
-                cur.executemany(sql, records, prepare=False)
+                cur.executemany(sql, records)
         return len(records)
     except Exception as e:
         # 讓上層以 400 回前端，顯示可讀訊息

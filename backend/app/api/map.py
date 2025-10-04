@@ -31,7 +31,7 @@ def project_map_layers(
 
     feats = []
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, params, prepare=False)
+        cur.execute(sql, params)
         for (tid, st, et, cid, addr, az, acc, lng, lat) in cur.fetchall():
             feats.append({
                 "type": "Feature",
