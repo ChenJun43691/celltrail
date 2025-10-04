@@ -1,4 +1,3 @@
-# backend/app/security.py
 import os
 import datetime as dt
 from typing import Optional
@@ -10,18 +9,18 @@ from fastapi.security import OAuth2PasswordBearer
 
 from app.db.session import get_conn  # 連線池
 
-# ----- JWT -----
+# ===== JWT 基本設定 =====
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-please")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 8 * 60  # 8 小時
 
-# 同時支援 bcrypt 與 pbkdf2_sha256（舊資料也能驗）
+# 同時支援 bcrypt 與 pbkdf2_sha256（保留舊資料相容性）
 pwd_context = CryptContext(
     schemes=["bcrypt", "pbkdf2_sha256"],
     deprecated="auto",
 )
 
-# 注意：tokenUrl 必須對應到 main.py 的路由前綴（/api + /auth/login）
+# 前端用 /api/auth/login 換 token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
@@ -30,7 +29,7 @@ def hash_password(plain: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    """優先用 passlib 驗；有例外或不相容就回 False（由呼叫端 fallback）。"""
+    """優先用 passlib 驗；遇到例外就回 False（呼叫端可再用 DB 端 crypt() 補驗）"""
     try:
         return pwd_context.verify(plain, hashed)
     except Exception:
@@ -47,7 +46,7 @@ def create_access_token(data: dict, expires_delta: Optional[dt.timedelta] = None
 def get_user_by_username(username: str):
     sql = "SELECT id, username, password_hash, role FROM users WHERE username=%s"
     with get_conn() as conn, conn.cursor() as cur:
-        # psycopg3 沒有 prepare 參數；關閉 prepared statements 已在 get_conn() 完成
+        # 連線層級已在 session.py 關閉 prepared statements，這裡「不要」再傳 prepare=...
         cur.execute(sql, (username,))
         row = cur.fetchone()
     if not row:
@@ -57,7 +56,7 @@ def get_user_by_username(username: str):
 
 def verify_password_db(username: str, plain: str) -> bool:
     """
-    用 Postgres 端的 pgcrypto/crypt() 驗密，確保與 DB 內 hash 100% 相容。
+    使用 Postgres pgcrypto 的 crypt() 在 DB 端驗證，確保與 DB 內 hash 100% 相容。
     """
     sql = "SELECT crypt(%s, password_hash) = password_hash AS ok FROM users WHERE username=%s"
     with get_conn() as conn, conn.cursor() as cur:
