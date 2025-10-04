@@ -1,4 +1,3 @@
-# backend/app/security.py
 import os
 import datetime as dt
 from typing import Optional
@@ -8,24 +7,34 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
-from app.db.session import get_conn
+from app.db.session import get_conn  # 連線池
 
-# ===== JWT =====
+# ===== JWT 基本設定 =====
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-please")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 8 * 60  # 8 小時
 
-pwd_context = CryptContext(schemes=["bcrypt", "pbkdf2_sha256"], deprecated="auto")
+# 同時支援 bcrypt 與 pbkdf2_sha256（保留舊資料相容性）
+pwd_context = CryptContext(
+    schemes=["bcrypt", "pbkdf2_sha256"],
+    deprecated="auto",
+)
+
+# 前端用 /api/auth/login 換 token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
 
 def hash_password(plain: str) -> str:
     return pwd_context.hash(plain)
 
+
 def verify_password(plain: str, hashed: str) -> bool:
+    """優先用 passlib 驗；遇到例外就回 False（呼叫端可再用 DB 端 crypt() 補驗）"""
     try:
         return pwd_context.verify(plain, hashed)
     except Exception:
         return False
+
 
 def create_access_token(data: dict, expires_delta: Optional[dt.timedelta] = None) -> str:
     to_encode = data.copy()
@@ -33,21 +42,29 @@ def create_access_token(data: dict, expires_delta: Optional[dt.timedelta] = None
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+
 def get_user_by_username(username: str):
     sql = "SELECT id, username, password_hash, role FROM users WHERE username=%s"
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, (username,))   # 不要 prepare=
+        # 關鍵：針對 execute 明確關閉 prepared（pooler 友善）
+        cur.execute(sql, (username,), prepare=False)
         row = cur.fetchone()
     if not row:
         return None
     return {"id": row[0], "username": row[1], "password_hash": row[2], "role": row[3]}
 
+
 def verify_password_db(username: str, plain: str) -> bool:
+    """
+    使用 Postgres 端 pgcrypto/crypt() 驗密，確保與 DB 內 hash 100% 相容。
+    """
     sql = "SELECT crypt(%s, password_hash) = password_hash AS ok FROM users WHERE username=%s"
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, (plain, username))  # 不要 prepare=
+        # 同樣關掉 prepared
+        cur.execute(sql, (plain, username), prepare=False)
         row = cur.fetchone()
         return bool(row and row[0])
+
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
     cred_exc = HTTPException(
@@ -67,6 +84,7 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
     if not user:
         raise cred_exc
     return user
+
 
 def require_admin(user=Depends(get_current_user)):
     if user["role"] != "admin":
