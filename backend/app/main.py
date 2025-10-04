@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.session import pool
 
-# ---- 建 app（先建 app，再註冊事件）----
+# 先建 app，再掛事件
 app = FastAPI(
     title="CellTrail API",
     version="0.1.0",
@@ -16,15 +16,12 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# ---- CORS（以環境變數為主；預設只開 Netlify 正站）----
+# ---- CORS ----
 raw = os.getenv("CORS_ORIGINS", "https://celltrail.netlify.app")
 allow_origins = []
 for o in (x.strip() for x in raw.split(",") if x.strip()):
-    o = o.rstrip("/")
-    o = o.replace("HTTP://", "http://").replace("HTTPS://", "https://")
+    o = o.rstrip("/").replace("HTTP://", "http://").replace("HTTPS://", "https://")
     allow_origins.append(o)
-
-# 可選：放行 *.netlify.app
 allow_origin_regex = r"^https://.*\.netlify\.app$" if os.getenv("CORS_NETLIFY_REGEX") == "1" else None
 
 app.add_middleware(
@@ -53,8 +50,7 @@ async def shutdown():
     try:
         pool.close()
         try:
-            # psycopg_pool >= 3.2
-            pool.wait_close(10)
+            pool.wait_close(10)  # psycopg_pool >= 3.2
         except Exception:
             pass
         print("[DB] pool closed")

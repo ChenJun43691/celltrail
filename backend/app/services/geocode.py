@@ -45,7 +45,7 @@ def _simplify_addr(addr: str) -> str:
         return ""
     s = addr.strip().replace("臺", "台")
     s = re.sub(r"（.*?）|\(.*?\)", "", s)   # 去括號
-    s = re.sub(r"號.*$", "號", s)          # 「號」後面全部砍掉（樓層、頂、之x…）
+    s = re.sub(r"號.*$", "號", s)          # 「號」後面（樓層/頂/之x…）砍掉
     s = re.sub(r"\s+", "", s)
     return s
 
@@ -100,7 +100,7 @@ def _osm_geocode(addr: str) -> Optional[Tuple[float, float]]:
 def _lookup_from_local(cell_id: Optional[str], addr: Optional[str]) -> Optional[Tuple[float, float]]:
     return None
 
-# ---------- 對外 API ----------
+# ---------- 對外 API（唯一出口） ----------
 def lookup(cell_id: Optional[str], cell_addr: Optional[str]) -> Optional[Tuple[float, float]]:
     # 1) 本地對照
     ll = _lookup_from_local(cell_id, cell_addr)

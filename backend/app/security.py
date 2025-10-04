@@ -10,15 +10,12 @@ from fastapi.security import OAuth2PasswordBearer
 
 from app.db.session import get_conn
 
-# ===== JWT 設定 =====
+# ===== JWT =====
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-please")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 8 * 60  # 8 小時
 
-# 同時支援 bcrypt 與 pbkdf2_sha256（舊資料相容）
 pwd_context = CryptContext(schemes=["bcrypt", "pbkdf2_sha256"], deprecated="auto")
-
-# 前端用 /api/auth/login 取得 token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 def hash_password(plain: str) -> str:
@@ -39,17 +36,16 @@ def create_access_token(data: dict, expires_delta: Optional[dt.timedelta] = None
 def get_user_by_username(username: str):
     sql = "SELECT id, username, password_hash, role FROM users WHERE username=%s"
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, (username,))  # 不要傳 prepare=...
+        cur.execute(sql, (username,))   # 不要 prepare=
         row = cur.fetchone()
     if not row:
         return None
     return {"id": row[0], "username": row[1], "password_hash": row[2], "role": row[3]}
 
 def verify_password_db(username: str, plain: str) -> bool:
-    """在 DB 端用 pgcrypto/crypt() 驗證，確保與 DB 內 hash 完全相容。"""
     sql = "SELECT crypt(%s, password_hash) = password_hash AS ok FROM users WHERE username=%s"
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, (plain, username))  # 不要傳 prepare=...
+        cur.execute(sql, (plain, username))  # 不要 prepare=
         row = cur.fetchone()
         return bool(row and row[0])
 
