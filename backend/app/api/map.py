@@ -1,4 +1,4 @@
-# app/api/map.py
+# backend/app/api/map.py
 from fastapi import APIRouter, Query, Depends
 from typing import Optional
 from app.db.session import get_conn
@@ -20,15 +20,11 @@ def project_map_layers(
     依 project（可選 target）取得地圖圖層（標準 GeoJSON）。
     只回傳已定位的資料（geom IS NOT NULL）。
     """
-    # 用單一 SQL 在資料庫端組成 FeatureCollection，效能好
-    # 注意：ST_AsGeoJSON(geom)::jsonb 可直接變成 geometry 欄
     where = ["project_id = %s", "geom IS NOT NULL"]
     params = [project_id]
-
     if target_id:
         where.append("target_id = %s")
         params.append(target_id)
-
     where_sql = " AND ".join(where)
 
     sql = f"""
@@ -79,15 +75,12 @@ def project_map_layers(
     ) AS fc
     FROM rows;
     """
-
     params.append(limit)
 
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, params)
+        cur.execute(sql, params, prepare=False)  # ← 關鍵：不使用 prepared
         row = cur.fetchone()
-        # row[0] 是 jsonb；psycopg3 會自動轉成 Python dict
         return row[0] or {"type": "FeatureCollection", "features": []}
-
 
 # --- 附加：未定位清單（方便除錯） ---
 @router.get(
@@ -105,11 +98,9 @@ def project_unlocated_list(
     """
     where = ["project_id = %s", "geom IS NULL"]
     params = [project_id]
-
     if target_id:
         where.append("target_id = %s")
         params.append(target_id)
-
     where_sql = " AND ".join(where)
 
     sql = f"""
@@ -119,12 +110,11 @@ def project_unlocated_list(
     ORDER BY start_ts NULLS LAST, id
     LIMIT %s
     """
-
     params.append(limit)
 
     items = []
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, params)
+        cur.execute(sql, params, prepare=False)  # ← 同樣關閉 prepared
         for r in cur.fetchall():
             (rid, tid, st, et, cid, addr, az, acc) = r
             items.append({
