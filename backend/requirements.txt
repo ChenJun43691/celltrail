@@ -8,6 +8,7 @@ gunicorn==23.0.0
 psycopg==3.2.10
 psycopg-binary==3.2.10
 psycopg-pool==3.2.6
+python-multipart==0.0.9
 
 # === Auth / Security ===
 passlib==1.7.4
