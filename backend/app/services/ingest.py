@@ -26,13 +26,29 @@ def _is_na(v):
     return v is None or (isinstance(v, str) and v.strip() in NA_TOKENS)
 
 def _parse_ts(s: Any) -> Optional[datetime]:
-    """支援 2025/8/30 13:31 或 2025/08/30 13:31:22；回傳含台北時區"""
+    """
+    支援多種時間表示，回傳含台北時區的 datetime：
+      - 2025/8/30 13:31         （PDF 漫遊紀錄常見：單位數月日）
+      - 2025/08/30 13:31:22     （CSV 標準格式）
+      - 2024-09-01 20:06:44     （Excel 網路歷程：dash 連字符）
+      - 2024-09-01\xa020:06:44  （Excel 拷貝出來常帶不間斷空格 NBSP）
+      - 中文「年月日時分秒」夾雜（最後備援）
+    """
     if _is_na(s):
         return None
     if isinstance(s, datetime):
         return s if s.tzinfo else s.replace(tzinfo=TPE_TZ)
-    s = str(s).strip()
-    for fmt in ("%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%-m/%-d %H:%M"):
+    # NBSP（不間斷空格 \xa0）→ 一般空格；前後 strip
+    s = str(s).strip().replace("\xa0", " ")
+    # 把多重空白壓成單一空白（Excel 偶爾會有兩個空格）
+    s = re.sub(r"[ \t]+", " ", s)
+    for fmt in (
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y/%-m/%-d %H:%M",
+        "%Y-%m-%d %H:%M:%S",  # 「網路歷程.xltx」格式
+        "%Y-%m-%d %H:%M",
+    ):
         try:
             dt = datetime.strptime(s, fmt)
             return dt.replace(tzinfo=TPE_TZ)
@@ -101,20 +117,50 @@ def _iter_rows_csv(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
         yield {(k or "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in (r or {}).items()}
 
 def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
-    # 需 pandas + openpyxl
+    """
+    讀取 .xlsx / .xltx / .xlsm / .xltm 為 row dict。
+
+    處理電信公司常見的「假表頭」格式：
+      Excel 第 0 列：跨欄合併儲存格的大標（如「行動上網」「網路歷程」）
+      Excel 第 1 列：才是真正的欄位名（啟始時間 / 結束時間 / 基地台位址 ...）
+      Excel 第 2 列起：才是資料
+
+    pandas 預設 header=0 會把第 0 列當欄位名，導致除了第一欄外其餘變成
+    'Unnamed: 1' ~ 'Unnamed: N'。偵測規則：當 Unnamed 佔多數欄時，重讀為 header=1。
+
+    型別處理盲點：
+      - pandas.Timestamp / numpy.datetime64 → 用 .to_pydatetime() 轉成 python datetime
+        （切忌用 .item()，部分版本會回 int [ns]，後續 _parse_ts 全部失敗）
+      - 其他 numpy 數值型別才用 .item() 轉原生
+    """
     try:
         import pandas as pd
         import numpy as np
     except Exception as e:
         raise RuntimeError("請先安裝：pip install pandas openpyxl") from e
-    df = pd.read_excel(io.BytesIO(file_bytes))  # 讓 pandas 自選 engine
+
+    # 第一輪：預設 header=0 讀
+    df = pd.read_excel(io.BytesIO(file_bytes))
+    # 偵測「假表頭」：Unnamed 欄位佔多數 → 真正欄位名在第 1 列
+    n_cols = len(df.columns)
+    n_unnamed = sum(1 for c in df.columns if str(c).startswith("Unnamed:"))
+    if n_cols >= 3 and n_unnamed >= max(2, n_cols // 2):
+        df = pd.read_excel(io.BytesIO(file_bytes), header=1)
+
     df = df.replace({np.nan: ""})
     for _, row in df.iterrows():
         d = {str(k).strip(): row[k] for k in df.columns}
-        # numpy 型別轉原生
         for k, v in list(d.items()):
+            # pandas.Timestamp / numpy.datetime64 → python datetime（保留時區邏輯由 _parse_ts 處理）
+            if hasattr(v, "to_pydatetime"):
+                try:
+                    d[k] = v.to_pydatetime()
+                    continue
+                except Exception:
+                    pass
+            # 其他 numpy 型別 → python 原生（跳過 str/bytes，避免它們意外實作了 .item()）
             try:
-                if hasattr(v, "item"):
+                if hasattr(v, "item") and not isinstance(v, (str, bytes)):
                     d[k] = v.item()
             except Exception:
                 pass
@@ -128,14 +174,23 @@ _RAW2CANON = {
     "開始時間": "start_ts",
     "結束時間": "end_ts",
     "起始時間": "start_ts",
+    "啟始時間": "start_ts",     # 「網路歷程.xltx」用「啟」非「起」
     "終止時間": "end_ts",
     # 基地台/地址/識別
     "基地台地址": "cell_addr",
     "基地臺地址": "cell_addr",
+    "基地台位址": "cell_addr",   # 「網路歷程.xltx」用「位址」非「地址」
+    "基地臺位址": "cell_addr",
+    "最終基地台位址": "cell_addr",
+    "最終基地臺位址": "cell_addr",
     "站台地址": "cell_addr",
     "地址": "cell_addr",
     "基地台編號": "cell_id",
     "基地臺編號": "cell_id",
+    "基地台ID": "cell_id",       # Excel 範本有時用 ID 而非「編號」
+    "基地臺ID": "cell_id",
+    "最終基地台ID": "cell_id",
+    "最終基地臺ID": "cell_id",
     "站台編號": "cell_id",
     "站碼": "cell_id",
     "cell_id": "cell_id",
@@ -206,12 +261,13 @@ def ingest_auto(project_id: str, target_id: str, filename: str, file_bytes: byte
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext in {"csv", "txt", "tsv"}:
         return _ingest_rows_stream(project_id, target_id, _iter_rows_csv(file_bytes))
-    elif ext in {"xlsx"}:
+    # xlsx / xltx（Excel 範本）/ xlsm（含巨集）/ xltm（含巨集範本）皆走同一條 openpyxl 路徑
+    elif ext in {"xlsx", "xltx", "xlsm", "xltm"}:
         return _ingest_rows_stream(project_id, target_id, _iter_rows_excel(file_bytes))
     elif ext == "pdf":
         return ingest_pdf(project_id, target_id, file_bytes)
     else:
-        raise ValueError("不支援的檔案格式：請使用 CSV / TXT / XLSX / PDF")
+        raise ValueError("不支援的檔案格式：請使用 CSV / TXT / XLSX / XLTX / PDF")
 
 def _ingest_rows_stream(project_id: str, target_id: str, rows_iter: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     total = inserted = skipped = 0

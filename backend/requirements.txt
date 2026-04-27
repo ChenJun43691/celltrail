@@ -12,7 +12,9 @@ python-multipart==0.0.9
 
 # === Auth / Security ===
 passlib==1.7.4
-bcrypt==5.0.0
+# 注意：passlib 1.7.4 與 bcrypt 5.x 不相容（會觸發 "password cannot be longer than 72 bytes"），
+# 需固定在 4.2.1 直到 passlib 1.8 釋出
+bcrypt==4.2.1
 python-jose==3.5.0
 rsa==4.9.1
 ecdsa==0.19.1
@@ -33,6 +35,8 @@ pdfminer.six==20250506
 pdfplumber==0.11.7
 pypdfium2==4.30.0
 pillow==11.3.0
+# reportlab：證物報告 PDF 產生器（services/report.py）；中文用內建 STSong-Light CID
+reportlab==4.2.5
 
 # === Networking / HTTP ===
 requests==2.32.5
@@ -68,3 +72,9 @@ et_xmlfile==2.0.0
 # === Optional but safe ===
 pydantic==2.9.2
 pydantic_core==2.23.4
+
+# === Testing（dev only；CI 與本機 pytest 用） ===
+# 為什麼釘在 8.3.3：pytest 9（2026 初發布）是大改版，與 anyio/fastapi 偶有相容性問題，
+# 且 CellTrail 既有測試基於 8 系列穩定版，無遷移到 9 的迫切需求。
+# pygments / pluggy / iniconfig 由 pytest 自動帶入，不需顯式列出。
+pytest==8.3.3

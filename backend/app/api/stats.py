@@ -33,11 +33,10 @@ async def hit(req: Request, payload: HitIn | None = None):
     """
     ip = _client_ip(req)
     dedup_key = f"stats:seen:{ip}"
-    # setnx + expire 做 1 小時去重
-    is_new = await r.setnx(dedup_key, "1")
+    # 原子操作：SET key value NX EX 3600
+    # 避免 setnx + expire 兩步之間可能的 key 永不過期問題
+    is_new = await r.set(dedup_key, "1", nx=True, ex=3600)
     if is_new:
-        await r.expire(dedup_key, 3600)  # 1 小時
-
         # 總次數 / 今日次數 +1
         today = _today_key()
         pipe = r.pipeline()
