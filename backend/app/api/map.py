@@ -20,7 +20,8 @@ def project_map_layers(
     依 project（可選 target）取得地圖圖層（標準 GeoJSON）。
     只回傳已定位的資料（geom IS NOT NULL）。
     """
-    where = ["project_id = %s", "geom IS NOT NULL"]
+    # 軟刪過濾：永遠不顯示已刪除的紀錄（deleted_at IS NULL）
+    where = ["project_id = %s", "geom IS NOT NULL", "deleted_at IS NULL"]
     params = [project_id]
     if target_id:
         where.append("target_id = %s")
@@ -39,6 +40,7 @@ def project_map_layers(
         site_code,
         sector_id,
         azimuth,
+        azimuth_ref,
         accuracy_m,
         geom
       FROM raw_traces
@@ -65,6 +67,7 @@ def project_map_layers(
                   'site_code',   site_code,
                   'sector_id',   sector_id,
                   'azimuth',     azimuth,
+                  'azimuth_ref', azimuth_ref,
                   'accuracy_m',  accuracy_m
                 )
               )
@@ -96,7 +99,8 @@ def project_unlocated_list(
     列出 geom IS NULL 的資料，協助找出無法 geocode 的列。
     這個端點「不」回 GeoJSON；前端可做成清單提醒。
     """
-    where = ["project_id = %s", "geom IS NULL"]
+    # 軟刪過濾：未定位清單也只看「在線」的資料
+    where = ["project_id = %s", "geom IS NULL", "deleted_at IS NULL"]
     params = [project_id]
     if target_id:
         where.append("target_id = %s")
