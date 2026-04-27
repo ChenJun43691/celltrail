@@ -1,5 +1,21 @@
 // frontend/api.js
-const API = 'https://celltrail-api.onrender.com';
+// ---------------------------------------------------------
+// API base 依環境自動切換：
+//   1. window.__CELLTRAIL_API__（測試 / staging 可由 index.html 覆寫）
+//   2. 本機 hostname（localhost / 127.0.0.1 / 區網）→ http://localhost:8000
+//   3. 其他 → 正式環境 Render URL
+// ---------------------------------------------------------
+function resolveApiBase() {
+  if (typeof window !== 'undefined' && window.__CELLTRAIL_API__) {
+    return window.__CELLTRAIL_API__.replace(/\/$/, '');
+  }
+  const host = (typeof location !== 'undefined' && location.hostname) || '';
+  const isLocal = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/.test(host);
+  if (isLocal) return 'http://localhost:8000';
+  return 'https://celltrail-api.onrender.com';
+}
+
+const API = resolveApiBase();
 
 export async function login(username, password) {
   const body = new URLSearchParams({ username, password }); // x-www-form-urlencoded
@@ -33,3 +49,5 @@ export async function me() {
 export function logout() {
   localStorage.removeItem('token');
 }
+
+export { API };

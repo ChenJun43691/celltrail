@@ -125,7 +125,8 @@
     <div class="row" style="width:100%">
       <button id="loadBtn">顯示資料（從資料庫）</button>
       <span id="status" class="small"></span>
-      <button id="logoutBtn" type="button" style="margin-left:auto">登出</button>
+      <a href="./audit.html" style="margin-left:auto;font-size:13px;color:#0b5ed7;text-decoration:none" title="檢視所有上傳/刪除/還原的稽核紀錄">🛡️ 稽核</a>
+      <button id="logoutBtn" type="button">登出</button>
     </div>
     <div class="small">上傳/新增資料請使用下方「上傳」區塊；本區只負責從資料庫顯示。Target ID 留空 = 顯示整個專案；填入 = 僅顯示該 target。</div>
 
@@ -212,7 +213,19 @@
   <script>
     // === 基本設定 ===
     const TILE_URL  = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-    const API_BASE  = 'https://celltrail-api.onrender.com/api';
+
+    // API base：本機開發時自動切到 localhost:8000；
+    // 亦可在 <script> 中事先設定 window.__CELLTRAIL_API__ = 'https://xxx' 覆寫
+    const API_BASE = (function () {
+      if (window.__CELLTRAIL_API__) {
+        return window.__CELLTRAIL_API__.replace(/\/$/, '') + '/api';
+      }
+      const host = location.hostname || '';
+      if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/.test(host)) {
+        return 'http://localhost:8000/api';
+      }
+      return 'https://celltrail-api.onrender.com/api';
+    })();
     const SERIES_COLORS = ['#ff3b30', '#ff9500', '#34c759', '#007aff', '#af52de'];
     const OSRM_SERVERS = [
       'https://router.project-osrm.org/route/v1/driving/',
@@ -292,9 +305,10 @@
     }
 
     async function initAuth(){
-      const ok = await verifyToken();
-      if (ok){ showOverlay(false); initAfterLogin(); }
-      else { showOverlay(true); }
+      // 登入已關閉：直接跳過 overlay，進入主介面
+      // 如需恢復登入，把下方兩行還原為 verifyToken 流程即可（見 git 歷史）
+      showOverlay(false);
+      initAfterLogin();
     }
 
     function fmtROC(dt){

@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CellTrail · 稽核紀錄（Audit Log）</title>
+  <style>
+    :root{
+      --primary:#0b5ed7; --bg:#f6f7fa; --card:#fff; --border:#e3e6ee; --text:#222;
+      --sub:#666; --ok:#1f7a3f; --bad:#b3261e; --warn:#a07000;
+      --code-bg:#f3f4f7;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+      font:14px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,'Noto Sans TC';}
+    header{
+      position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--border);
+      padding:10px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    }
+    h1{font-size:18px;margin:0;font-weight:600}
+    a.back{color:var(--primary);text-decoration:none;font-size:13px}
+    a.back:hover{text-decoration:underline}
+
+    .container{max-width:1280px;margin:16px auto;padding:0 16px}
+
+    .filters{
+      background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;
+    }
+    .filters label{font-size:12px;color:var(--sub);display:block;margin-bottom:2px}
+    .filters input,.filters select{
+      width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px;
+    }
+    .filter-row{grid-column:1/-1;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    button{
+      padding:6px 12px;border:1px solid var(--primary);background:var(--primary);color:#fff;
+      border-radius:6px;cursor:pointer;font-size:13px;
+    }
+    button.secondary{background:#fff;color:var(--primary)}
+    button:disabled{opacity:.5;cursor:not-allowed}
+
+    table{
+      width:100%;border-collapse:collapse;background:var(--card);
+      border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:12px;
+    }
+    th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);
+      vertical-align:top;font-size:13px}
+    th{background:#fafbfd;color:var(--sub);font-weight:600;position:sticky;top:50px}
+    tr:hover td{background:#fbfcfe}
+    tr.expanded{background:#f0f7ff}
+    tr.expanded:hover td{background:#e8f1ff}
+    td.action-upload{color:var(--ok);font-weight:600}
+    td.action-delete_target,td.action-delete_target_failed{color:var(--bad);font-weight:600}
+    td.action-restore_target{color:var(--warn);font-weight:600}
+    td.action-upload_failed{color:var(--bad)}
+
+    .details-row{background:var(--code-bg)}
+    .details-row td{padding:0}
+    pre.json{
+      margin:0;padding:12px 16px;font:12px/1.5 'SF Mono','Monaco','Consolas',monospace;
+      max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all;
+    }
+    .pagination{margin-top:12px;display:flex;align-items:center;gap:8px;justify-content:flex-end}
+    .badge{
+      display:inline-block;padding:1px 6px;border-radius:10px;font-size:11px;
+      background:#eef;color:#335;border:1px solid #dde;
+    }
+    .badge.s200{background:#e8f5e9;color:#2e7d32;border-color:#c8e6c9}
+    .badge.s4xx{background:#fff3e0;color:#a07000;border-color:#ffe0b2}
+    .badge.s5xx{background:#ffebee;color:#b3261e;border-color:#ffcdd2}
+    .summary{font-size:13px;color:var(--sub);margin:8px 0}
+    code{background:var(--code-bg);padding:1px 4px;border-radius:3px;font-size:12px}
+    .empty{padding:30px;text-align:center;color:var(--sub)}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🛡️ CellTrail 稽核紀錄</h1>
+    <a class="back" href="./index.html">← 回主畫面</a>
+    <span style="margin-left:auto;color:var(--sub);font-size:12px">
+      append-only ledger · 不可竄改
+    </span>
+  </header>
+
+  <div class="container">
+    <div class="filters">
+      <div>
+        <label>Project ID</label>
+        <input id="f_project" placeholder="例：smoke_test_xxx" />
+      </div>
+      <div>
+        <label>Target ID（target_ref）</label>
+        <input id="f_target" placeholder="例：T001" />
+      </div>
+      <div>
+        <label>Action</label>
+        <select id="f_action">
+          <option value="">（全部）</option>
+        </select>
+      </div>
+      <div>
+        <label>User ID</label>
+        <input id="f_user_id" type="number" min="0" placeholder="例：1" />
+      </div>
+      <div>
+        <label>起始時間</label>
+        <input id="f_since" type="datetime-local" />
+      </div>
+      <div>
+        <label>結束時間</label>
+        <input id="f_until" type="datetime-local" />
+      </div>
+      <div class="filter-row">
+        <button id="btnQuery">🔍 查詢</button>
+        <button id="btnReset" class="secondary">清除條件</button>
+        <button id="btnReport" class="secondary" title="匯出此 project 的證物報告 PDF（需 admin）">📄 匯出 PDF 報告</button>
+        <span class="summary" id="summary"></span>
+      </div>
+    </div>
+
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th style="width:160px">時間</th>
+          <th style="width:140px">Action</th>
+          <th>Target / Project</th>
+          <th style="width:120px">User</th>
+          <th style="width:130px">IP</th>
+          <th style="width:60px">Status</th>
+          <th>Hash</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr><td class="empty" colspan="7">點「查詢」開始載入</td></tr>
+      </tbody>
+    </table>
+
+    <div class="pagination">
+      <button id="prev" class="secondary">← 上一頁</button>
+      <span id="pageInfo">page 1</span>
+      <button id="next" class="secondary">下一頁 →</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import { API } from './api.js';
+
+    const $ = (id) => document.getElementById(id);
+    const tbody = $('tbody');
+    let state = { page: 1, pageSize: 50, total: 0 };
+
+    function getToken() { return localStorage.getItem('token'); }
+
+    async function apiGet(path) {
+      const token = getToken();
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const res = await fetch(`${API}${path}`, { headers });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+      }
+      return res.json();
+    }
+
+    function buildQS() {
+      const qs = new URLSearchParams();
+      const project = $('f_project').value.trim();
+      const target  = $('f_target').value.trim();
+      const action  = $('f_action').value;
+      const userId  = $('f_user_id').value.trim();
+      const since   = $('f_since').value;
+      const until   = $('f_until').value;
+      if (project) qs.set('project_id', project);
+      if (target)  qs.set('target_ref', target);
+      if (action)  qs.set('action', action);
+      if (userId)  qs.set('user_id', userId);
+      if (since)   qs.set('since', new Date(since).toISOString());
+      if (until)   qs.set('until', new Date(until).toISOString());
+      qs.set('page', String(state.page));
+      qs.set('page_size', String(state.pageSize));
+      return qs.toString();
+    }
+
+    function statusBadge(sc) {
+      if (sc == null) return '';
+      const cls = sc < 300 ? 's200' : (sc < 500 ? 's4xx' : 's5xx');
+      return `<span class="badge ${cls}">${sc}</span>`;
+    }
+
+    function escapeHtml(s) {
+      if (s == null) return '';
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      }[c]));
+    }
+
+    function renderRow(it) {
+      const ts = it.ts ? it.ts.replace('T', ' ').replace(/\..*$/,'').replace(/\+.*/,'') : '';
+      const targetCell = `
+        <code>${escapeHtml(it.target_ref || '')}</code>
+        <div style="color:var(--sub);font-size:11px">${escapeHtml(it.project_id || '')}</div>
+      `;
+      const userCell = `${escapeHtml(it.username || '')}<div style="color:var(--sub);font-size:11px">${escapeHtml(it.role || '')}</div>`;
+      const hashShort = (it.payload_hash || '').slice(0, 12);
+      return `
+        <tr data-id="${it.id}" class="row-main">
+          <td>${escapeHtml(ts)}</td>
+          <td class="action-${escapeHtml(it.action)}">${escapeHtml(it.action)}</td>
+          <td>${targetCell}</td>
+          <td>${userCell}</td>
+          <td><code>${escapeHtml(it.ip || '')}</code></td>
+          <td>${statusBadge(it.status_code)}</td>
+          <td><code title="${escapeHtml(it.payload_hash || '')}">${escapeHtml(hashShort)}…</code></td>
+        </tr>
+      `;
+    }
+
+    function renderDetailsRow(it) {
+      const obj = {
+        details: it.details || {},
+        error_text: it.error_text,
+        full_payload_hash: it.payload_hash,
+        user_agent: it.user_agent,
+      };
+      return `
+        <tr class="details-row" data-detail-of="${it.id}" style="display:none">
+          <td colspan="7">
+            <pre class="json">${escapeHtml(JSON.stringify(obj, null, 2))}</pre>
+          </td>
+        </tr>
+      `;
+    }
+
+    function attachRowToggles() {
+      tbody.querySelectorAll('tr.row-main').forEach(tr => {
+        tr.addEventListener('click', () => {
+          const id = tr.dataset.id;
+          const detail = tbody.querySelector(`tr[data-detail-of="${id}"]`);
+          if (!detail) return;
+          const isOpen = detail.style.display !== 'none';
+          detail.style.display = isOpen ? 'none' : '';
+          tr.classList.toggle('expanded', !isOpen);
+        });
+      });
+    }
+
+    async function loadActions() {
+      try {
+        const r = await apiGet('/api/audit/actions');
+        const sel = $('f_action');
+        for (const it of r.items || []) {
+          const opt = document.createElement('option');
+          opt.value = it.action;
+          opt.textContent = `${it.action}（${it.count}）`;
+          sel.appendChild(opt);
+        }
+      } catch (e) {
+        console.warn('actions load failed:', e);
+      }
+    }
+
+    async function query() {
+      tbody.innerHTML = '<tr><td class="empty" colspan="7">載入中…</td></tr>';
+      try {
+        const data = await apiGet(`/api/audit/logs?${buildQS()}`);
+        state.total = data.total;
+        $('summary').textContent = `共 ${data.total} 筆 · 第 ${data.page} 頁 · 每頁 ${data.page_size} 筆`;
+        $('pageInfo').textContent = `page ${data.page} / ${Math.max(1, Math.ceil(data.total / data.page_size))}`;
+        if (!data.items || data.items.length === 0) {
+          tbody.innerHTML = '<tr><td class="empty" colspan="7">無紀錄</td></tr>';
+          return;
+        }
+        const rows = [];
+        for (const it of data.items) {
+          rows.push(renderRow(it));
+          rows.push(renderDetailsRow(it));
+        }
+        tbody.innerHTML = rows.join('');
+        attachRowToggles();
+      } catch (e) {
+        tbody.innerHTML = `<tr><td class="empty" colspan="7" style="color:var(--bad)">載入失敗：${escapeHtml(e.message)}<br/>※ 若需要 admin 權限，請先在主頁登入。</td></tr>`;
+      }
+    }
+
+    $('btnReport').addEventListener('click', async () => {
+      const project = $('f_project').value.trim();
+      if (!project) { alert('請先填 Project ID'); return; }
+      const target = $('f_target').value.trim();
+      const qs = new URLSearchParams();
+      if (target) qs.set('target_id', target);
+      const url = `${API}/api/projects/${encodeURIComponent(project)}/evidence-report?${qs.toString()}`;
+      // 直接讓瀏覽器下載；若要帶 token，需 fetch + Blob 解法
+      const token = getToken();
+      try {
+        const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+?)"/)?.[1]
+                  || `CellTrail_${project}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(a.href);
+      } catch (e) {
+        alert('匯出失敗：' + e.message);
+      }
+    });
+    $('btnQuery').addEventListener('click', () => { state.page = 1; query(); });
+    $('btnReset').addEventListener('click', () => {
+      ['f_project','f_target','f_user_id','f_since','f_until'].forEach(id => $(id).value = '');
+      $('f_action').value = '';
+      state.page = 1;
+      $('summary').textContent = '';
+      tbody.innerHTML = '<tr><td class="empty" colspan="7">點「查詢」開始載入</td></tr>';
+    });
+    $('prev').addEventListener('click', () => {
+      if (state.page > 1) { state.page--; query(); }
+    });
+    $('next').addEventListener('click', () => {
+      const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
+      if (state.page < maxPage) { state.page++; query(); }
+    });
+
+    // 初始化：先載 action 下拉選單
+    loadActions();
+  </script>
+</body>
+</html>
