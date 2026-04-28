@@ -120,17 +120,40 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
     """
     讀取 .xlsx / .xltx / .xlsm / .xltm 為 row dict。
 
-    處理電信公司常見的「假表頭」格式：
+    W2.1（2026-04-29）：多 sheet 支援
+    ──────────────────────────────────────────
+    舊版 `pd.read_excel(...)` 預設 sheet_name=0，只讀第一張表，導致：
+      - 周蔓達上網歷程.xlsx（13 個月份 sheet）只看到 1 月
+      - 電話通聯+歷程.xlsx（6 個案件主體 sheet）只看到第一個
+      - 彭奕翔網路歷程.xlsx 雖然 sheet 1 已是資料，但 sheet 2「基本人資」
+        含個資（姓名/出生/身分證），不應進入 ingest 路徑
+
+    新版：遍歷所有 sheet，每張 sheet 各自跑「假表頭偵測」，並用兩條
+    保守規則（OR 邏輯）過濾「明顯非資料」的 sheet：
+      A. len(df) < 5  → 太短，視為封面 / 摘要 / 目錄
+      B. header_map 命中 0 → 欄名全不在已知 carrier dialect 內
+                              （如「姓名/電話/出生」這種人資 sheet）
+
+    為何不用 sheet 名稱黑名單？業者命名混亂（基本資料 / 摘要 / 概要 /
+    Summary / 人資...），用內容判斷較穩固；且規則 B 跟著 carrier_profile
+    DB 表走，未來新增別名只需改 DB（W1 架構承諾）。
+
+    附帶效益（forensic data minimization）：規則 B 自然會把人資 sheet
+    擋在 ingest 路徑外。CellTrail 是訴訟證據系統，「只攝入辦案必需的
+    資料」是基本原則。
+
+    處理電信公司常見的「假表頭」格式（每個 sheet 獨立判斷）：
       Excel 第 0 列：跨欄合併儲存格的大標（如「行動上網」「網路歷程」）
       Excel 第 1 列：才是真正的欄位名（啟始時間 / 結束時間 / 基地台位址 ...）
       Excel 第 2 列起：才是資料
-
-    pandas 預設 header=0 會把第 0 列當欄位名，導致除了第一欄外其餘變成
-    'Unnamed: 1' ~ 'Unnamed: N'。偵測規則：當 Unnamed 佔多數欄時，重讀為 header=1。
+    pandas 預設 header=0 會把第 0 列當欄位名，導致除了第一欄外其餘
+    變成 'Unnamed: 1' ~ 'Unnamed: N'。偵測規則：當 Unnamed 佔多數欄
+    時，重讀為 header=1。
 
     型別處理盲點：
-      - pandas.Timestamp / numpy.datetime64 → 用 .to_pydatetime() 轉成 python datetime
-        （切忌用 .item()，部分版本會回 int [ns]，後續 _parse_ts 全部失敗）
+      - pandas.Timestamp / numpy.datetime64 → 用 .to_pydatetime() 轉成
+        python datetime（切忌用 .item()，部分版本會回 int [ns]，後續
+        _parse_ts 全部失敗）
       - 其他 numpy 數值型別才用 .item() 轉原生
     """
     try:
@@ -139,32 +162,68 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
     except Exception as e:
         raise RuntimeError("請先安裝：pip install pandas openpyxl") from e
 
-    # 第一輪：預設 header=0 讀
-    df = pd.read_excel(io.BytesIO(file_bytes))
-    # 偵測「假表頭」：Unnamed 欄位佔多數 → 真正欄位名在第 1 列
-    n_cols = len(df.columns)
-    n_unnamed = sum(1 for c in df.columns if str(c).startswith("Unnamed:"))
-    if n_cols >= 3 and n_unnamed >= max(2, n_cols // 2):
-        df = pd.read_excel(io.BytesIO(file_bytes), header=1)
+    # 一次取得 active header_map（W1 架構，DB 為 SoT）；service 內部會
+    # 自動 fallback 到 _RAW2CANON。連 service import 都失敗（極端狀況，
+    # 例如測試環境完全無 app context）才退到本檔常數
+    try:
+        from app.services.carrier_profile import get_active_header_map
+        active_map = get_active_header_map()
+    except Exception:
+        active_map = HEADER_MAP
 
-    df = df.replace({np.nan: ""})
-    for _, row in df.iterrows():
-        d = {str(k).strip(): row[k] for k in df.columns}
-        for k, v in list(d.items()):
-            # pandas.Timestamp / numpy.datetime64 → python datetime（保留時區邏輯由 _parse_ts 處理）
-            if hasattr(v, "to_pydatetime"):
+    # 用 ExcelFile 列出 sheet 名，避免每張都重新解析整個 workbook
+    xls = pd.ExcelFile(io.BytesIO(file_bytes))
+    skipped_sheets: List[Tuple[str, str]] = []  # (sheet_name, reason)
+
+    for sheet_name in xls.sheet_names:
+        # 第一輪：預設 header=0 讀
+        df = pd.read_excel(xls, sheet_name=sheet_name)
+
+        # 假表頭偵測（每張 sheet 獨立）：Unnamed 多 → 真欄名在第 1 列
+        n_cols = len(df.columns)
+        n_unnamed = sum(1 for c in df.columns if str(c).startswith("Unnamed:"))
+        if n_cols >= 3 and n_unnamed >= max(2, n_cols // 2):
+            df = pd.read_excel(xls, sheet_name=sheet_name, header=1)
+
+        # 規則 A：行數太少（封面 / 摘要 / 目錄）
+        if len(df) < 5:
+            skipped_sheets.append((sheet_name, f"row<5 ({len(df)} rows)"))
+            continue
+
+        # 規則 B：header_map 命中 0（如「姓名/電話/出生」人資 sheet）
+        col_names = [str(c).strip() for c in df.columns]
+        n_match = sum(1 for c in col_names if active_map.get(_canon(c)))
+        if n_match == 0:
+            skipped_sheets.append((sheet_name, "no header match"))
+            continue
+
+        df = df.replace({np.nan: ""})
+        for _, row in df.iterrows():
+            d = {str(k).strip(): row[k] for k in df.columns}
+            for k, v in list(d.items()):
+                # pandas.Timestamp / numpy.datetime64 → python datetime（保留時區邏輯由 _parse_ts 處理）
+                if hasattr(v, "to_pydatetime"):
+                    try:
+                        d[k] = v.to_pydatetime()
+                        continue
+                    except Exception:
+                        pass
+                # 其他 numpy 型別 → python 原生（跳過 str/bytes，避免它們意外實作了 .item()）
                 try:
-                    d[k] = v.to_pydatetime()
-                    continue
+                    if hasattr(v, "item") and not isinstance(v, (str, bytes)):
+                        d[k] = v.item()
                 except Exception:
                     pass
-            # 其他 numpy 型別 → python 原生（跳過 str/bytes，避免它們意外實作了 .item()）
-            try:
-                if hasattr(v, "item") and not isinstance(v, (str, bytes)):
-                    d[k] = v.item()
-            except Exception:
-                pass
-        yield d
+            yield d
+
+    # 跳過的 sheet 留下軌跡（forensic 系統應該可追溯）
+    if skipped_sheets:
+        import logging
+        logging.getLogger(__name__).info(
+            "ingest: skipped %d sheet(s): %s",
+            len(skipped_sheets),
+            ", ".join(f"{n!r}({r})" for n, r in skipped_sheets),
+        )
 
 # ====== 欄位對照（來源→系統） ======
 # ----------------------------------------------------------------------
