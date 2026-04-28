@@ -182,7 +182,8 @@
     <!-- 上傳（單一上傳框，可多檔＋拖放） -->
     <div id="uploader" class="row" style="flex-direction:column;align-items:stretch;gap:8px;width:100%">
       <div id="dropzone" class="dropzone">拖放檔案到此或點擊選擇（可多檔：CSV / Excel / PDF）</div>
-      <input type="file" id="upl" accept=".csv,.txt,.tsv,.xlsx,.xls,.pdf" multiple hidden />
+      <!-- W1: 補完整 OOXML 家族 — .xltx (Excel 範本)、.xlsm (含巨集)、.xltm 是台灣電信業者實際交付會用到的副檔名 -->
+      <input type="file" id="upl" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.xltx,.xltm,.pdf" multiple hidden />
       <div class="row">
         <input type="text" id="tid" placeholder="target_id（全檔共用；留空=以檔名）" />
         <button id="btnUpload">上傳</button>

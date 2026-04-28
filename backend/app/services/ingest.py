@@ -167,6 +167,18 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
         yield d
 
 # ====== 欄位對照（來源→系統） ======
+# ----------------------------------------------------------------------
+# W1 重構（2026-04-27）：
+#   原本 _RAW2CANON 是熱路徑用的 source of truth。重構後：
+#     - DB 表 carrier_profiles 是新的 SoT；ingest 透過 carrier_profile service 取
+#     - 此處 _RAW2CANON 仍保留，但**降級為「DB 不可用時的 fallback 種子」**，
+#       同時是單元測試的對照基準（保證 DB 種子與 code fallback 不會飄離）
+#
+# 加 / 改別名的標準流程（從這個版本起）：
+#   1. 直接在 carrier_profiles 表新增 / 修改 mapping_json（Web admin 介面或 SQL）
+#   2. 呼叫 carrier_profile.invalidate_cache() 讓 worker 立刻生效
+#   3. 不需要改本檔、不需要 deploy
+# ----------------------------------------------------------------------
 _RAW2CANON = {
     # 時間
     "開始連線時間": "start_ts",
@@ -176,6 +188,9 @@ _RAW2CANON = {
     "起始時間": "start_ts",
     "啟始時間": "start_ts",     # 「網路歷程.xltx」用「啟」非「起」
     "終止時間": "end_ts",
+    "時間": "start_ts",          # W1 新增：「0801-0903彭奕翔網路歷程.xlsx」
+    "始話時間": "start_ts",      # W1 新增：「電話通聯+歷程.xlsx」
+    "通聯時間": "start_ts",      # W1 新增：常見通聯紀錄欄名
     # 基地台/地址/識別
     "基地台地址": "cell_addr",
     "基地臺地址": "cell_addr",
@@ -185,6 +200,7 @@ _RAW2CANON = {
     "最終基地臺位址": "cell_addr",
     "站台地址": "cell_addr",
     "地址": "cell_addr",
+    "起址": "cell_addr",          # W1 新增：「周蔓達上網歷程.xlsx」起話端位址
     "基地台編號": "cell_id",
     "基地臺編號": "cell_id",
     "基地台ID": "cell_id",       # Excel 範本有時用 ID 而非「編號」
@@ -194,6 +210,9 @@ _RAW2CANON = {
     "站台編號": "cell_id",
     "站碼": "cell_id",
     "cell_id": "cell_id",
+    "基地台": "cell_id",          # W1 新增：「0801-0903彭奕翔網路歷程.xlsx」
+    "基地台/交換機": "cell_id",   # W1 新增：「電話通聯+歷程.xlsx」
+    "起台": "cell_id",            # W1 新增：「周蔓達上網歷程.xlsx」起話端
     # 其他
     "細胞名稱": "sector_name",
     "小區名稱": "sector_name",
@@ -207,12 +226,24 @@ _RAW2CANON = {
     "方位角": "azimuth",
     "azimuth": "azimuth",
 }
+# 注意：HEADER_MAP 保留為 module-level 物件以維持向後相容
+# （任何外部模組若直接 import HEADER_MAP 不會壞），
+# 但實際 _normalize_row 已不使用此常數，改走 carrier_profile service
 HEADER_MAP = {_canon(k): v for k, v in _RAW2CANON.items()}
 
+
 def _normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    把原始 row dict（來源欄名）正規化成 canonical row dict。
+    W1 起改從 carrier_profile service 取對照表（DB 為 SoT），
+    DB 不可用時 service 會自動 fallback 到本檔的 _RAW2CANON。
+    """
+    # lazy import 避免 circular（service 也可能 import ingest 做 fallback）
+    from app.services.carrier_profile import get_active_header_map
+    header_map = get_active_header_map()
     out: Dict[str, Any] = {}
     for k, v in (r or {}).items():
-        key = HEADER_MAP.get(_canon(k))
+        key = header_map.get(_canon(k))
         if key:
             out[key] = v
     return out

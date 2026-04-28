@@ -44,9 +44,19 @@ async def lifespan(app: FastAPI):
 
 
 # ---------- CORS 白名單 ----------
+# 為什麼預設要列 5500/5501/5173 三個 dev port：
+#   - 5500：VS Code Live Server 預設
+#   - 5501：5500 被 Live Server 佔住時的 fallback（python3 -m http.server 5501）
+#   - 5173：Vite dev server 預設
+# 上線時用 ENV var CORS_ORIGINS 覆蓋；本機若 .env 已設則以 .env 為準。
 raw = os.getenv(
     "CORS_ORIGINS",
-    "https://celltrail.netlify.app,http://localhost:5500,http://127.0.0.1:5500",
+    ",".join([
+        "https://celltrail.netlify.app",
+        "http://localhost:5500",  "http://127.0.0.1:5500",
+        "http://localhost:5501",  "http://127.0.0.1:5501",
+        "http://localhost:5173",  "http://127.0.0.1:5173",
+    ]),
 )
 allow_origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
 

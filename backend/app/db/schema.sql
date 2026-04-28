@@ -202,6 +202,139 @@ CREATE INDEX IF NOT EXISTS idx_evidence_files_sha256
 CREATE INDEX IF NOT EXISTS idx_evidence_files_uploaded_at
     ON evidence_files (uploaded_at DESC);
 
+-- ---------- Carrier Profiles（W1：欄位對照表從 code 搬到 DB） ----------
+-- 為什麼要這張表：
+--   過往 backend/app/services/ingest.py 裡的 _RAW2CANON 常數寫死在 code，
+--   每次新業者出現新表頭都要：工程師改 code → review → deploy。
+--   把這份對照表搬到 DB 後：
+--     1. 「格式知識」與「處理邏輯」解耦 — 承辦人/管理員可以直接擴充對照表
+--     2. 每筆 profile 都有 created_by / approved_by / approved_at 稽核欄位
+--     3. 為 W2 模板指紋匹配與 W3 LLM 輔助建檔鋪路（llm_assisted / llm_model 欄位先建好）
+--
+-- 資料模型語意：
+--   - 一筆 profile = 一個業者的一份格式 mapping（business_carrier × form_variant）
+--   - is_default = TRUE 的那一筆：當 fingerprint 都沒命中時的全域 fallback
+--   - mapping_json：{"原始欄名": "canonical 欄名", ...}（已正規化的 key 在執行期重算）
+--   - fingerprint：W2 才會用，現在先留空
+CREATE TABLE IF NOT EXISTS carrier_profiles (
+    id              BIGSERIAL PRIMARY KEY,
+
+    -- 識別
+    carrier_name    TEXT NULL,                -- 中華電信 / 台灣大哥大 / 遠傳 / 亞太 / ... NULL=未分類
+    variant_label   TEXT NOT NULL,            -- 例：'ChunghwaTelecom-2024Q3-form'、'default'
+    fingerprint     TEXT NULL,                -- sha256(headers_sorted_joined)；W2 啟用
+
+    -- 對照表本體
+    mapping_json    JSONB NOT NULL,           -- {"開始連線時間":"start_ts", ...}
+
+    -- 政策旗標
+    is_default      BOOLEAN NOT NULL DEFAULT FALSE,   -- 全域 fallback；最多一筆
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,    -- 軟停用（不在熱路徑被取用）
+
+    -- 稽核欄位
+    notes           TEXT NULL,
+    created_by      BIGINT NULL REFERENCES users(id),
+    approved_by     BIGINT NULL REFERENCES users(id),
+    approved_at     TIMESTAMPTZ NULL,
+
+    -- AI 輔助痕跡（W3 用，先建好欄位避免之後 ALTER）
+    llm_assisted    BOOLEAN NOT NULL DEFAULT FALSE,
+    llm_model       TEXT NULL,                -- 例：'gpt-4o-2024-08-06'、'claude-opus-4-6'
+    llm_prompt_hash TEXT NULL,                -- 對應 prompt 的 sha256（出庭時可重現推導路徑）
+
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 全域 default profile 最多一筆（partial unique index）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_carrier_profiles_one_default
+    ON carrier_profiles (is_default) WHERE is_default = TRUE;
+
+-- W2 模板指紋查詢用
+CREATE INDEX IF NOT EXISTS idx_carrier_profiles_fingerprint
+    ON carrier_profiles (fingerprint) WHERE fingerprint IS NOT NULL;
+
+-- 一般列表查詢
+CREATE INDEX IF NOT EXISTS idx_carrier_profiles_active
+    ON carrier_profiles (is_active, carrier_name);
+
+-- ---------- Seed：default profile（把現行 _RAW2CANON 灌進去 + 補新樣本檔別名） ----------
+-- 為什麼要在 schema 內種子化：
+--   ingest.py 在 W1 後改成「從 DB 讀 mapping」；若 DB 沒有任何 default profile，
+--   程式會 fallback 回 code 內的 _RAW2CANON 常數。為了讓「DB 是 SoT (source of truth)」
+--   名實相符，schema apply 完就要有一筆 default profile 在線。
+--
+-- 冪等性保證：用 NOT EXISTS 條件式 INSERT，重跑 schema.sql 不會建出第二筆。
+--
+-- 別名來源：
+--   1. ingest.py:_RAW2CANON 既有 36 個鍵
+--   2. 4 個真實樣本檔新增（已驗證能對齊 schema 欄位）：
+--      - 「時間」「始話時間」「通聯時間」 → start_ts
+--      - 「基地台」「基地台/交換機」「起台」 → cell_id
+--      - 「起址」 → cell_addr
+--   3. 暫不收的別名（記在 notes，等 W2/W3 加 schema 欄位）：
+--      - 「迄台」「迄址」「迄基地台」「終話基地台」（通話記錄需要 cell_id_end / cell_addr_end）
+--      - 「始話日期」（與「始話時間」拆兩欄，需要 ingest 層做合併規則）
+INSERT INTO carrier_profiles (
+    variant_label, mapping_json, is_default, notes, created_by, approved_by, approved_at
+)
+SELECT
+    'default',
+    $${
+      "開始連線時間": "start_ts",
+      "結束連線時間": "end_ts",
+      "開始時間":     "start_ts",
+      "結束時間":     "end_ts",
+      "起始時間":     "start_ts",
+      "啟始時間":     "start_ts",
+      "終止時間":     "end_ts",
+      "時間":         "start_ts",
+      "始話時間":     "start_ts",
+      "通聯時間":     "start_ts",
+
+      "基地台地址":     "cell_addr",
+      "基地臺地址":     "cell_addr",
+      "基地台位址":     "cell_addr",
+      "基地臺位址":     "cell_addr",
+      "最終基地台位址": "cell_addr",
+      "最終基地臺位址": "cell_addr",
+      "站台地址":       "cell_addr",
+      "地址":           "cell_addr",
+      "起址":           "cell_addr",
+
+      "基地台編號":   "cell_id",
+      "基地臺編號":   "cell_id",
+      "基地台ID":     "cell_id",
+      "基地臺ID":     "cell_id",
+      "最終基地台ID": "cell_id",
+      "最終基地臺ID": "cell_id",
+      "站台編號":     "cell_id",
+      "站碼":         "cell_id",
+      "cell_id":      "cell_id",
+      "基地台":         "cell_id",
+      "基地台/交換機": "cell_id",
+      "起台":           "cell_id",
+
+      "細胞名稱":   "sector_name",
+      "小區名稱":   "sector_name",
+      "台號":       "site_code",
+      "站號":       "site_code",
+      "站名":       "site_code",
+      "細胞":       "sector_id",
+      "小區":       "sector_id",
+      "cell":       "sector_id",
+      "方位":       "azimuth",
+      "方位角":     "azimuth",
+      "azimuth":    "azimuth"
+    }$$::jsonb,
+    TRUE,
+    '系統預設 fallback profile：搬遷自 ingest.py:_RAW2CANON（36 個別名）+ 4 個真實樣本檔新增別名（時間/始話時間/通聯時間/基地台/基地台-斜線-交換機/起台/起址）。'
+    || E'\n暫不收的別名（待 W2/W3 處理）：迄台、迄址、迄基地台、終話基地台（缺 cell_id_end 欄位）；始話日期（需與始話時間合併規則）。',
+    NULL, NULL, NULL
+WHERE NOT EXISTS (
+    SELECT 1 FROM carrier_profiles WHERE is_default = TRUE
+);
+
 -- ---------- Seed：初始管理員 ----------
 -- 僅在 users 表為空時建立預設 admin 帳號；
 -- 預設帳號：admin / admin123（上線前請務必修改）
