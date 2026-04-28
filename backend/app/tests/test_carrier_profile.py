@@ -237,3 +237,64 @@ def test_normalize_row_uses_service(monkeypatch):
     assert norm == {"start_ts": "2026-04-27 10:00:00"}
 
     cp.invalidate_cache()
+
+
+# ─────────────────────────────────────────────────────────────
+# 7. W1.5：多源欄位空值不覆蓋（empty-value clobber bug 回歸測試）
+# ─────────────────────────────────────────────────────────────
+def test_multi_source_fallback_does_not_clobber(monkeypatch):
+    """
+    W1.5 hotfix 回歸測試（2026-04-28）
+    ─────────────────────────────────
+    Bug：多個原始欄名映射到同一 canonical key 時（例如「基地台 ID」與
+         「最終基地台 ID」皆 → cell_id），舊版 _normalize_row 直接
+         `out[key] = v` 會被「順序在後的空值」蓋掉先前的有效值，
+         造成下游 `not cell_addr and not cell_id` 誤殺整列。
+
+    現場症狀：網路歷程.xltx 與 網路歷程-2a0c1c9a.xltx 兩個 .xltx 樣本
+              均只能 ingest 124/149（83%），25 列被無故剔除。
+
+    驗法：以 4 個情境 case 驗證「先到先得 + 非空覆蓋」語意：
+      1) 第一欄有值、第二欄空字串 → 保留第一欄
+      2) 第一欄空字串、第二欄有值 → 改寫成第二欄（合理 fallback）
+      3) 第一欄 None、第二欄純空白 → 兩個都跳過，key 不該出現
+      4) 兩欄都有值（都非空） → 後者覆蓋前者（dict 走訪順序為準，行為等同舊版）
+    """
+    import app.services.carrier_profile as cp
+    from app.services.ingest import _normalize_row
+
+    # 用 default profile fallback（_RAW2CANON 已含「基地台 ID」、
+    # 「最終基地台 ID」雙鍵指向 cell_id；「基地台位址」、「最終基地台位址」
+    # 雙鍵指向 cell_addr），確保測試不依賴 DB
+    monkeypatch.setattr(cp, "_load_default_profile_from_db", lambda: None)
+    cp.invalidate_cache()
+
+    # case 1：先有值、後空字串 → 不可被空字串清掉
+    out = _normalize_row({"基地台ID": "ABC123", "最終基地台ID": ""})
+    assert out.get("cell_id") == "ABC123", (
+        "W1.5 bug 復發：空字串覆蓋了已有值"
+    )
+
+    # case 2：先空字串、後有值 → 後值勝出（fallback 語意）
+    out = _normalize_row({"基地台ID": "", "最終基地台ID": "XYZ789"})
+    assert out.get("cell_id") == "XYZ789", (
+        "fallback 失靈：第二來源的有效值未被採納"
+    )
+
+    # case 3：兩來源都是空 → key 不該出現（避免下游誤判為「有值」）
+    out = _normalize_row({"基地台ID": None, "最終基地台ID": "   "})
+    assert "cell_id" not in out, (
+        "兩來源皆空時 cell_id 不應產生（會干擾 not cell_id 判斷）"
+    )
+
+    # case 4：兩來源都非空 → 後者覆蓋前者（dict 走訪順序，與舊版相容）
+    out = _normalize_row({"基地台ID": "FIRST", "最終基地台ID": "FINAL"})
+    assert out.get("cell_id") == "FINAL", (
+        "兩來源都非空時應由後者覆蓋（保留向後相容）"
+    )
+
+    # 同樣機制套用 cell_addr：先有後空，不應被覆蓋
+    out = _normalize_row({"基地台位址": "台北市信義區忠孝東路1號", "最終基地台位址": ""})
+    assert out.get("cell_addr") == "台北市信義區忠孝東路1號"
+
+    cp.invalidate_cache()

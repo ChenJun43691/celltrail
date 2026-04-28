@@ -237,6 +237,19 @@ def _normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
     把原始 row dict（來源欄名）正規化成 canonical row dict。
     W1 起改從 carrier_profile service 取對照表（DB 為 SoT），
     DB 不可用時 service 會自動 fallback 到本檔的 _RAW2CANON。
+
+    W1.5 修補（2026-04-28）：多源欄位空值不覆蓋 bug
+    ────────────────────────────────────────────────
+    問題：多個原始欄名可能映射到同一 canonical key（例如「基地台 ID」與
+          「最終基地台 ID」皆 → cell_id）。dict 走訪順序若空值在後，
+          舊版 `out[key] = v` 會把先前已寫入的有效值蓋成空字串，導致
+          下游 `not cell_addr and not cell_id` 判斷誤殺整列。
+    解法：對 None / 空字串 / 純空白值直接 continue，不回寫到 out；
+          這形同「先到先得 + 非空覆蓋」的 fallback 語意，與電信業者
+          多版本欄位（最終/起始/當前）的實務一致。
+
+    這個小改動單獨修復 .xltx 樣本 124/149 → 149/149 的缺口；
+    對 W2（複合欄、業者語意衝突）不適用，那是後續 milestone 範疇。
     """
     # lazy import 避免 circular（service 也可能 import ingest 做 fallback）
     from app.services.carrier_profile import get_active_header_map
@@ -244,8 +257,12 @@ def _normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for k, v in (r or {}).items():
         key = header_map.get(_canon(k))
-        if key:
-            out[key] = v
+        if not key:
+            continue
+        # 多源欄位 fallback：空值（None / 空字串 / 純空白）不覆蓋已有值
+        if v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        out[key] = v
     return out
 
 # ====== DB 寫入（避免 prepared statement 衝突） ======
