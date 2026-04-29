@@ -298,3 +298,46 @@ def test_multi_source_fallback_does_not_clobber(monkeypatch):
     assert out.get("cell_addr") == "台北市信義區忠孝東路1號"
 
     cp.invalidate_cache()
+
+
+# ─────────────────────────────────────────────────────────────
+# 8. W2.2：「電話通聯+歷程.xlsx」網路歷程 sheet 方言別名
+# ─────────────────────────────────────────────────────────────
+def test_w2_2_dialect_aliases(monkeypatch):
+    """
+    W2.2（2026-04-29）方言別名回歸測試
+    ─────────────────────────────────
+    背景：「電話通聯+歷程.xlsx」「嫌2/害 網路歷程」sheet 用一組與其他
+    carrier 完全不同的欄名（俗稱「方言」）：
+      - 「手機連到基地台的時間」、「連到internet的時間」 → start_ts
+      - 「基地台代碼」 → cell_id
+
+    其中「手機連到基地台的時間」在實測樣本中常為空字串；真正帶值的是
+    「連到internet的時間」。我們同時收兩個別名 → 配合 W1.5 空值 fallback
+    語意，自然會挑出有值的那欄。
+
+    驗法：強制 fallback 走 _RAW2CANON，三個方言鍵 canon 後都要在
+    header_map 找到對應 canonical。
+    """
+    import app.services.carrier_profile as cp
+    from app.services.carrier_profile import _canon
+
+    # 走 fallback（即使 DB 沒 seed 也通過 → 證明 _RAW2CANON 已收）
+    monkeypatch.setattr(cp, "_load_default_profile_from_db", lambda: None)
+    cp.invalidate_cache()
+    hm = cp.get_active_header_map()
+
+    # 時間方言：兩個鍵都映射 start_ts（W1.5 會挑非空那欄）
+    assert hm[_canon("手機連到基地台的時間")] == "start_ts", (
+        "W2.2 別名缺漏：手機連到基地台的時間 應 → start_ts"
+    )
+    assert hm[_canon("連到internet的時間")] == "start_ts", (
+        "W2.2 別名缺漏：連到internet的時間 應 → start_ts（這欄是真正帶值的）"
+    )
+
+    # 基地台方言
+    assert hm[_canon("基地台代碼")] == "cell_id", (
+        "W2.2 別名缺漏：基地台代碼 應 → cell_id"
+    )
+
+    cp.invalidate_cache()

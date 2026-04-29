@@ -201,7 +201,9 @@ def test_skip_no_header_match(monkeypatch, caplog):
         all_keys.update(r.keys())
     assert "姓名" not in all_keys
     assert "身分證" not in all_keys
-    assert any("基本人資" in m and "no header match" in m for m in caplog.messages)
+    # W2.2（2026-04-29）：規則 B 觸發訊息從「no header match」改為
+    # 「header matches < N (best=K)」，因新演算法用命中分數而非二元判斷
+    assert any("基本人資" in m and "header matches" in m for m in caplog.messages)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -231,9 +233,10 @@ def test_skip_short_takes_precedence(monkeypatch, caplog):
     # 規則 A 短路 → log 應只出現一次「封面」
     封面_logs = [m for m in caplog.messages if "封面" in m]
     assert len(封面_logs) == 1, f"應該只有一筆 log；實際：{封面_logs}"
-    # 短路規則為 A（行<5），不該看到 "no header match"
+    # 短路規則為 A（行<5），不該看到規則 B 的字串
+    # W2.2：規則 B 訊息從「no header match」改為「header matches」
     assert "row<5" in 封面_logs[0]
-    assert "no header match" not in 封面_logs[0]
+    assert "header matches" not in 封面_logs[0]
 
 
 # ─────────────────────────────────────────────────────────────

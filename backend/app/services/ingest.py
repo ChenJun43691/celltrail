@@ -122,33 +122,39 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
 
     W2.1（2026-04-29）：多 sheet 支援
     ──────────────────────────────────────────
-    舊版 `pd.read_excel(...)` 預設 sheet_name=0，只讀第一張表，導致：
-      - 周蔓達上網歷程.xlsx（13 個月份 sheet）只看到 1 月
-      - 電話通聯+歷程.xlsx（6 個案件主體 sheet）只看到第一個
-      - 彭奕翔網路歷程.xlsx 雖然 sheet 1 已是資料，但 sheet 2「基本人資」
-        含個資（姓名/出生/身分證），不應進入 ingest 路徑
+    舊版只讀第一張表 → 周蔓達 13 月只看到 1 月、電話通聯+歷程 6 個案件
+    主體只看到第一個。改為遍歷所有 sheet。
 
-    新版：遍歷所有 sheet，每張 sheet 各自跑「假表頭偵測」，並用兩條
-    保守規則（OR 邏輯）過濾「明顯非資料」的 sheet：
-      A. len(df) < 5  → 太短，視為封面 / 摘要 / 目錄
-      B. header_map 命中 0 → 欄名全不在已知 carrier dialect 內
-                              （如「姓名/電話/出生」這種人資 sheet）
+    W2.2（2026-04-29）：表頭埋深偵測 + 命中分數機制
+    ────────────────────────────────────────────────
+    舊版只能偵測「row 0 大標、row 1 真表頭」這種固定 supertitle pattern，
+    對於電話通聯+歷程.xlsx 的真實情境完全失靈：
+      - 嫌1 雙向歷程：真表頭在 row 10（前面 5-9 是 PII 個人資料區）
+      - 嫌1 網路歷程：真表頭在 row 22（前面 21 列是查詢條件 + 用戶資訊）
+      - 嫌2/害 雙向 / 網路歷程：真表頭都在 row 5（前 4 列是查詢條件）
 
-    為何不用 sheet 名稱黑名單？業者命名混亂（基本資料 / 摘要 / 概要 /
-    Summary / 人資...），用內容判斷較穩固；且規則 B 跟著 carrier_profile
-    DB 表走，未來新增別名只需改 DB（W1 架構承諾）。
+    新版演算法（取代舊 Unnamed 偵測，後者是本演算法 N=2 的特例）：
+      1. 用 header=None 讀整張 sheet 為 df_raw
+      2. scan 前 N=25 列，逐列計算「該列有幾個 cell 命中 active header_map」
+      3. 取「命中數最多」的列當 header（同分時取首次出現）
+      4. 若最高命中數 < M=2 → 規則 B 跳過（保留 W2.1 行為的概念）
+      5. 若 sheet 總列數 < 5 → 規則 A 跳過（同上）
 
-    附帶效益（forensic data minimization）：規則 B 自然會把人資 sheet
-    擋在 ingest 路徑外。CellTrail 是訴訟證據系統，「只攝入辦案必需的
-    資料」是基本原則。
+    為何 N=25：實測最深的真表頭在 row 22，預留 buffer。
+    為何 M=2：M=1 太鬆（PII sheet 的「地址」單欄會誤命中），
+              M=3 太嚴（縮減 schema 會誤殺）。
+    為何「首次出現」而非「最後出現」：嫌1 雙向歷程 row 10/11 重複表頭
+              文字，挑首次（row 10）→ row 11 變假資料列、ingest 端
+              `_parse_ts('始話時間')` 必定失敗 → 自動過濾。雙重保險。
 
-    處理電信公司常見的「假表頭」格式（每個 sheet 獨立判斷）：
-      Excel 第 0 列：跨欄合併儲存格的大標（如「行動上網」「網路歷程」）
-      Excel 第 1 列：才是真正的欄位名（啟始時間 / 結束時間 / 基地台位址 ...）
-      Excel 第 2 列起：才是資料
-    pandas 預設 header=0 會把第 0 列當欄位名，導致除了第一欄外其餘
-    變成 'Unnamed: 1' ~ 'Unnamed: N'。偵測規則：當 Unnamed 佔多數欄
-    時，重讀為 header=1。
+    附帶效益（forensic data minimization）：表頭之上的 PII metadata
+    （姓名/身分證/出生）會被自動切掉，不會 yield 出來；純人資 sheet
+    （無真表頭可命中）也仍被規則 B 擋下。
+
+    處理電信公司常見的「假表頭」格式：本演算法已自然涵蓋
+      - row 0 = 真表頭（純資料表）→ best_idx=0
+      - row 0 = 跨欄大標、row 1 = 真表頭（W2.1 supertitle）→ best_idx=1
+      - row 0~k = metadata、row k+1 = 真表頭（W2.2 buried）→ best_idx=k+1
 
     型別處理盲點：
       - pandas.Timestamp / numpy.datetime64 → 用 .to_pydatetime() 轉成
@@ -171,30 +177,72 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
     except Exception:
         active_map = HEADER_MAP
 
+    SCAN_WINDOW = 25         # 表頭最多埋多深（實測 row 22 是當前已知最深）
+    MIN_HEADER_MATCHES = 2   # 真表頭至少要命中幾欄才算數
+
+    def _is_empty_cell(c) -> bool:
+        if c is None:
+            return True
+        if isinstance(c, str):
+            return not c.strip()
+        try:
+            return bool(pd.isna(c))
+        except Exception:
+            return False
+
     # 用 ExcelFile 列出 sheet 名，避免每張都重新解析整個 workbook
     xls = pd.ExcelFile(io.BytesIO(file_bytes))
     skipped_sheets: List[Tuple[str, str]] = []  # (sheet_name, reason)
 
     for sheet_name in xls.sheet_names:
-        # 第一輪：預設 header=0 讀
-        df = pd.read_excel(xls, sheet_name=sheet_name)
+        # 整張 raw 讀（無 header），讓我們可以掃任意列當 header
+        df_raw = pd.read_excel(xls, sheet_name=sheet_name, header=None)
 
-        # 假表頭偵測（每張 sheet 獨立）：Unnamed 多 → 真欄名在第 1 列
-        n_cols = len(df.columns)
-        n_unnamed = sum(1 for c in df.columns if str(c).startswith("Unnamed:"))
-        if n_cols >= 3 and n_unnamed >= max(2, n_cols // 2):
-            df = pd.read_excel(xls, sheet_name=sheet_name, header=1)
-
-        # 規則 A：行數太少（封面 / 摘要 / 目錄）
-        if len(df) < 5:
-            skipped_sheets.append((sheet_name, f"row<5 ({len(df)} rows)"))
+        # 規則 A：總列數 < 5（含潛在 header），不算資料表
+        if len(df_raw) < 5:
+            skipped_sheets.append((sheet_name, f"row<5 ({len(df_raw)} rows)"))
             continue
 
-        # 規則 B：header_map 命中 0（如「姓名/電話/出生」人資 sheet）
-        col_names = [str(c).strip() for c in df.columns]
-        n_match = sum(1 for c in col_names if active_map.get(_canon(c)))
-        if n_match == 0:
-            skipped_sheets.append((sheet_name, "no header match"))
+        # W2.2 核心：scan 前 SCAN_WINDOW 列，找命中 header_map 最多的列
+        scan_n = min(SCAN_WINDOW, len(df_raw))
+        best_idx = -1
+        best_match = 0
+        for ri in range(scan_n):
+            row = df_raw.iloc[ri]
+            n = 0
+            for c in row:
+                if _is_empty_cell(c):
+                    continue
+                if active_map.get(_canon(str(c))):
+                    n += 1
+            if n > best_match:
+                best_match = n
+                best_idx = ri
+
+        # 規則 B：scan 視窗內無夠強的 header → 視為非資料 sheet
+        if best_match < MIN_HEADER_MATCHES:
+            skipped_sheets.append(
+                (sheet_name, f"header matches < {MIN_HEADER_MATCHES} (best={best_match})")
+            )
+            continue
+
+        # 切片：best_idx 是 header row，其下是資料
+        header_row = df_raw.iloc[best_idx]
+        header: List[str] = []
+        for i, c in enumerate(header_row):
+            if _is_empty_cell(c):
+                # 空 header cell 給佔位名，避免 pandas 對重複 NaN 抱怨
+                header.append(f"_unnamed_{i}")
+            else:
+                header.append(str(c).strip())
+        df = df_raw.iloc[best_idx + 1:].copy()
+        df.columns = header
+
+        # 規則 A 二次校驗：去 header 後資料列若 < 1，跳過（罕見但保險）
+        if len(df) < 1:
+            skipped_sheets.append(
+                (sheet_name, f"no data row after header at row{best_idx+1}")
+            )
             continue
 
         df = df.replace({np.nan: ""})
@@ -250,6 +298,8 @@ _RAW2CANON = {
     "時間": "start_ts",          # W1 新增：「0801-0903彭奕翔網路歷程.xlsx」
     "始話時間": "start_ts",      # W1 新增：「電話通聯+歷程.xlsx」
     "通聯時間": "start_ts",      # W1 新增：常見通聯紀錄欄名
+    "手機連到基地台的時間": "start_ts",  # W2.2：「電話通聯+歷程.xlsx」網路歷程 sheet 方言（此 carrier 常空，留作保險）
+    "連到internet的時間":   "start_ts",  # W2.2：同上，此 carrier 真正帶值的時間欄
     # 基地台/地址/識別
     "基地台地址": "cell_addr",
     "基地臺地址": "cell_addr",
@@ -272,6 +322,7 @@ _RAW2CANON = {
     "基地台": "cell_id",          # W1 新增：「0801-0903彭奕翔網路歷程.xlsx」
     "基地台/交換機": "cell_id",   # W1 新增：「電話通聯+歷程.xlsx」
     "起台": "cell_id",            # W1 新增：「周蔓達上網歷程.xlsx」起話端
+    "基地台代碼": "cell_id",       # W2.2：「電話通聯+歷程.xlsx」網路歷程 sheet 方言
     # 其他
     "細胞名稱": "sector_name",
     "小區名稱": "sector_name",
