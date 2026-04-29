@@ -318,6 +318,9 @@ SELECT
       "起台":           "cell_id",
       "基地台代碼":     "cell_id",
 
+      "迄基地台":   "cell_id_compound",
+      "終話基地台": "cell_id_compound",
+
       "細胞名稱":   "sector_name",
       "小區名稱":   "sector_name",
       "台號":       "site_code",
@@ -331,8 +334,8 @@ SELECT
       "azimuth":    "azimuth"
     }$$::jsonb,
     TRUE,
-    '系統預設 fallback profile：搬遷自 ingest.py:_RAW2CANON（36 個別名）+ 4 個真實樣本檔新增別名（時間/始話時間/通聯時間/基地台/基地台-斜線-交換機/起台/起址）+ W2.2 網路歷程方言（手機連到基地台的時間/連到internet的時間/基地台代碼）。'
-    || E'\n暫不收的別名（待 W2.3/W2.4 處理）：迄台、迄址、迄基地台、終話基地台（缺 cell_id_end 欄位）；始話日期（需與始話時間合併規則）。',
+    '系統預設 fallback profile：搬遷自 ingest.py:_RAW2CANON（36 個別名）+ 4 個真實樣本檔新增別名（時間/始話時間/通聯時間/基地台/基地台-斜線-交換機/起台/起址）+ W2.2 網路歷程方言（手機連到基地台的時間/連到internet的時間/基地台代碼）+ W2.3 複合欄（迄基地台/終話基地台 → cell_id_compound，由 _normalize_row 拆解）。'
+    || E'\n暫不收的別名（待 W2.4 處理）：迄台、迄址（單純迄話端，需先補 cell_id_end / cell_addr_end 欄位）；始話日期（需與始話時間合併規則）。',
     NULL, NULL, NULL
 WHERE NOT EXISTS (
     SELECT 1 FROM carrier_profiles WHERE is_default = TRUE

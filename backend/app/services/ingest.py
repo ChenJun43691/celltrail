@@ -323,6 +323,12 @@ _RAW2CANON = {
     "基地台/交換機": "cell_id",   # W1 新增：「電話通聯+歷程.xlsx」
     "起台": "cell_id",            # W1 新增：「周蔓達上網歷程.xlsx」起話端
     "基地台代碼": "cell_id",       # W2.2：「電話通聯+歷程.xlsx」網路歷程 sheet 方言
+    # ── W2.3：複合欄（cell_id + 空格 + 地址 + 可選代次標籤）──
+    # canonical key 故意用 cell_id_compound 而非 cell_id，作為 dispatch tag：
+    # _normalize_row 看到此 key 會走「拆解 → 分填 cell_id / cell_addr」路徑。
+    # 直接 mapping 到 cell_id 會誤觸其他 carrier 的純 ID 欄，破壞既有行為。
+    "迄基地台":   "cell_id_compound",   # W2.3：「彭奕翔網路歷程.xlsx」迄話端複合欄
+    "終話基地台": "cell_id_compound",   # W2.3：同義別名，預留其他 carrier
     # 其他
     "細胞名稱": "sector_name",
     "小區名稱": "sector_name",
@@ -342,6 +348,36 @@ _RAW2CANON = {
 HEADER_MAP = {_canon(k): v for k, v in _RAW2CANON.items()}
 
 
+def _split_compound_cell(v: Any) -> Tuple[Optional[str], Optional[str]]:
+    """
+    W2.3：把「cell_id + 空格 + 地址 + 可選代次標籤」的複合欄拆成
+    (cell_id, cell_addr)。源於彭奕翔網路歷程.xlsx 的「迄基地台」欄
+    實測格式 100% 統一：'46601493130200051012 新北市中和區...(4G)'。
+
+    切法：用第一段空白為分隔；前段視為 cell_id，後段（含可能的代次
+    標籤）視為 cell_addr。代次標籤 `(4G)` / `(5G)` 等保留在 cell_addr
+    內，符合 forensic「保留原始」原則（將來分析需要可再 regex 抽出）。
+
+    邊界處理：
+      - 空 / None → (None, None)
+      - 只有單一 token 且含中文 → 視為純地址：(None, addr)
+      - 只有單一 token 且不含中文 → 視為純 ID：(cell_id, None)
+      - 「     單純空白」→ (None, None)
+    """
+    if v is None:
+        return (None, None)
+    s = str(v).strip()
+    if not s:
+        return (None, None)
+    parts = s.split(None, 1)  # 任意空白切，最多切 1 次
+    if len(parts) == 2:
+        return (parts[0], parts[1].strip())
+    # 單一 token：用是否含中文分辨「純 ID」還是「純地址」
+    if any('\u4e00' <= c <= '\u9fff' for c in s):
+        return (None, s)
+    return (s, None)
+
+
 def _normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
     """
     把原始 row dict（來源欄名）正規化成 canonical row dict。
@@ -358,13 +394,27 @@ def _normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
           這形同「先到先得 + 非空覆蓋」的 fallback 語意，與電信業者
           多版本欄位（最終/起始/當前）的實務一致。
 
-    這個小改動單獨修復 .xltx 樣本 124/149 → 149/149 的缺口；
-    對 W2（複合欄、業者語意衝突）不適用，那是後續 milestone 範疇。
+    W2.3 擴充（2026-04-29）：複合欄拆解
+    ─────────────────────────────────────
+    問題：彭奕翔網路歷程.xlsx 的「基地台」欄全空、真實資訊在「迄基地台」
+          欄，且該欄是「ID + 空格 + 地址 + (4G)」的複合格式。
+    解法：新 canonical key `cell_id_compound` 作為 dispatch 標記；
+          走 _split_compound_cell 拆出 cell_id / cell_addr，分填到對應 key。
+    與 W1.5 共存：採兩階段 normalize：
+      Pass 1：所有直接欄 → 走 W1.5 既有「後者覆蓋」語意（行為完全不變）
+      Pass 2：複合欄拆解結果 → 只在 cell_id / cell_addr 仍空時填入
+              （fallback 角色，絕不蓋過原生欄位）
+    這個設計的取捨：
+      - 不破壞 W1.5 任何既有測試（直接欄路徑零異動）
+      - 複合欄永遠是 fallback 而非 override（forensic「直接資料優先」紀律）
     """
     # lazy import 避免 circular（service 也可能 import ingest 做 fallback）
     from app.services.carrier_profile import get_active_header_map
     header_map = get_active_header_map()
     out: Dict[str, Any] = {}
+    compound_pending: List[Tuple[str, Any]] = []  # (raw_key, value)
+
+    # Pass 1：直接欄（W1.5 既有邏輯，行為不變）
     for k, v in (r or {}).items():
         key = header_map.get(_canon(k))
         if not key:
@@ -372,7 +422,20 @@ def _normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
         # 多源欄位 fallback：空值（None / 空字串 / 純空白）不覆蓋已有值
         if v is None or (isinstance(v, str) and not v.strip()):
             continue
+        if key == "cell_id_compound":
+            # 複合欄延後處理（保證直接欄都走完才填空缺）
+            compound_pending.append((k, v))
+            continue
         out[key] = v
+
+    # Pass 2：複合欄拆解（W2.3）— 只在對應 canonical key 仍空時填入
+    for _k, v in compound_pending:
+        cid, addr = _split_compound_cell(v)
+        if cid and not (str(out.get("cell_id") or "").strip()):
+            out["cell_id"] = cid
+        if addr and not (str(out.get("cell_addr") or "").strip()):
+            out["cell_addr"] = addr
+
     return out
 
 # ====== DB 寫入（避免 prepared statement 衝突） ======
