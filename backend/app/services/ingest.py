@@ -744,7 +744,15 @@ except Exception:  # pragma: no cover
     pdfplumber = None
 
 def _match_col_idx(headers: List[str]) -> Dict[str, int]:
-    """以標準化表頭來找出欄位位置；找不到回傳 -1。"""
+    """以標準化表頭來找出欄位位置；找不到回傳 -1。
+
+    W2.5：兩階段比對，避免子字串歧義（如「細胞名稱」與「細胞」並存時的衝突）：
+      Pass 1（精確）：每個 cands key 找 canon-equal 的 header；命中則認領該 index。
+      Pass 2（子字串備援）：未命中的 cands key 用「`c in name`」鬆散比對，
+                            但跳過 Pass 1 已認領的 index，確保「細胞」不會誤抓到
+                            「細胞名稱」上。同時保留向後相容（如「基地臺編號」
+                            的「臺/台」異體字仍可由 Pass 2 命中）。
+    """
     h = [_canon(x) for x in headers]
     cands = {
         "start": [_canon(x) for x in ["開始連線時間", "開始時間", "起始時間"]],
@@ -756,14 +764,31 @@ def _match_col_idx(headers: List[str]) -> Dict[str, int]:
         "cid":   [_canon(x) for x in ["細胞", "小區", "cell"]],
         "az":    [_canon(x) for x in ["方位", "方位角", "azimuth"]],
     }
-    got: Dict[str, int] = {}
+    got: Dict[str, int] = {key: -1 for key in cands}
+    claimed: set = set()
+
+    # Pass 1：精確匹配（canon equal）優先，避免子字串歧義
     for key, cs in cands.items():
-        idx = -1
         for i, name in enumerate(h):
-            if any(c in name for c in cs):
-                idx = i
+            if i in claimed:
+                continue
+            if name in cs:
+                got[key] = i
+                claimed.add(i)
                 break
-        got[key] = idx
+
+    # Pass 2：未命中的 key 用子字串比對作備援，但跳過已認領 index
+    for key, cs in cands.items():
+        if got[key] >= 0:
+            continue
+        for i, name in enumerate(h):
+            if i in claimed:
+                continue
+            if any(c in name for c in cs):
+                got[key] = i
+                claimed.add(i)
+                break
+
     return got
 
 def _split_columns_fallback(lines: List[str]) -> List[List[str]]:
