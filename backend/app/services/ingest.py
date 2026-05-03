@@ -32,7 +32,20 @@ def _parse_ts(s: Any) -> Optional[datetime]:
       - 2025/08/30 13:31:22     （CSV 標準格式）
       - 2024-09-01 20:06:44     （Excel 網路歷程：dash 連字符）
       - 2024-09-01\xa020:06:44  （Excel 拷貝出來常帶不間斷空格 NBSP）
+      - 2023-01-12T00:48:02.000 （W2.4：中華上網方言 ISO 8601 + 毫秒）
+      - 2023-01-12T00:48:02     （W2.4：ISO 8601 無毫秒）
       - 中文「年月日時分秒」夾雜（最後備援）
+
+    W2.4 設計筆記（為什麼這樣加 ISO 8601）：
+      中華上網方言把時間放在「起台」欄、格式是 ISO 8601 帶 T 分隔 + .000 毫秒。
+      這個格式跟現有「網路歷程.xltx」的 dash+space 格式語意完全等價、只是分隔符
+      不同，所以用「加新 fmt 進 list」的方式擴充最安全 —— 對其他方言的 row 不會
+      造成誤判（Python strptime 嚴格匹配，T 分隔不會 match dash+space 格式）。
+
+      不用 datetime.fromisoformat 是因為：
+        (1) Python 3.10 之前不接受 'Z' 後綴，行為跨版本不一致；
+        (2) 它會吃 '+08:00' 時區資訊，可能跟我們手動加的 TPE_TZ 衝突；
+        (3) 我們刻意只接受「無時區後綴」的 naïve 字串，假設都是台北時間。
     """
     if _is_na(s):
         return None
@@ -48,6 +61,11 @@ def _parse_ts(s: Any) -> Optional[datetime]:
         "%Y/%-m/%-d %H:%M",
         "%Y-%m-%d %H:%M:%S",  # 「網路歷程.xltx」格式
         "%Y-%m-%d %H:%M",
+        # ── W2.4：ISO 8601（T 分隔）─────────────────────────────
+        # 順序：先試含毫秒（更嚴格的格式優先），strptime 嚴格匹配所以
+        # "2023-01-12T00:48:02.000" 不會誤 match "%Y-%m-%dT%H:%M:%S"
+        "%Y-%m-%dT%H:%M:%S.%f",  # W2.4：中華上網方言 12869 列實測 100% 命中
+        "%Y-%m-%dT%H:%M:%S",     # W2.4：ISO 8601 無毫秒備援（其他 carrier 可能用）
     ):
         try:
             dt = datetime.strptime(s, fmt)
@@ -246,6 +264,21 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
             continue
 
         df = df.replace({np.nan: ""})
+
+        # ── W2.4：dialect detection（per-sheet）──────────────────
+        # 在 sheet 進入 yield loop 前一次決定 dialect，避免每 row 重算。
+        # 抽樣前 20 row 給 detector，足以判斷主流類別、又不會讀爆大檔。
+        sample_rows: List[Dict[str, Any]] = []
+        for _, sample_row in df.head(20).iterrows():
+            sample_rows.append({str(k).strip(): sample_row[k] for k in df.columns})
+        sheet_dialect = _detect_dialect(header, sample_rows)
+        # 落 log（forensic 系統應可追溯每 sheet 走的 normalize path）
+        if sheet_dialect:
+            import logging
+            logging.getLogger(__name__).info(
+                "ingest: sheet=%r detected dialect=%r", sheet_name, sheet_dialect
+            )
+
         for _, row in df.iterrows():
             d = {str(k).strip(): row[k] for k in df.columns}
             for k, v in list(d.items()):
@@ -262,6 +295,11 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
                         d[k] = v.item()
                 except Exception:
                     pass
+            # W2.4：用 reserved key 注入 dialect tag。下游 _normalize_row 會
+            # pop 掉這個 key、決定走 dialect path 或標準 path。命名加雙底線
+            # 前後綴是 magic key 的常見 convention，幾乎不可能撞到真欄名。
+            if sheet_dialect:
+                d["__celltrail_dialect__"] = sheet_dialect
             yield d
 
     # 跳過的 sheet 留下軌跡（forensic 系統應該可追溯）
@@ -348,6 +386,87 @@ _RAW2CANON = {
 HEADER_MAP = {_canon(k): v for k, v in _RAW2CANON.items()}
 
 
+# ── W2.4：方言（dialect）系統 ────────────────────────────────────────
+# 為什麼需要：某些電信業者的欄位語意跟標準方言衝突，無法靠全域 alias 解。
+# 例如「中華上網方言」（周蔓達上網歷程.xlsx 12869 列實測 100% 中華上網）：
+#   - 起台 = ISO 8601 時間戳   ← 標準方言 W1 寫成 cell_id（錯）
+#   - 起址 = cell_id 短數字     ← 標準方言 W1 寫成 cell_addr（錯）
+#   - 通話對象 = 基地台地址     ← 標準方言以為是另一通話方號碼
+#
+# 設計取捨（為什麼不直接修 _RAW2CANON）：
+#   _iter_rows_excel 的 header detection（line ~234）用 active_map 計分。
+#   如果移除「起台 / 起址」全域對應，周蔓達 sheet 的真表頭命中分數會降到
+#   0、整個 sheet 被跳過 → 災難。保留全域對應當「header detection 訊號」、
+#   用 dialect override map 當「實際 normalize 規則」，兩者解耦。
+#
+# Dialect 命中時整批替換 active_map（不再走 W1 全域 alias），確保中華上網
+# 方言的 row 行為由 _DIALECT_HEADER_MAPS 完全決定、可控可測。
+_DIALECT_HEADER_MAPS: Dict[str, Dict[str, Optional[str]]] = {
+    "cht_internet": {
+        # ── 中華上網方言核心三欄（周蔓達實測）──
+        "起台":     "start_ts",   # ISO 8601 時間戳，非 cell_id
+        "起址":     "cell_id",    # 短數字 cell_id，非地址
+        "通話對象": "cell_addr",  # 基地台地址，非另一方號碼
+        # ── 方言下無意義的欄位（明確 None 表示「跳過」）──
+        # 為什麼明確列出而非 implicit 跳過：dialect map 採「整批替換」，
+        # 沒列在 map 內的 raw key 都會被 _normalize_row 視為未知欄而跳過，
+        # 但寫出來能讓人讀 code 時清楚知道「這些欄被刻意忽略」。
+        "編號":      None,   # 流水號
+        "調閱號碼":  None,   # 用戶手機號（不入 record_table，PII 隔離）
+        "申設人":    None,   # 申設人（PII）
+        "IMEI":      None,   # 設備 ID（PII）
+        "通話類別":  None,   # dialect 判斷後不需要
+        "轉接電話":  None,
+        "備考":      None,
+        "秒數":      None,   # 上網事件無時長語意
+        "始話日期":  None,   # 此 dialect 真實時間在「起台」，這欄常空
+        "始話時間":  None,
+        "迄台":      None,   # 此 dialect 100% 空（單端事件）
+        "迄址":      None,
+    },
+}
+
+
+def _detect_dialect(
+    headers: Iterable[str],
+    sample_rows: List[Dict[str, Any]],
+) -> Optional[str]:
+    """
+    偵測 sheet 的方言。回傳 dialect key 或 None（None = 標準方言）。
+
+    Sheet-level 而非 row-level：實測周蔓達.xlsx 12869 列 100% 都是
+    「中華上網」、無混合。其他 4 個樣本的 headers 都不含「起台 + 起址」
+    這對指紋欄，所以 detector 不會誤觸。
+
+    Two-signal 驗證（避免誤觸）：
+      訊號 A（必要）：headers 同時包含「起台」和「起址」
+        - 單看任一欄不夠，「起台」單獨可能在其他 carrier 是 cell_id
+      訊號 B（必要）：抽樣前 20 row，「通話類別」≥ 50% 含「上網」
+        - 純通話 carrier 也可能用同樣 header schema、但通話類別不是上網
+        - ≥ 50% 而非 100% 是因為實測同檔內可能有極少數空值或別類別
+
+    為什麼選 20 row 為樣本：足以避開頭部 metadata 雜訊，又不會掃太多
+    傷效能；實測周蔓達 row 0 起就有「中華上網」資料。
+    """
+    h = {str(x).strip() for x in headers if x is not None and str(x).strip()}
+    # 訊號 A：必要 header 指紋
+    if not ({"起台", "起址"} <= h):
+        return None
+    # 訊號 B：通話類別 ≥ 50% 含「上網」
+    cats = []
+    for r in sample_rows[:20]:
+        v = str(r.get("通話類別") or "").strip()
+        if v:
+            cats.append(v)
+    if not cats:
+        # 沒有可判斷的「通話類別」樣本 → 保守拒絕（寧可走標準方言）
+        return None
+    internet_hits = sum(1 for c in cats if "上網" in c)
+    if internet_hits / len(cats) < 0.5:
+        return None
+    return "cht_internet"
+
+
 def _split_compound_cell(v: Any) -> Tuple[Optional[str], Optional[str]]:
     """
     W2.3：把「cell_id + 空格 + 地址 + 可選代次標籤」的複合欄拆成
@@ -378,7 +497,10 @@ def _split_compound_cell(v: Any) -> Tuple[Optional[str], Optional[str]]:
     return (s, None)
 
 
-def _normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_row(
+    r: Dict[str, Any],
+    dialect: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     把原始 row dict（來源欄名）正規化成 canonical row dict。
     W1 起改從 carrier_profile service 取對照表（DB 為 SoT），
@@ -407,7 +529,33 @@ def _normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
     這個設計的取捨：
       - 不破壞 W1.5 任何既有測試（直接欄路徑零異動）
       - 複合欄永遠是 fallback 而非 override（forensic「直接資料優先」紀律）
+
+    W2.4 擴充（2026-04-29）：方言（dialect）系統
+    ─────────────────────────────────────────────
+    參數 dialect：optional dialect key（如 "cht_internet"）。
+      - dialect=None（預設）→ 走原 W1.5/W2.3 邏輯，行為完全不變
+      - dialect 命中（如 "cht_internet"）→ 整批替換 header_map 為
+        _DIALECT_HEADER_MAPS[dialect]，跳過 W1.5 多源 fallback 與
+        W2.3 複合欄拆解（dialect 內無複合欄需求）
+
+    為什麼 dialect path 不繼承 W1.5/W2.3：
+      - dialect 是「整批替換規則」、本來就要可預測；繼承會讓行為依賴
+        全域 alias 順序，違反 dialect 隔離設計初衷
+      - 中華上網方言實測無多源、無複合欄，根本不需這些 fallback 機制
     """
+    # W2.4：若呼叫端未顯式傳 dialect，從 raw row 中讀取 _iter_rows_excel
+    # 注入的 dialect tag。這讓既有呼叫 `_normalize_row(raw)` 完全不需改、
+    # 也支援測試時顯式 `_normalize_row(raw, dialect="cht_internet")`。
+    if dialect is None and r:
+        tag = r.get("__celltrail_dialect__")
+        if isinstance(tag, str) and tag:
+            dialect = tag
+
+    # 若 dialect 命中，走獨立路徑（整批替換 header_map）
+    if dialect and dialect in _DIALECT_HEADER_MAPS:
+        return _normalize_row_dialect(r, dialect)
+
+    # ── 以下為原 W1.5 / W2.3 路徑（dialect=None 時的行為，零改動）──
     # lazy import 避免 circular（service 也可能 import ingest 做 fallback）
     from app.services.carrier_profile import get_active_header_map
     header_map = get_active_header_map()
@@ -416,6 +564,9 @@ def _normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
 
     # Pass 1：直接欄（W1.5 既有邏輯，行為不變）
     for k, v in (r or {}).items():
+        # W2.4：跳過 dialect tag injection key（若不慎流入）
+        if k == "__celltrail_dialect__":
+            continue
         key = header_map.get(_canon(k))
         if not key:
             continue
@@ -436,6 +587,40 @@ def _normalize_row(r: Dict[str, Any]) -> Dict[str, Any]:
         if addr and not (str(out.get("cell_addr") or "").strip()):
             out["cell_addr"] = addr
 
+    return out
+
+
+def _normalize_row_dialect(
+    r: Dict[str, Any],
+    dialect: str,
+) -> Dict[str, Any]:
+    """
+    W2.4：dialect-specific normalize path。
+
+    用 _DIALECT_HEADER_MAPS[dialect] 整批替換 header_map，跳過 W1.5 多源
+    fallback 與 W2.3 複合欄拆解。空值處理仍遵守「空值不覆蓋」（避免單一
+    raw key 在不同 row 出現空字串時破壞 ingest 結果）。
+
+    為什麼不需要兩階段（Pass 1/Pass 2）：
+      dialect map 採「整批替換」、無多 raw key → 同 canonical 的 fallback
+      語意需求；dialect 內也無複合欄定義（中華上網實測無此格式）。
+    """
+    dmap = _DIALECT_HEADER_MAPS[dialect]
+    out: Dict[str, Any] = {}
+    for k, v in (r or {}).items():
+        if k == "__celltrail_dialect__":
+            continue
+        # dialect map 用原 raw key 直接 lookup（不過 _canon），因為 dialect
+        # 內欄名都是已知精確字串（測試亦以精確字串斷言）。若未來方言量
+        # 大、需 fuzzy match，可再改用 _canon。
+        target = dmap.get(str(k).strip())
+        if not target:
+            # None（明確跳過）或 raw key 不在 dialect map → 跳過
+            continue
+        # 空值不覆蓋（與 W1.5 一致原則，避免空字串破壞已寫入的 row）
+        if v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        out[target] = v
     return out
 
 # ====== DB 寫入（避免 prepared statement 衝突） ======

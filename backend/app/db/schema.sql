@@ -273,8 +273,19 @@ CREATE INDEX IF NOT EXISTS idx_carrier_profiles_active
 --      - 「基地台」「基地台/交換機」「起台」 → cell_id
 --      - 「起址」 → cell_addr
 --   3. 暫不收的別名（記在 notes，等 W2/W3 加 schema 欄位）：
---      - 「迄台」「迄址」「迄基地台」「終話基地台」（通話記錄需要 cell_id_end / cell_addr_end）
+--      - 「迄台」「迄址」（單純迄話端，需要 cell_id_end / cell_addr_end，待未來 milestone）
 --      - 「始話日期」（與「始話時間」拆兩欄，需要 ingest 層做合併規則）
+--
+-- W2.4 設計筆記（2026-04-29）：方言（dialect）系統 vs 全域 alias
+--   _RAW2CANON 內「起台 → cell_id」「起址 → cell_addr」這兩條對應是 W1
+--   階段對「起 = 起點」的誤解（中華上網方言實際上「起台 = 時間戳、起址
+--   = cell_id」，語意相反）。但這兩條對應**保留不動**的理由：
+--     - _iter_rows_excel 的 header detection 用 active_map 計分，移除這
+--       兩條會讓周蔓達.xlsx 的真表頭命中分數降到 0、整個 sheet 被跳過
+--     - 設計改採「保留全域 alias 當 header detection 訊號 + 用 dialect
+--       override map 當實際 normalize 規則」雙層架構，兩者解耦
+--   實際正確的對應由 ingest.py:_DIALECT_HEADER_MAPS["cht_internet"] 接管，
+--   detector 命中時走 _normalize_row_dialect 整批替換 header_map。
 INSERT INTO carrier_profiles (
     variant_label, mapping_json, is_default, notes, created_by, approved_by, approved_at
 )
@@ -334,8 +345,8 @@ SELECT
       "azimuth":    "azimuth"
     }$$::jsonb,
     TRUE,
-    '系統預設 fallback profile：搬遷自 ingest.py:_RAW2CANON（36 個別名）+ 4 個真實樣本檔新增別名（時間/始話時間/通聯時間/基地台/基地台-斜線-交換機/起台/起址）+ W2.2 網路歷程方言（手機連到基地台的時間/連到internet的時間/基地台代碼）+ W2.3 複合欄（迄基地台/終話基地台 → cell_id_compound，由 _normalize_row 拆解）。'
-    || E'\n暫不收的別名（待 W2.4 處理）：迄台、迄址（單純迄話端，需先補 cell_id_end / cell_addr_end 欄位）；始話日期（需與始話時間合併規則）。',
+    '系統預設 fallback profile：搬遷自 ingest.py:_RAW2CANON（36 個別名）+ 4 個真實樣本檔新增別名（時間/始話時間/通聯時間/基地台/基地台-斜線-交換機/起台/起址）+ W2.2 網路歷程方言（手機連到基地台的時間/連到internet的時間/基地台代碼）+ W2.3 複合欄（迄基地台/終話基地台 → cell_id_compound，由 _normalize_row 拆解）+ W2.4 dialect 系統（中華上網方言由 ingest.py:_DIALECT_HEADER_MAPS 接管，「起台→start_ts、起址→cell_id、通話對象→cell_addr」此處 alias 保留為 header detection 訊號）。'
+    || E'\n暫不收的別名（待未來 milestone）：迄台、迄址（單純迄話端，需先補 cell_id_end / cell_addr_end 欄位）；始話日期（需與始話時間合併規則）。',
     NULL, NULL, NULL
 WHERE NOT EXISTS (
     SELECT 1 FROM carrier_profiles WHERE is_default = TRUE
