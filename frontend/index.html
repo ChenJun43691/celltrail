@@ -652,7 +652,7 @@
                 ${fmt(p.cell_addr)}<br/>
                 ${fmt(p.start_ts)} → ${fmt(p.end_ts)}<br/>
                 cell_id: ${fmt(p.cell_id)}　azimuth: ${fmt(p.azimuth)}°<br/>
-                精度≈ ${fmt(p.accuracy_m)} m
+                ${(p.azimuth != null) ? `北方基準: ${p.azimuth_ref === 'magnetic' ? '磁北' : p.azimuth_ref === 'true' ? '真北' : '<span style="color:#c00;font-weight:bold">未標註 ⚠ 法庭風險</span>'}<br/>` : ''}${(p.sector_name || p.sector_id || p.site_code) ? `sector: ${fmt(p.sector_name)}（${fmt(p.sector_id)}）　site: ${fmt(p.site_code)}<br/>` : ''}精度≈ ${fmt(p.accuracy_m)} m
               </div>`);
             s.layers.points.addLayer(dot);
 
