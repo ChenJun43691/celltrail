@@ -547,6 +547,8 @@
             <span class="small">·</span>
             <span class="small link" data-k="focus" data-id="${id}">聚焦</span>
             <span class="small">·</span>
+            <span class="small link" data-k="azref" data-id="${id}" title="標註方位角北方基準（法庭可防禦性）">方位角</span>
+            <span class="small">·</span>
             <span class="small link danger" data-k="del" data-id="${id}">刪除</span>
           </span>
         `;
@@ -580,6 +582,9 @@
           const pts = s.records.map(r => [r.lat, r.lng]).filter(([lat,lng]) => Number.isFinite(lat) && Number.isFinite(lng));
           if (pts.length){ map.fitBounds(L.latLngBounds(pts), { padding:[40,40] }); }
         });
+      });
+      el.querySelectorAll('[data-k="azref"]').forEach(a=>{
+        a.addEventListener('click', ()=> openAzRefModal(a.dataset.id));
       });
       el.querySelectorAll('[data-k="del"]').forEach(a=>{
         a.addEventListener('click', ()=> deleteSeriesById(a.dataset.id));
@@ -792,6 +797,106 @@
         console.error('upload failed:', e);
         showToast('上傳失敗：' + (e.message || '請看 Console'),'error',3000);
       }
+    }
+
+    // ── P2.5-B：方位角北方基準標註 modal ───────────────────────
+    // 為什麼要這個 UI：
+    //   schema.azimuth_ref 是 P2.5「法庭可防禦性核心」欄位，後端 PATCH 端點與
+    //   audit_logs 都已就緒，但前端原本沒有入口 → 所有 raw_traces 永停在
+    //   'unknown'。法庭問「這方位角的北方基準為何」，偵查員無法回答。
+    //   此 modal 讓 admin 在查證電信業者書面交付規格後，於 UI 完成標註，
+    //   後端 audit_logs 自動記錄誰、何時、依何證據。
+    // ─────────────────────────────────────────────────────
+    async function openAzRefModal(targetId){
+      const projectId=$('projectId').value.trim();
+      if(!projectId){ alert('請先填入 Project ID'); return; }
+
+      // 查詢目前分佈統計（讓使用者知道目前是什麼狀態）
+      let summary = '（無法查詢目前狀態）';
+      try{
+        const url = `${API_BASE}/projects/${encodeURIComponent(projectId)}/targets/${encodeURIComponent(targetId)}/azimuth-ref`;
+        const res = await fetch(url, { headers: { ...authHeaders() } });
+        if (res.ok){
+          const j = await res.json();
+          const total = j.total || 0;
+          const parts = Object.entries(j.by_ref || {})
+            .map(([k,v])=>`${k}=${v}`).join('、');
+          summary = total > 0 ? `共 ${total} 筆：${parts}` : '此 target 無任何 raw_traces';
+        }
+      }catch(e){ console.warn('azref summary failed:', e); }
+
+      // 動態建立 modal（避免汙染 body 結構，dispose 時整塊移除）
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;';
+      const card = document.createElement('div');
+      card.style.cssText = 'background:#fff;padding:20px 22px;border-radius:8px;min-width:380px;max-width:480px;box-shadow:0 8px 32px rgba(0,0,0,.3);font-family:system-ui,-apple-system,sans-serif;';
+      card.innerHTML = `
+        <div style="font-size:16px;font-weight:bold;margin-bottom:4px">標註方位角北方基準</div>
+        <div style="font-size:12px;color:#555;margin-bottom:14px">target: <code>${targetId}</code><br/>目前狀態：${summary}</div>
+
+        <label style="display:block;margin-bottom:10px;font-size:14px">
+          基準類型
+          <select id="__azrefSelect" style="display:block;width:100%;padding:6px;margin-top:4px;font-size:14px">
+            <option value="magnetic">磁北 (magnetic) — 多數業者預設</option>
+            <option value="true">真北 (true) — 部分業者已校正</option>
+            <option value="unknown">未知 (unknown) — 業者拒絕回覆/無書面</option>
+          </select>
+        </label>
+
+        <label style="display:block;margin-bottom:6px;font-size:14px">
+          書面依據（≥5 字必填）
+          <textarea id="__azrefEvidence" rows="3" style="display:block;width:100%;padding:6px;margin-top:4px;font-size:13px;resize:vertical;font-family:inherit"
+            placeholder="例：中華電信 2026-01-15 函覆 X 字第 12345 號，明示為磁北基準"></textarea>
+        </label>
+        <div id="__azrefError" style="color:#c00;font-size:12px;min-height:16px;margin-bottom:10px"></div>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button id="__azrefCancel" style="padding:6px 14px;font-size:14px;cursor:pointer">取消</button>
+          <button id="__azrefSubmit" style="padding:6px 14px;font-size:14px;cursor:pointer;background:#0066cc;color:#fff;border:none;border-radius:4px">提交標註</button>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:#888;line-height:1.5">
+          ⚠ 此操作會更新此 target 全部「未軟刪」raw_traces 的 azimuth_ref，
+          並由 audit_logs 記錄操作人、時間、書面依據。僅限 admin。
+        </div>
+      `;
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      const dispose = ()=>{ try{ overlay.remove(); }catch{} };
+      card.querySelector('#__azrefCancel').onclick = dispose;
+      overlay.addEventListener('click', e=>{ if (e.target === overlay) dispose(); });
+
+      card.querySelector('#__azrefSubmit').onclick = async ()=>{
+        const ref = card.querySelector('#__azrefSelect').value;
+        const evidence = card.querySelector('#__azrefEvidence').value.trim();
+        const errEl = card.querySelector('#__azrefError');
+        if (evidence.length < 5){
+          errEl.textContent = '書面依據至少 5 字（後端 Pydantic 驗證會拒絕）';
+          return;
+        }
+        errEl.textContent = '';
+        try{
+          const url = `${API_BASE}/projects/${encodeURIComponent(projectId)}/targets/${encodeURIComponent(targetId)}/azimuth-ref`;
+          const res = await fetch(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type':'application/json', ...authHeaders() },
+            body: JSON.stringify({ ref, evidence }),
+          });
+          const txt = await res.text();
+          if (!res.ok){
+            let msg = '';
+            try{ const j=JSON.parse(txt); msg = j.detail || txt; }catch{ msg = txt || ('HTTP '+res.status); }
+            throw new Error(msg);
+          }
+          const j = JSON.parse(txt);
+          dispose();
+          showToast(`已標註 ${j.azimuth_ref}（影響 ${j.affected_rows} 筆）`,'success',2400);
+          await load();  // 重新載入 map 讓 popup 顯示新值
+        }catch(e){
+          console.error('azref patch failed:', e);
+          errEl.textContent = '失敗：' + (e.message || '請看 Console');
+        }
+      };
     }
 
     // 刪除（以資料組列的 target_id 執行）
