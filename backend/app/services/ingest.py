@@ -249,8 +249,15 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
         header: List[str] = []
         for i, c in enumerate(header_row):
             if _is_empty_cell(c):
-                # 空 header cell 給佔位名，避免 pandas 對重複 NaN 抱怨
-                header.append(f"_unnamed_{i}")
+                # W2.6：合併表頭偵測 — 若前欄的 canonical mapping 是 cell_id 類，
+                # 當前空欄是「基地台/交換機」合併表頭的右半欄（含基地台地址）。
+                # 根因：雙向通聯格式 H1:I1 合併儲存格，H=數字 cell_id，I=地址，
+                # pandas 讀 I1=None，沒名字的欄無法 normalize 到 cell_addr。
+                # 修法：偵測到這個 pattern 就直接補上已知別名「基地台地址」。
+                if i > 0 and active_map.get(_canon(header[-1])) in ("cell_id", "cell_id_compound"):
+                    header.append("基地台地址")
+                else:
+                    header.append(f"_unnamed_{i}")
             else:
                 header.append(str(c).strip())
         df = df_raw.iloc[best_idx + 1:].copy()
