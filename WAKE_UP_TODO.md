@@ -1,42 +1,56 @@
-# 醒來要做的事（v7 — OSM 備援啟用 + geocode bug 修復）
+# 醒來要做的事（v8 — W2.6 合併表頭修復 + demo_case 還原）
 
 > 更新時間：2026-05-09
-> 狀態：✅ **15/15 pytest passed**（上輪驗證）+ ✅ **OSM 備援全鏈路驗證通過**
+> 狀態：✅ **15/15 pytest passed**（上輪）+ ✅ **demo_case 8351 列 / 91% geom 命中**
 > 法庭可防禦性：**9/10**
 
 ---
 
 ## 今日（2026-05-09）大事記
 
-1. **CLAUDE.md 建立**（`529d6a9`）— 常用命令、架構、依賴約束、onboard checklist
-2. **WAKE_UP_TODO.md v6**（`209d48f`）— 更新進度與待辦
-3. **geocode 兩個 bug 修復 + OSM 兩段式查詢**（`f155ea5`）：
-   - Bug 1：`_cache_get` 的 `_r.get()` 在 try/except 外，Redis 離線時 `ConnectionRefused` 向上拋出，導致 Google geocode 也失敗（geom 全 NULL）→ 移入 try/except 修復
-   - Bug 2：`_osm_geocode` 自由格式對台灣中文地址命中率 0% → 新增 Pass 2 結構化查詢（號碼前置格式 `city=高雄市 street=211號中正四路`）
-   - `.env` 加入 `GEO_OSM_FALLBACK=1` + `NOMINATIM_EMAIL=chen95572295@gmail.com`
-4. **驗證結果**：`網路歷程.xlsx` 134/134 geom 命中率 **100%**；`/map-layers` 回傳 134 features ✅
+| Commit | 內容 |
+|---|---|
+| `529d6a9` | CLAUDE.md 建立（常用命令、架構、依賴約束） |
+| `209d48f` | WAKE_UP_TODO.md v6 |
+| `f155ea5` | fix(geocode)：Redis 離線 crash 修復 + OSM 兩段式結構化查詢 |
+| `0144343` | WAKE_UP_TODO.md v7 |
+| `eaad084` | .gitignore 補強（案件資料夾、xlsx/pdf/csv、.env 根目錄層） |
+| `6d94818` | **W2.6**：合併表頭偵測（雙向通聯 H1:I1 merged cell → cell_addr 0% → 100%） |
+
+### W2.6 修法說明
+雙向通聯格式的 `基地台/交換機` header 橫跨 H+I 兩欄（合併儲存格）：
+- H 欄：數字 cell_id（已正確對應）
+- I 欄：基地台地址（pandas 讀到 None → 變成 `_unnamed_8` → 無法 normalize）
+
+修法：`_iter_rows_excel` 建 header 時，若空欄前一欄 canonical = `cell_id`，
+自動補名 `基地台地址`，通吃所有「cell_id 右邊接空欄」的合併表頭格式。
+
+### demo_case 目前狀態
+
+| target | rows | geom | % |
+|---|---|---|---|
+| 周蔓達 | 6769 | 6693 | 99% |
+| 楊云豪 | 68 | 68 | 100% |
+| 網路歷程 | 134 | 134 | 100% |
+| 網路歷程_xltx | 149 | 149 | 100% |
+| 雙向通聯 | 18 | 18 | 100% ← W2.6 修復 |
+| 電話通聯 | 1213 | 565 | 47%（資料物理上限） |
+| **合計** | **8351** | **7627** | **91%** |
+
+> 彭奕翔（11246 列）全部 skipped：normalize 欄位正確，但 cell_addr 和 cell_id 資料層面均空，屬資料物理限制，非 bug。
 
 ---
 
 ## 快速啟動（下次 session 標準程序）
 
 ```bash
-# 1) Docker 確認
-open -a Docker   # 若 daemon 沒跑
+open -a Docker
 docker compose -f infra/docker-compose.yml up -d db
-
-# 2) venv 體檢
 cd /Users/chenguanjun/Desktop/Python程序開發/CellTrail/backend
 source .venv/bin/activate
-pip check
-
-# 3) 啟 uvicorn（Terminal A）
-uvicorn app.main:app --port 8000
-
-# 4) 啟前端（Terminal B）
-cd /Users/chenguanjun/Desktop/Python程序開發/CellTrail/frontend
-python3 -m http.server 5501
-# http://127.0.0.1:5501
+uvicorn app.main:app --port 8000 &
+cd ../frontend && python3 -m http.server 5501
+# http://127.0.0.1:5501  admin/admin123
 ```
 
 ---
@@ -47,31 +61,31 @@ python3 -m http.server 5501
 
 | # | Task | 說明 | 估計 |
 |---|---|---|---|
-| 1 | **清 demo_case / osm_test 舊資料** | 測試上傳留下 geom NULL 記錄（osm_test_01/02）+ 重複 evidence_files；影響地圖乾淨度 | 2 分鐘 |
-| 2 | **重新 ingest 楊云豪 PDF** | 68 列 + OSM 備援啟用後重跑，約 70 秒；跑完 `/map-layers` 應有點位 | 2 分鐘 |
+| 1 | **pytest 回歸驗證 W2.6** | `pytest app/tests/ -v`，確認現有 15 個 test 全過，無回歸 | 2 分鐘 |
+| 2 | **彭奕翔 ingest 調查** | 11246 列全 skipped，cell_addr+cell_id 均空。需打開檔案確認欄位結構 | 15 分鐘 |
 | 3 | **P2.5-B acceptance test A~E** | 點「方位角」→ modal → 字數驗證 → 後端錯誤 → 成功 → popup 刷新 | 10 分鐘 |
 
 ### 中期（1-2 小時）
 
 | # | Task | 說明 |
 |---|---|---|
-| 4 | **P2.5-C 法庭防禦性 dashboard** | unknown 比例 / 最近標註人 / audit_logs trail viewer / 報告 PDF 含北方基準 |
+| 4 | **P2.5-C 法庭防禦性 dashboard** | unknown azimuth 比例 / 最近標註人 / audit trail viewer / 報告 PDF 含基準 |
 | 5 | **報告含地圖截圖** | reportlab 嵌 PNG；需 selenium/playwright 或 Leaflet 後端渲染 |
-| 6 | **修 stats/hit CORS preflight** | OPTIONS preflight 沒被 CORSMiddleware 攔到，console 一直噴錯，功能不影響 |
+| 6 | **修 stats/hit CORS preflight** | OPTIONS 沒被 CORSMiddleware 攔到，console 噴錯但功能不影響 |
 
 ### 長期（半天以上）
 
 | # | Task | 說明 |
 |---|---|---|
 | 7 | **多人多角色細緻權限** | 目前只 admin/user 兩級；檢警分艙、案件分艙 |
-| 8 | **uvicorn `--reload` Python 3.13 macOS spawn bug** | 可能要改用 watchmedo 繞過 |
-| 9 | **本地 cell_id → lat/lng 對照表** | 從業者拿基地台座標表，徹底解決 geocode 依賴 |
+| 8 | **uvicorn `--reload` Python 3.13 macOS spawn bug** | 可能要改用 watchmedo |
+| 9 | **本地 cell_id → lat/lng 對照表** | 從業者拿基地台座標表，徹底解決純數字 cell_id 的 geocode 問題 |
 
 ---
 
 ## 提醒
 
-- 本機 `.env` 仍是 `AUTH_ENABLED=false`（anonymous admin）。Production 務必改 `true`。
-- OSM 備援已啟用（`GEO_OSM_FALLBACK=1`）；Redis 離線不再影響 geocode（已修）。
-- OSM 兩段式查詢：Pass 1 自由格式 → Pass 2 結構化（號碼前置）；台灣地址覆蓋率大幅提升但非 100%（OSM 資料庫本身不完整）。
-- 詳細設計決策、環境陷阱、onboard checklist 見 `CLAUDE.md`。
+- 本機 `.env`：`AUTH_ENABLED=false`、`GEO_OSM_FALLBACK=1`、Google API key 已設。
+- Redis 離線不再致命（今日修復）；OSM 兩段式查詢已啟用。
+- 案件資料（xlsx/pdf/csv）與 `基地台位置範例檔案/` 已加入 .gitignore，不會被 commit。
+- 詳細設計決策、架構、onboard checklist 見 `CLAUDE.md`。
