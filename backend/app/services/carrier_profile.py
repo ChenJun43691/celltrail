@@ -165,9 +165,18 @@ def get_active_header_map() -> Dict[str, str]:
             return _HEADER_MAP_CACHE
 
         _DEFAULT_PROFILE_CACHE = profile
-        _HEADER_MAP_CACHE = _build_header_map_from_mapping(profile["mapping_json"])
+        # DB 優先，_RAW2CANON 補空缺：
+        #   DB mapping_json 是管理員自訂的 SoT，優先權高；
+        #   但程式碼每次新增欄位（W2.x/W3.x）都只更新 _RAW2CANON，
+        #   不一定同步到 DB（需人工 migration）。
+        #   合併策略：先鋪 code defaults，再用 DB 蓋過有衝突的 key，
+        #   讓新欄位自動生效、DB 自訂仍保留 override 能力。
+        code_map = _ingest_fallback_map()
+        db_map   = _build_header_map_from_mapping(profile["mapping_json"])
+        _HEADER_MAP_CACHE = {**code_map, **db_map}
         print(f"[carrier_profile] 已載入 default profile: id={profile['id']} "
-              f"variant={profile['variant_label']} 別名數={len(_HEADER_MAP_CACHE)}")
+              f"variant={profile['variant_label']} "
+              f"別名數={len(_HEADER_MAP_CACHE)} (DB={len(db_map)} + code補={len(code_map)-len(db_map.keys() & code_map.keys())})")
         return _HEADER_MAP_CACHE
 
 

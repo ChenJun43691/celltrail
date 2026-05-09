@@ -686,6 +686,10 @@ def _ingest_rows_stream(project_id: str, target_id: str, rows_iter: Iterable[Dic
     total = inserted = skipped = 0
     errors: List[str] = []
     to_insert: List[Dict[str, Any]] = []
+    # request-scope geocode 快取：同一 upload 內相同地址只查一次。
+    # 解決「11246 列但只有 119 個唯一地址」造成的 API timeout 問題。
+    # key=(cell_id, cell_addr)，value=Optional[Tuple[lat, lng]]
+    _geo_cache: Dict[tuple, Optional[tuple]] = {}
 
     for idx, raw in enumerate(rows_iter, start=1):
         total += 1
@@ -711,12 +715,18 @@ def _ingest_rows_stream(project_id: str, target_id: str, rows_iter: Iterable[Dic
             continue
 
         lat = lng = None
-        try:
-            ll = geocode.lookup(cell_id, cell_addr)
-            if ll:
-                lat, lng = ll
-        except Exception as e:
-            errors.append(f"row{idx}: geocode 失敗：{e}")
+        geo_key = (cell_id, cell_addr)
+        if geo_key in _geo_cache:
+            ll = _geo_cache[geo_key]
+        else:
+            ll = None
+            try:
+                ll = geocode.lookup(cell_id, cell_addr)
+            except Exception as e:
+                errors.append(f"row{idx}: geocode 失敗：{e}")
+            _geo_cache[geo_key] = ll
+        if ll:
+            lat, lng = ll
 
         accuracy_m = _guess_accuracy(cell_addr)
 
