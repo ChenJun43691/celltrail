@@ -22,10 +22,10 @@ CACHE_TTL = 60 * 60 * 24 * 30  # 30 天
 def _cache_get(addr: str) -> Optional[Tuple[float, float]]:
     if not _r or not addr:
         return None
-    v = _r.get(f"addr:{addr}")
-    if not v:
-        return None
     try:
+        v = _r.get(f"addr:{addr}")
+        if not v:
+            return None
         d = json.loads(v)
         return float(d["lat"]), float(d["lng"])
     except Exception:
@@ -93,27 +93,56 @@ OSM_URL = "https://nominatim.openstreetmap.org/search"
 OSM_EMAIL = os.getenv("NOMINATIM_EMAIL", "")
 
 def _osm_geocode(addr: str) -> Optional[Tuple[float, float]]:
-    """OSM Nominatim 備援。同樣：失敗仍回 None，但把原因 print 出來。"""
+    """
+    OSM Nominatim 備援，兩段式查詢：
+    Pass 1 — 自由格式（q=addr）：對較知名地點有效。
+    Pass 2 — 結構化（city + street）：Nominatim 對台灣中文地址的自由格式命中率低，
+             但結構化查詢且街道號碼置前（e.g. "211號中正四路"）可大幅提升命中率。
+             實測：自由格式 0/3，結構化 1/1（高雄市前金區中正四路211號）。
+    """
     if not USE_OSM:
         return None
-    try:
-        params = {"q": addr, "format": "json", "limit": 1}
-        if OSM_EMAIL:
-            params["email"] = OSM_EMAIL
-        r = requests.get(
-            OSM_URL,
-            params=params,
-            headers={"User-Agent": "celltrail/1.0", "Accept-Language": GMAPS_LANG},
-            timeout=15,
-        )
-        r.raise_for_status()
-        data = r.json()
-        if data:
-            time.sleep(1.0)  # 禮貌性節流
-            return float(data[0]["lat"]), float(data[0]["lon"])
-        print(f"[geocode] OSM 查無結果 addr={addr!r}")
-    except Exception as e:
-        print(f"[geocode] OSM 例外: {type(e).__name__}: {e} addr={addr!r}")
+
+    def _request(params: dict) -> Optional[Tuple[float, float]]:
+        try:
+            if OSM_EMAIL:
+                params["email"] = OSM_EMAIL
+            r = requests.get(
+                OSM_URL,
+                params=params,
+                headers={"User-Agent": "celltrail/1.0", "Accept-Language": GMAPS_LANG},
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+            if data:
+                time.sleep(1.0)  # 禮貌性節流（Nominatim 使用政策）
+                return float(data[0]["lat"]), float(data[0]["lon"])
+        except Exception as e:
+            print(f"[geocode] OSM 例外: {type(e).__name__}: {e} addr={addr!r}")
+        return None
+
+    base = {"format": "json", "limit": 1, "countrycodes": "tw"}
+
+    # Pass 1: 自由格式
+    result = _request({**base, "q": addr})
+    if result:
+        return result
+
+    # Pass 2: 結構化 — 解析「縣市 + 路名 + 門號」，轉成 Nominatim 偏好的號碼前置格式
+    # "高雄市前金區中正四路211號" → city=高雄市, street=211號中正四路
+    m = re.match(r"([\S]+?[市縣])([\S]+?[區鄉鎮市])?([\S]+?(?:路|街|大道|巷|弄))(\d+號)?", addr)
+    if m:
+        city   = m.group(1)
+        road   = m.group(3) or ""
+        num    = m.group(4) or ""
+        street = f"{num}{road}".strip() if num else road
+        if city and street:
+            result = _request({**base, "city": city, "street": street})
+            if result:
+                return result
+
+    print(f"[geocode] OSM 查無結果 addr={addr!r}")
     return None
 
 # ---------- 預留：cell_id 對照（之後可接資料表） ----------
