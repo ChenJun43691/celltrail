@@ -319,3 +319,92 @@ def list_deleted_traces(project_id: str, target_id: str):
                 "delete_reason": r[7],
             })
     return {"total": len(items), "items": items}
+
+
+# ============================================================
+# P2.5-C：Project 層級方位角基準彙總 dashboard
+# ============================================================
+@router.get(
+    "/projects/{project_id}/azimuth-ref-summary",
+    dependencies=[Depends(get_current_user)],
+)
+def get_project_azimuth_ref_summary(project_id: str):
+    """
+    一次回傳 project 內所有 target 的 azimuth_ref 分佈 + 最後標註人。
+
+    用於 P2.5-C 法庭防禦性 dashboard：
+      - unknown_pct > 0 的 target 需要在法庭前補標
+      - last_annotator / last_annotated_at / last_evidence 提供完整 audit trail
+
+    回傳格式：
+      {
+        "project_id": "demo_case",
+        "project_unknown_pct": 42.3,      # 全案 unknown 比例
+        "targets": [
+          {
+            "target_id": "楊云豪",
+            "total": 68,
+            "by_ref": {"magnetic": 60, "unknown": 8},
+            "unknown_pct": 11.8,
+            "last_annotator": "admin",
+            "last_annotated_at": "2026-05-10T00:53:11+00:00",
+            "last_evidence": "NTT DoCoMo 說明書第3頁",
+            "last_ref": "magnetic"
+          },
+          ...
+        ]
+      }
+    """
+    ref_sql = """
+    SELECT target_id, azimuth_ref, COUNT(*) AS cnt
+      FROM raw_traces
+     WHERE project_id = %s AND deleted_at IS NULL
+     GROUP BY target_id, azimuth_ref
+     ORDER BY target_id, azimuth_ref
+    """
+    annotation_sql = """
+    SELECT DISTINCT ON (target_ref)
+           target_ref,
+           username,
+           ts,
+           details->>'evidence' AS evidence,
+           details->>'ref'      AS ref
+      FROM audit_logs
+     WHERE project_id = %s AND action = 'update_azimuth_ref'
+     ORDER BY target_ref, ts DESC
+    """
+
+    targets: dict = {}
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(ref_sql, (project_id,), prepare=False)
+        for tid, ref, cnt in cur.fetchall():
+            if tid not in targets:
+                targets[tid] = {"target_id": tid, "by_ref": {}, "total": 0,
+                                "last_annotator": None, "last_annotated_at": None,
+                                "last_evidence": None, "last_ref": None}
+            targets[tid]["by_ref"][ref] = int(cnt)
+            targets[tid]["total"] += int(cnt)
+
+        cur.execute(annotation_sql, (project_id,), prepare=False)
+        for tid, username, ts, evidence, ref in cur.fetchall():
+            if tid in targets:
+                targets[tid]["last_annotator"]   = username
+                targets[tid]["last_annotated_at"] = ts.isoformat() if ts else None
+                targets[tid]["last_evidence"]     = evidence
+                targets[tid]["last_ref"]          = ref
+
+    items = []
+    for t in sorted(targets.values(), key=lambda x: x["target_id"]):
+        total   = t["total"]
+        unknown = t["by_ref"].get("unknown", 0)
+        t["unknown_pct"] = round(unknown / total * 100, 1) if total else 0.0
+        items.append(t)
+
+    all_total   = sum(t["total"] for t in items)
+    all_unknown = sum(t["by_ref"].get("unknown", 0) for t in items)
+
+    return {
+        "project_id": project_id,
+        "project_unknown_pct": round(all_unknown / all_total * 100, 1) if all_total else 0.0,
+        "targets": items,
+    }

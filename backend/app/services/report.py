@@ -91,6 +91,67 @@ def _fetch_evidence(project_id: str, target_id: Optional[str]) -> List[Dict[str,
     return items
 
 
+def _fetch_azimuth_summary(project_id: str, target_id: Optional[str]) -> List[Dict[str, Any]]:
+    """
+    方位角北方基準標註狀態（P2.5-C）：
+    每 target 的 azimuth_ref 分佈 + 最後標註人/時間/書面依據。
+    """
+    where_rt = ["project_id = %s", "deleted_at IS NULL"]
+    params_rt: List[Any] = [project_id]
+    if target_id:
+        where_rt.append("target_id = %s"); params_rt.append(target_id)
+    ref_sql = f"""
+    SELECT target_id, azimuth_ref, COUNT(*) AS cnt
+      FROM raw_traces
+     WHERE {' AND '.join(where_rt)}
+     GROUP BY target_id, azimuth_ref
+     ORDER BY target_id, azimuth_ref
+    """
+
+    where_al = ["project_id = %s", "action = 'update_azimuth_ref'"]
+    params_al: List[Any] = [project_id]
+    if target_id:
+        where_al.append("target_ref = %s"); params_al.append(target_id)
+    ann_sql = f"""
+    SELECT DISTINCT ON (target_ref)
+           target_ref,
+           username,
+           ts,
+           details->>'evidence' AS evidence,
+           details->>'ref'      AS ref
+      FROM audit_logs
+     WHERE {' AND '.join(where_al)}
+     ORDER BY target_ref, ts DESC
+    """
+
+    targets: dict = {}
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(ref_sql, params_rt, prepare=False)
+        for tid, ref, cnt in cur.fetchall():
+            if tid not in targets:
+                targets[tid] = {"target_id": tid, "by_ref": {}, "total": 0,
+                                "last_annotator": None, "last_annotated_at": None,
+                                "last_evidence": None, "last_ref": None}
+            targets[tid]["by_ref"][ref] = int(cnt)
+            targets[tid]["total"] += int(cnt)
+
+        cur.execute(ann_sql, params_al, prepare=False)
+        for tid, username, ts, evidence, ref in cur.fetchall():
+            if tid in targets:
+                targets[tid]["last_annotator"]    = username
+                targets[tid]["last_annotated_at"] = ts
+                targets[tid]["last_evidence"]     = evidence
+                targets[tid]["last_ref"]          = ref
+
+    items = []
+    for t in sorted(targets.values(), key=lambda x: x["target_id"]):
+        total   = t["total"]
+        unknown = t["by_ref"].get("unknown", 0)
+        t["unknown_pct"] = round(unknown / total * 100, 1) if total else 0.0
+        items.append(t)
+    return items
+
+
 def _fetch_trace_summary(project_id: str, target_id: Optional[str]) -> List[Dict[str, Any]]:
     """以 target 分組統計：總筆數、已定位、未定位、軟刪、最早/最晚"""
     where = ["project_id = %s"]
@@ -293,9 +354,74 @@ def build_evidence_report(
         ]))
         story.append(tbl)
 
+    # ── 方位角北方基準標註狀態（P2.5-C）──
+    story.append(PageBreak())
+    story.append(Paragraph("三、方位角北方基準標註狀態（P2.5-C 法庭可防禦性）", s["h1"]))
+    story.append(Paragraph(
+        "說明：電信業者 azimuth（方位角）的「北方基準」無統一規格（磁北 vs 真北）。"
+        "台灣磁偏角約 -4°~-5°，500m 距離下差異可達 50m。"
+        "法庭質疑「此方位角基準為何」時，本表提供書面依據與標註稽核鏈。",
+        s["small"],
+    ))
+    story.append(Spacer(1, 6))
+    az_summary = _fetch_azimuth_summary(project_id, target_id)
+    if not az_summary:
+        story.append(Paragraph("（無含 azimuth 欄位的 target）", s["body"]))
+    else:
+        rows = [["Target", "總筆數", "unknown", "magnetic", "true", "unknown%", "最後標註者", "標註時間", "書面依據（摘錄）"]]
+        for t in az_summary:
+            by_ref = t["by_ref"]
+            rows.append([
+                t["target_id"],
+                str(t["total"]),
+                str(by_ref.get("unknown", 0)),
+                str(by_ref.get("magnetic", 0)),
+                str(by_ref.get("true", 0)),
+                f"{t['unknown_pct']}%",
+                t["last_annotator"] or "（未標註）",
+                _fmt_ts(t["last_annotated_at"]) if t["last_annotated_at"] else "—",
+                (t["last_evidence"] or "—")[:40],
+            ])
+
+        col_w = [26*mm, 14*mm, 16*mm, 16*mm, 12*mm, 16*mm, 20*mm, 28*mm, 42*mm]
+        tbl = Table(rows, colWidths=col_w, repeatRows=1)
+
+        # 高亮 unknown%：若 >0 用橙底，=0 用綠底
+        style_cmds = [
+            ("FONTNAME",      (0,0), (-1,-1), _CN_FONT),
+            ("FONTSIZE",      (0,0), (-1,-1), 8),
+            ("BACKGROUND",    (0,0), (-1,0),  colors.HexColor("#0b5ed7")),
+            ("TEXTCOLOR",     (0,0), (-1,0),  colors.white),
+            ("LINEBELOW",     (0,0), (-1,-1), 0.25, colors.HexColor("#cdd3df")),
+            ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+            ("LEFTPADDING",   (0,0), (-1,-1), 4),
+            ("RIGHTPADDING",  (0,0), (-1,-1), 4),
+            ("TOPPADDING",    (0,0), (-1,-1), 3),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 3),
+        ]
+        for row_idx, t in enumerate(az_summary, start=1):
+            if t["unknown_pct"] == 0:
+                style_cmds.append(("BACKGROUND", (5, row_idx), (5, row_idx), colors.HexColor("#e8f5e9")))
+                style_cmds.append(("TEXTCOLOR",  (5, row_idx), (5, row_idx), colors.HexColor("#1f7a3f")))
+            else:
+                style_cmds.append(("BACKGROUND", (5, row_idx), (5, row_idx), colors.HexColor("#ffebee")))
+                style_cmds.append(("TEXTCOLOR",  (5, row_idx), (5, row_idx), colors.HexColor("#b3261e")))
+
+        tbl.setStyle(TableStyle(style_cmds))
+        story.append(tbl)
+        story.append(Spacer(1, 4))
+        all_unknown = sum(t["by_ref"].get("unknown", 0) for t in az_summary)
+        all_total   = sum(t["total"] for t in az_summary)
+        pct = round(all_unknown / all_total * 100, 1) if all_total else 0.0
+        story.append(Paragraph(
+            f"全案 unknown 比例：{pct}%（{all_unknown} / {all_total} 筆尚未確認北方基準）。"
+            "unknown > 0% 者在法庭上無法回答「方位角北方基準為何」，建議於出庭前完成標註。",
+            s["small"],
+        ))
+
     # ── Audit 時間軸 ──
     story.append(PageBreak())
-    story.append(Paragraph("三、稽核時間軸（最近 200 筆 audit_logs）", s["h1"]))
+    story.append(Paragraph("四、稽核時間軸（最近 200 筆 audit_logs）", s["h1"]))
     audit = _fetch_audit(project_id, target_id, limit=200)
     if not audit:
         story.append(Paragraph("（無 audit_logs 紀錄）", s["body"]))
@@ -327,7 +453,8 @@ def build_evidence_report(
         story.append(Spacer(1, 4))
         story.append(Paragraph(
             "如需完整 audit 紀錄與 details JSON，請以 <code>/api/audit/logs?project_id=...</code> "
-            "端點查詢；報告產出本身亦為一筆 audit（action='export_report'），包含本份報告請求者識別。",
+            "端點查詢；報告產出本身亦為一筆 audit（action='export_report'），包含本份報告請求者識別。"
+            "方位角標註稽核請過濾 action='update_azimuth_ref'。",
             s["small"],
         ))
 

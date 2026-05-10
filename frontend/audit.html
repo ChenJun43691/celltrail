@@ -71,6 +71,47 @@
     .summary{font-size:13px;color:var(--sub);margin:8px 0}
     code{background:var(--code-bg);padding:1px 4px;border-radius:3px;font-size:12px}
     .empty{padding:30px;text-align:center;color:var(--sub)}
+
+    /* ── P2.5-C Dashboard ── */
+    .dashboard{
+      background:var(--card);border:1px solid var(--border);border-radius:10px;
+      padding:14px 16px;margin-bottom:12px;
+    }
+    .dashboard-header{
+      display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;
+    }
+    .dashboard-title{font-size:14px;font-weight:600}
+    .dashboard-sub{font-size:12px;color:var(--sub)}
+    .risk-badge{
+      display:inline-block;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:600;
+    }
+    .risk-ok{background:#e8f5e9;color:#1f7a3f;border:1px solid #c8e6c9}
+    .risk-warn{background:#fff3e0;color:#a07000;border:1px solid #ffe0b2}
+    .risk-bad{background:#ffebee;color:#b3261e;border:1px solid #ffcdd2}
+    .target-cards{
+      display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;
+    }
+    .target-card{
+      border:1px solid var(--border);border-radius:8px;padding:10px 12px;
+      transition:box-shadow .15s;
+    }
+    .target-card:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}
+    .target-card.card-ok{border-left:4px solid #1f7a3f}
+    .target-card.card-warn{border-left:4px solid #a07000}
+    .target-card.card-bad{border-left:4px solid #b3261e}
+    .card-name{font-weight:600;font-size:13px;margin-bottom:5px}
+    .progress-bar{
+      height:8px;border-radius:4px;background:#e0e0e0;overflow:hidden;margin:4px 0;
+    }
+    .progress-fill{height:100%;border-radius:4px;transition:width .3s}
+    .fill-ok{background:#1f7a3f}
+    .fill-warn{background:#a07000}
+    .fill-bad{background:#b3261e}
+    .card-meta{font-size:11px;color:var(--sub);margin-top:4px;line-height:1.5}
+    .card-evidence{
+      font-size:11px;color:#555;margin-top:3px;white-space:nowrap;
+      overflow:hidden;text-overflow:ellipsis;max-width:100%;
+    }
   </style>
 </head>
 <body>
@@ -83,6 +124,16 @@
   </header>
 
   <div class="container">
+    <!-- P2.5-C Dashboard -->
+    <div class="dashboard" id="dashboardSection" style="display:none">
+      <div class="dashboard-header">
+        <span class="dashboard-title">方位角北方基準標註狀態</span>
+        <span id="dashRiskBadge" class="risk-badge"></span>
+        <span class="dashboard-sub" id="dashSub"></span>
+      </div>
+      <div class="target-cards" id="dashCards"></div>
+    </div>
+
     <div class="filters">
       <div>
         <label>Project ID</label>
@@ -243,6 +294,85 @@
       });
     }
 
+    function fmtTs(iso) {
+      if (!iso) return '—';
+      return iso.replace('T', ' ').replace(/\..*$/, '').replace(/\+.*/, '');
+    }
+
+    async function loadDashboard(projectId) {
+      const section = $('dashboardSection');
+      const cardsEl = $('dashCards');
+      const badge   = $('dashRiskBadge');
+      const sub     = $('dashSub');
+      section.style.display = '';
+      cardsEl.innerHTML = '<span style="color:var(--sub);font-size:13px">載入中…</span>';
+      badge.textContent = '';
+      sub.textContent = '';
+      try {
+        const d = await apiGet(`/api/projects/${encodeURIComponent(projectId)}/azimuth-ref-summary`);
+        const pct = d.project_unknown_pct ?? 100;
+        const targets = d.targets || [];
+
+        // Project-level badge
+        if (pct === 0) {
+          badge.textContent = '全案已標註 ✓';
+          badge.className = 'risk-badge risk-ok';
+        } else if (pct < 50) {
+          badge.textContent = `⚠ ${pct}% 未標註`;
+          badge.className = 'risk-badge risk-warn';
+        } else {
+          badge.textContent = `⚠ ${pct}% 未標註（法庭風險）`;
+          badge.className = 'risk-badge risk-bad';
+        }
+        sub.textContent = `共 ${targets.length} 個 target`;
+
+        if (targets.length === 0) {
+          cardsEl.innerHTML = '<span style="color:var(--sub);font-size:13px">無資料</span>';
+          return;
+        }
+
+        cardsEl.innerHTML = targets.map(t => {
+          const upct  = t.unknown_pct ?? 0;
+          const total = t.total ?? 0;
+          const byRef = t.by_ref || {};
+          const unknownCnt = byRef.unknown || 0;
+          const annotatedCnt = total - unknownCnt;
+
+          let cardCls, fillCls;
+          if (upct === 0)       { cardCls = 'card-ok';   fillCls = 'fill-ok'; }
+          else if (upct < 100)  { cardCls = 'card-warn'; fillCls = 'fill-warn'; }
+          else                  { cardCls = 'card-bad';  fillCls = 'fill-bad'; }
+
+          const byRefText = Object.entries(byRef)
+            .map(([k, v]) => `${k}=${v}`).join('、') || '—';
+
+          const annotatorText = t.last_annotator
+            ? `最後由 <b>${escapeHtml(t.last_annotator)}</b> 標為 <b>${escapeHtml(t.last_ref || '')}</b><br/>${fmtTs(t.last_annotated_at)}`
+            : '<span style="color:var(--bad)">尚未標註</span>';
+
+          const evidenceHtml = t.last_evidence
+            ? `<div class="card-evidence" title="${escapeHtml(t.last_evidence)}">依據：${escapeHtml(t.last_evidence)}</div>`
+            : '';
+
+          return `
+            <div class="target-card ${cardCls}">
+              <div class="card-name">${escapeHtml(t.target_id)}</div>
+              <div class="progress-bar">
+                <div class="progress-fill ${fillCls}" style="width:${upct}%"></div>
+              </div>
+              <div class="card-meta">
+                unknown ${upct}%（${unknownCnt} / ${total}）
+                已標 ${annotatedCnt}：${byRefText}
+              </div>
+              <div class="card-meta">${annotatorText}</div>
+              ${evidenceHtml}
+            </div>`;
+        }).join('');
+      } catch (e) {
+        cardsEl.innerHTML = `<span style="color:var(--bad);font-size:13px">Dashboard 載入失敗：${escapeHtml(e.message)}</span>`;
+      }
+    }
+
     async function loadActions() {
       try {
         const r = await apiGet('/api/audit/actions');
@@ -306,13 +436,19 @@
         alert('匯出失敗：' + e.message);
       }
     });
-    $('btnQuery').addEventListener('click', () => { state.page = 1; query(); });
+    $('btnQuery').addEventListener('click', () => {
+      state.page = 1;
+      query();
+      const project = $('f_project').value.trim();
+      if (project) loadDashboard(project);
+    });
     $('btnReset').addEventListener('click', () => {
       ['f_project','f_target','f_user_id','f_since','f_until'].forEach(id => $(id).value = '');
       $('f_action').value = '';
       state.page = 1;
       $('summary').textContent = '';
       tbody.innerHTML = '<tr><td class="empty" colspan="7">點「查詢」開始載入</td></tr>';
+      $('dashboardSection').style.display = 'none';
     });
     $('prev').addEventListener('click', () => {
       if (state.page > 1) { state.page--; query(); }
