@@ -150,6 +150,7 @@
       font-size:12px; color:#007aff; font-weight:500; white-space:nowrap;
       max-width:160px; overflow:hidden; text-overflow:ellipsis;
     }
+    #projectId::placeholder{ color:#bbb; }
   </style>
 </head>
 <body>
@@ -182,7 +183,13 @@
 
   <div class="control">
     <div class="row">
-      <label>Project ID <input id="projectId" type="text" value="demo_case" /></label>
+      <label>案件名稱或編號
+        <input id="projectId" type="text" list="projectList"
+               placeholder="A某涉嫌槍砲案"
+               autocomplete="off"
+               style="width:220px" />
+        <datalist id="projectList"></datalist>
+      </label>
       <label>Target ID  <input id="targetId"  type="text" value="" placeholder="留空=整個專案；填入=只看此 target" /></label>
       <button id="membersBtn" type="button" class="small" title="管理此案件的成員授權" style="padding:4px 8px">成員管理</button>
     </div>
@@ -376,6 +383,28 @@
     $('dismissTempBtn').addEventListener('click', hideTempBanner);
     $('saveAsProjectBtn').addEventListener('click', () => openSaveToProjectModal());
 
+    // ── 案件清單自動補全 ──
+    async function loadProjectList() {
+      const dl = $('projectList');
+      if (!dl) return;
+      // 臨時模式或未登入：不顯示
+      if (_sessionMode === 'temp' || !TOKEN) { dl.innerHTML = ''; return; }
+      try {
+        const res = await fetch(`${API_BASE}/api/projects/`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const items = await res.json();
+        dl.innerHTML = items.map(p => {
+          const dateStr = p.created_at
+            ? p.created_at.slice(0, 10)   // YYYY-MM-DD
+            : '';
+          const label = dateStr ? `${p.project_id}（${dateStr}）` : p.project_id;
+          return `<option value="${escH(p.project_id)}">${escH(label)}</option>`;
+        }).join('');
+      } catch(e) {
+        console.warn('[projectList] failed:', e);
+      }
+    }
+
     // ── mode chip 顯示 ──
     function updateModeChip() {
       const el = $('modeChip');
@@ -445,6 +474,7 @@
       _sessionMode = 'temp';
       showTempBanner();
       updateModeChip();
+      loadProjectList(); // 臨時模式 → 清空 datalist
     }
 
     function openProjectCreationModal(user, rememberMode = false) {
@@ -478,6 +508,7 @@
         $('projectId').value = name;
         hideTempBanner();
         updateModeChip();
+        loadProjectList(); // 進入專案模式 → 重新載入下拉清單
         showToast(`進入專案模式：${name}`, 'success', 2000);
       };
     }
@@ -1784,6 +1815,17 @@
       if (!localStorage.getItem(TOUR_DONE_KEY)) startTour();
       // 模式選擇（有 token 才詢問；匿名直接跳過）
       if (TOKEN) showModeSelectionModal(user);
+      loadProjectList(); // 初始載入案件清單
+
+      // 從下拉選單選擇案件後自動載入
+      $('projectId').addEventListener('change', () => {
+        const val = $('projectId').value.trim();
+        if (!val) return;
+        _sessionProjectId = val;
+        updateModeChip();
+        load();
+      });
+
       load(); // 初次載入
     }
 

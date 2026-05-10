@@ -22,6 +22,66 @@ from app.security import (
 router = APIRouter(tags=["members"])
 
 
+# ---------- 列出目前使用者有權限的所有案件 ----------
+@router.get("/projects/")
+def list_projects(current_user: dict = Depends(get_current_user)):
+    """
+    回傳目前登入者有權限的所有案件清單。
+    - 管理員：回傳 raw_traces 內所有 project（不含 __temp_ 前綴）
+    - 一般使用者：回傳 project_members 中有效授權的案件
+
+    回傳格式：[{ project_id, created_at, member_count }]
+    """
+    if current_user.get("role") == "admin":
+        sql = """
+        WITH rt AS (
+            SELECT DISTINCT project_id
+              FROM raw_traces
+             WHERE project_id NOT LIKE '%%__temp_%%'
+        ),
+        pm AS (
+            SELECT project_id,
+                   MIN(created_at)          AS first_at,
+                   COUNT(DISTINCT user_id)  AS member_count
+              FROM project_members
+             GROUP BY project_id
+        )
+        SELECT rt.project_id,
+               pm.first_at,
+               COALESCE(pm.member_count, 0) AS member_count
+          FROM rt
+          LEFT JOIN pm ON rt.project_id = pm.project_id
+         ORDER BY COALESCE(pm.first_at, '2000-01-01'::timestamptz) DESC
+        """
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(sql, prepare=False)
+            rows = cur.fetchall()
+    else:
+        sql = """
+        SELECT pm.project_id,
+               MIN(pm.created_at)  AS first_at,
+               COUNT(DISTINCT pm2.user_id) AS member_count
+          FROM project_members pm
+          LEFT JOIN project_members pm2 ON pm2.project_id = pm.project_id
+         WHERE pm.user_id = %s
+           AND (pm.expires_at IS NULL OR pm.expires_at > now())
+         GROUP BY pm.project_id
+         ORDER BY MIN(pm.created_at) DESC
+        """
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(sql, (current_user["id"],), prepare=False)
+            rows = cur.fetchall()
+
+    return [
+        {
+            "project_id":   r[0],
+            "created_at":   r[1].isoformat() if r[1] else None,
+            "member_count": int(r[2]),
+        }
+        for r in rows
+    ]
+
+
 # ---------- Schemas ----------
 class GrantMemberIn(BaseModel):
     user_id:    int
