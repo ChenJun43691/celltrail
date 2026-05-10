@@ -6,41 +6,119 @@
   <title>登入 · CellTrail</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; background: #f0f2f5;
-      font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, 'Noto Sans TC'; }
-    .wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 16px; }
+    html, body {
+      margin: 0; height: 100%;
+      /* fallback：影片無法播放時的深色漸層 */
+      background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, 'Noto Sans TC';
+      color: #f0f0f0;
+    }
+
+    /* ── 影片全螢幕背景 ── */
+    #bgVideo {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      z-index: -2;
+      pointer-events: none;
+    }
+    /* 半透明深色遮罩 */
+    #bgOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      z-index: -1;
+    }
+
+    /* ── 置中容器 ── */
+    .wrapper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+
+    /* ── 毛玻璃登入卡片 ── */
     .card {
-      background: #fff; width: min(92vw, 400px); border-radius: 14px;
-      padding: 32px 28px; box-shadow: 0 4px 32px rgba(0,0,0,.12);
+      width: min(92vw, 400px);
+      border-radius: 16px;
+      padding: 34px 30px;
+      background: rgba(255, 255, 255, 0.15);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
     }
     .brand { text-align: center; margin-bottom: 26px; }
-    .brand h1 { margin: 0; font-size: 24px; font-weight: 700; color: #1a1a2e; }
-    .brand p  { margin: 6px 0 0; font-size: 12px; color: #888; }
-    .section-title { font-size: 14px; font-weight: 600; color: #333; margin-bottom: 14px; }
-    label { display: block; margin-bottom: 14px; font-size: 13px; color: #555; font-weight: 500; }
+    .brand h1 { margin: 0; font-size: 26px; font-weight: 700; color: #fff; letter-spacing: .5px; }
+    .brand p  { margin: 7px 0 0; font-size: 12px; color: rgba(255,255,255,0.65); }
+
+    .section-title { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.9); margin-bottom: 14px; }
+
+    label { display: block; margin-bottom: 14px; font-size: 13px; color: rgba(255,255,255,0.8); font-weight: 500; }
+
     input[type="text"], input[type="password"] {
       display: block; width: 100%; padding: 10px 12px; margin-top: 5px;
-      border: 1px solid #d0d5dd; border-radius: 8px; font-size: 14px;
+      border: 1px solid rgba(255,255,255,0.35);
+      border-radius: 8px; font-size: 14px; color: #fff;
+      background: rgba(255,255,255,0.12);
       outline: none; transition: border-color .15s, box-shadow .15s;
     }
-    input:focus { border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,.15); }
+    input::placeholder { color: rgba(255,255,255,0.4); }
+    input:focus {
+      border-color: rgba(99,179,237,0.8);
+      box-shadow: 0 0 0 3px rgba(99,179,237,0.25);
+      background: rgba(255,255,255,0.18);
+    }
+
     button.primary {
       width: 100%; padding: 11px; border: none; border-radius: 8px;
-      background: #007aff; color: #fff; font-size: 14px; font-weight: 600;
-      cursor: pointer; margin-top: 6px; transition: background .15s;
+      background: rgba(0,122,255,0.85); color: #fff;
+      font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 6px;
+      transition: background .15s;
+      backdrop-filter: blur(4px);
     }
-    button.primary:hover { background: #0062cc; }
-    button.primary:disabled { background: #a0c4ff; cursor: not-allowed; }
-    .msg { min-height: 18px; font-size: 12px; color: #d32f2f; margin: 6px 0 10px; }
-    .msg.ok { color: #2e7d32; }
+    button.primary:hover { background: rgba(0,98,204,0.95); }
+    button.primary:disabled { background: rgba(0,122,255,0.35); cursor: not-allowed; }
+
+    .msg { min-height: 18px; font-size: 12px; color: #ff9090; margin: 6px 0 10px; }
+    .msg.ok { color: #7ef798; }
+
     .alert-box {
-      background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px;
-      padding: 10px 14px; font-size: 13px; color: #6d4c00; margin-bottom: 18px; line-height: 1.5;
+      background: rgba(255,248,225,0.15); border: 1px solid rgba(255,224,130,0.5);
+      border-radius: 8px; padding: 10px 14px; font-size: 13px;
+      color: #ffe082; margin-bottom: 18px; line-height: 1.5;
     }
-    .footer { text-align: center; font-size: 11px; color: #bbb; margin-top: 20px; }
+
+    .footer { text-align: center; font-size: 11px; color: rgba(255,255,255,0.35); margin-top: 20px; }
+
+    /* 申請 / 忘記密碼連結 */
+    #loginSection a { color: rgba(99,179,237,0.9); text-decoration: none; }
+    #loginSection a:hover { color: #fff; }
+    #forgotToggle { color: rgba(255,255,255,0.5); cursor: pointer; text-decoration: underline; }
+    #forgotBox {
+      margin-top: 10px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 12px;
+      color: rgba(255,255,255,0.75);
+      line-height: 1.8;
+    }
   </style>
 </head>
 <body>
+
+<!-- 影片背景 -->
+<video id="bgVideo" autoplay muted loop playsinline preload="auto">
+  <source src="assets/mp.mp4" type="video/mp4" />
+</video>
+<div id="bgOverlay"></div>
+
 <div class="wrapper">
   <div class="card">
     <div class="brand">
@@ -61,12 +139,10 @@
       <button id="loginBtn" class="primary">登入</button>
 
       <div style="margin-top:14px;text-align:center;font-size:12px;display:flex;flex-direction:column;gap:6px">
-        <a href="./register.html" style="color:#007aff;text-decoration:none">申請帳號</a>
-        <span id="forgotToggle" style="color:#888;cursor:pointer;text-decoration:underline">
-          忘記帳號或密碼？
-        </span>
+        <a href="./register.html">申請帳號</a>
+        <span id="forgotToggle">忘記帳號或密碼？</span>
       </div>
-      <div id="forgotBox" style="display:none;margin-top:10px;background:#f8f9fa;border:1px solid #dde;border-radius:8px;padding:10px 14px;font-size:12px;color:#444;line-height:1.8">
+      <div id="forgotBox" style="display:none">
         請電洽管理員辦理重設<br/>
         <b>管理員電話：</b>07-7193020<br/>
         <b>服務時間：</b>週一至週五 09:00–17:00
@@ -105,15 +181,13 @@
   }
   const API = getApiBase() + '/api';
 
-  let _tempToken = null;   // 登入後暫存；成功修改密碼後失效
-  let _oldPassword = '';   // 僅存於記憶體，不寫入 localStorage
+  let _tempToken = null;
+  let _oldPassword = '';
 
-  // 過期提示（從 index.html 或其他頁帶 ?expired=1 跳過來）
   if (new URLSearchParams(location.search).get('expired') === '1') {
     setLoginMsg('登入已過期，請重新登入');
   }
 
-  // 已有 token → 驗證後決定導向
   (async function init() {
     const tok = localStorage.getItem(TOKEN_KEY);
     if (!tok) return;
@@ -122,7 +196,6 @@
       if (!r.ok) throw 0;
       const user = await r.json();
       if (user.must_change_password) {
-        // 有舊 token 但需改密碼：清掉強制重登，避免舊密碼遺失
         localStorage.removeItem(TOKEN_KEY);
         setLoginMsg('請重新輸入帳號密碼以完成密碼修改');
       } else {
@@ -168,8 +241,8 @@
       localStorage.setItem(TOKEN_KEY, j.access_token);
       _tempToken = j.access_token;
       if (j.must_change_password) {
-        _oldPassword = p;  // 暫存供 change-password API 使用
-        sessionStorage.setItem('_cp_old', p);  // sessionStorage 跨頁傳遞
+        _oldPassword = p;
+        sessionStorage.setItem('_cp_old', p);
         setLoginMsg('');
         window.location.href = './change-password.html';
       } else {
@@ -200,7 +273,7 @@
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
-      _oldPassword = '';  // 使用後立即清除
+      _oldPassword = '';
       setChangeMsg('密碼修改成功，正在進入系統…', true);
       setTimeout(() => { window.location.href = './index.html'; }, 700);
     } catch (e) {
