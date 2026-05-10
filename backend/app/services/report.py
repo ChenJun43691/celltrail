@@ -1,18 +1,19 @@
 # backend/app/services/report.py
 """
-證物報告 PDF 產生器（P2）
+證物報告 PDF 產生器（P2 + 地圖截圖）
 ============================================================
 產出一份「法庭可呈遞」的 PDF 報告，內容：
   封面     : 案件 project_id / target_id / 產出時間 / 產出者
+  地圖快覽 : OSM 靜態底圖 + 所有定位點（staticmap.py 合成）
   證物清單 : evidence_files（filename / SHA-256 / 上傳時間 / 統計）
   軌跡摘要 : raw_traces 依 target 分組（含軟刪計數）
+  方位角   : azimuth_ref 標註狀態（法庭可防禦性 P2.5-C）
   Audit 時間軸：最近 N 筆 audit_logs（含 hash）
 
 設計原則：
-  - 報告本身不含個案隱私細節（不列每筆 lat/lng），只給「總量級資料」
-    與「鑑識指紋」。詳細軌跡仍須以 raw_traces SELECT 取得。
-  - 中文字使用 reportlab 內建 CID 字型 'STSong-Light'：免外部字型檔，
-    部署到 Render（Linux）也能直出中文。
+  - 地圖為 OSM 靜態圖磚拼接（無瀏覽器依賴）；fetch 失敗時退化為灰底仍繪點位。
+  - 報告本身不含每筆 lat/lng，只給「總量級資料」與「鑑識指紋」。
+  - 中文字使用 reportlab 內建 CID 字型 'STSong-Light'：免外部字型檔。
   - 報告產出本身會回頭寫一筆 audit_logs（action='export_report'）。
 """
 from __future__ import annotations
@@ -21,6 +22,7 @@ import io
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from PIL import Image as PILImage
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
@@ -29,6 +31,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import (
+    Image as RLImage,
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -207,6 +210,36 @@ def _fetch_audit(project_id: str, target_id: Optional[str], limit: int = 200) ->
     return items
 
 
+def _fetch_map_points(project_id: str, target_id: Optional[str], limit: int = 2000) -> List[Dict[str, Any]]:
+    """
+    抓取所有已定位點位的 lat/lng + target_id，供靜態地圖產生器使用。
+    PostGIS geom 儲存格式為 EPSG:4326，直接用 ST_Y/ST_X 取出。
+    limit=2000：報告地圖是視覺縮圖，無需全部點位；超過 2000 點在地圖上也難以分辨。
+    """
+    where = ["project_id = %s", "deleted_at IS NULL", "geom IS NOT NULL"]
+    params: List[Any] = [project_id]
+    if target_id:
+        where.append("target_id = %s"); params.append(target_id)
+    sql = f"""
+    SELECT ST_Y(geom::geometry) AS lat, ST_X(geom::geometry) AS lng,
+           target_id, azimuth_ref, accuracy_m
+      FROM raw_traces
+     WHERE {' AND '.join(where)}
+     ORDER BY target_id, start_ts
+     LIMIT %s
+    """
+    items = []
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, [*params, limit], prepare=False)
+        for r in cur.fetchall():
+            items.append({
+                "lat": float(r[0]), "lng": float(r[1]),
+                "target_id": r[2], "azimuth_ref": r[3],
+                "accuracy_m": float(r[4]) if r[4] is not None else None,
+            })
+    return items
+
+
 # ── 格式化工具 ─────────────────────────────────────────────────
 
 def _fmt_ts(ts: Optional[datetime]) -> str:
@@ -285,8 +318,64 @@ def build_evidence_report(
         s["small"],
     ))
 
+    # ── 地圖快覽（OSM 靜態圖磚合成）──
+    story.append(PageBreak())
+    story.append(Paragraph("地圖快覽（基地台連線點位）", s["h1"]))
+    story.append(Paragraph(
+        "以下地圖由系統於報告產出時即時從 OpenStreetMap 圖磚伺服器合成，"
+        "各顏色對應不同 target；點位為 raw_traces 已定位記錄（geom IS NOT NULL）。"
+        "底圖版權：© OpenStreetMap contributors（CC-BY-SA）。",
+        s["small"],
+    ))
+    story.append(Spacer(1, 4))
+    map_points = _fetch_map_points(project_id, target_id)
+    if map_points:
+        try:
+            from app.services.staticmap import build_map_image, color_legend
+            png_bytes = build_map_image(map_points, output_w=760, max_side=4)
+            if png_bytes:
+                # 計算實際圖片 aspect ratio 以正確設定 reportlab Image 高度
+                pil = PILImage.open(io.BytesIO(png_bytes))
+                w_px, h_px = pil.size
+                map_w = 170 * mm
+                map_h = map_w * h_px / w_px
+                story.append(RLImage(io.BytesIO(png_bytes), width=map_w, height=map_h))
+                story.append(Spacer(1, 4))
+                # 圖例 Table（避免中文在 PIL 預設字型顯示不佳，改用 reportlab 繪製）
+                legend = color_legend(list(dict.fromkeys(p["target_id"] for p in map_points)))
+                if legend:
+                    leg_rows = []
+                    for tid, hex_color in legend:
+                        r, g, b = int(hex_color[1:3], 16), int(hex_color[3:5], 16), int(hex_color[5:7], 16)
+                        leg_rows.append([" ", tid])
+                    leg_tbl = Table(leg_rows, colWidths=[8*mm, 80*mm])
+                    leg_cmds = [
+                        ("FONTNAME",      (0,0), (-1,-1), _CN_FONT),
+                        ("FONTSIZE",      (0,0), (-1,-1), 9),
+                        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+                        ("TOPPADDING",    (0,0), (-1,-1), 2),
+                        ("BOTTOMPADDING", (0,0), (-1,-1), 2),
+                    ]
+                    for i, (_, hex_color) in enumerate(legend):
+                        r2 = int(hex_color[1:3], 16) / 255
+                        g2 = int(hex_color[3:5], 16) / 255
+                        b2 = int(hex_color[5:7], 16) / 255
+                        leg_cmds.append(("BACKGROUND", (0,i), (0,i), colors.Color(r2, g2, b2, 0.85)))
+                    leg_tbl.setStyle(TableStyle(leg_cmds))
+                    story.append(leg_tbl)
+                story.append(Paragraph(
+                    f"共 {len(map_points)} 個定位點位（最多顯示 2000 筆）。",
+                    s["small"],
+                ))
+            else:
+                story.append(Paragraph("（地圖合成失敗，請確認網路或查看 uvicorn log）", s["body"]))
+        except Exception as _map_exc:
+            story.append(Paragraph(f"（地圖產生發生例外：{type(_map_exc).__name__}: {_map_exc}）", s["body"]))
+    else:
+        story.append(Paragraph("（無已定位點位，地圖省略）", s["body"]))
+
     # ── 證物清單 ──
-    story.append(Spacer(1, 10))
+    story.append(PageBreak())
     story.append(Paragraph("一、證物檔案清單（evidence_files）", s["h1"]))
     evidences = _fetch_evidence(project_id, target_id)
     if not evidences:
