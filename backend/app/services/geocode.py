@@ -145,8 +145,24 @@ def _osm_geocode(addr: str) -> Optional[Tuple[float, float]]:
     print(f"[geocode] OSM 查無結果 addr={addr!r}")
     return None
 
-# ---------- 預留：cell_id 對照（之後可接資料表） ----------
+# ---------- cell_id 本地對照（查 cell_towers 表） ----------
 def _lookup_from_local(cell_id: Optional[str], addr: Optional[str]) -> Optional[Tuple[float, float]]:
+    if not cell_id or not str(cell_id).strip():
+        return None
+    try:
+        from app.db.session import get_conn  # lazy import：避免 test 環境循環依賴
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT lat, lng FROM cell_towers WHERE cell_id = %s LIMIT 1",
+                    (str(cell_id).strip(),),
+                    prepare=False,
+                )
+                row = cur.fetchone()
+                if row:
+                    return float(row[0]), float(row[1])
+    except Exception as e:
+        print(f"[geocode] cell_towers lookup error: {type(e).__name__}: {e}")
     return None
 
 # ---------- 對外 API ----------

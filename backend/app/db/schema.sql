@@ -352,6 +352,29 @@ WHERE NOT EXISTS (
     SELECT 1 FROM carrier_profiles WHERE is_default = TRUE
 );
 
+-- ---------- Cell Tower Reference Table（P4.1） ----------
+-- 本地基地台座標對照表：cell_id → lat/lng
+-- 用途：geocode 前置查詢，命中即直接用，不打 Google/OSM API
+--   - 來源：電信業者提供的基地台座標 CSV
+--   - ON CONFLICT(cell_id) DO UPDATE：重新匯入同份資料會覆蓋，冪等安全
+--   - carrier_name 可為 NULL（業者不明或混合匯入時）
+CREATE TABLE IF NOT EXISTS cell_towers (
+    id           BIGSERIAL PRIMARY KEY,
+    cell_id      TEXT NOT NULL,
+    lat          DOUBLE PRECISION NOT NULL,
+    lng          DOUBLE PRECISION NOT NULL,
+    carrier_name TEXT NULL,       -- 業者名稱（中華電信 / 台哥大 / 遠傳 / ...）
+    source       TEXT NULL,       -- 來源描述（如 "CHT 2024Q1 基地台座標表"）
+    memo         TEXT NULL,
+    imported_by  BIGINT NULL REFERENCES users(id),
+    imported_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cell_towers_cell_id
+    ON cell_towers (cell_id);
+CREATE INDEX IF NOT EXISTS idx_cell_towers_carrier
+    ON cell_towers (carrier_name);
+
 -- ---------- Seed：初始管理員 ----------
 -- 系統管理員帳號：CIDadmin / 436910619（must_change_password=FALSE，正式環境請定期修改密碼）
 -- 測試用舊帳號：admin / admin123（僅開發用，正式環境應停用）

@@ -121,21 +121,23 @@ from app.api.users   import router as users_router    # noqa: E402
 from app.api.geocode import router as geocode_router  # noqa: E402
 from app.api.audit   import router as audit_router    # noqa: E402
 from app.api.report  import router as report_router   # noqa: E402
-from app.api.members  import router as members_router   # noqa: E402
-from app.api.requests import router as requests_router  # noqa: E402
+from app.api.members     import router as members_router      # noqa: E402
+from app.api.requests    import router as requests_router     # noqa: E402
+from app.api.cell_towers import router as cell_towers_router  # noqa: E402
 
-app.include_router(health_router,  prefix="/api/health", tags=["health"])
-app.include_router(auth_router,    prefix="/api",        tags=["auth"])
-app.include_router(users_router,   prefix="/api",        tags=["users"])
-app.include_router(upload_router,  prefix="/api/upload", tags=["upload"])
-app.include_router(map_router,     prefix="/api",        tags=["map"])
-app.include_router(targets_router, prefix="/api",        tags=["targets"])
-app.include_router(stats_router,   prefix="/api",        tags=["stats"])
-app.include_router(geocode_router, prefix="/api",        tags=["geocode"])
-app.include_router(audit_router,   prefix="/api",        tags=["audit"])
-app.include_router(report_router,  prefix="/api",        tags=["report"])
-app.include_router(members_router,  prefix="/api",        tags=["members"])
-app.include_router(requests_router, prefix="/api",        tags=["account-requests"])
+app.include_router(health_router,      prefix="/api/health", tags=["health"])
+app.include_router(auth_router,        prefix="/api",        tags=["auth"])
+app.include_router(users_router,       prefix="/api",        tags=["users"])
+app.include_router(upload_router,      prefix="/api/upload", tags=["upload"])
+app.include_router(map_router,         prefix="/api",        tags=["map"])
+app.include_router(targets_router,     prefix="/api",        tags=["targets"])
+app.include_router(stats_router,       prefix="/api",        tags=["stats"])
+app.include_router(geocode_router,     prefix="/api",        tags=["geocode"])
+app.include_router(audit_router,       prefix="/api",        tags=["audit"])
+app.include_router(report_router,      prefix="/api",        tags=["report"])
+app.include_router(members_router,     prefix="/api",        tags=["members"])
+app.include_router(requests_router,    prefix="/api",        tags=["account-requests"])
+app.include_router(cell_towers_router, prefix="/api",        tags=["cell-towers"])
 
 
 @app.get("/api")

@@ -208,6 +208,34 @@
       </div>
     </div>
 
+    <!-- 本地基地台座標表（P4.1） -->
+    <div class="section">
+      <div class="section-title">
+        📡 本地基地台座標表
+        <button class="secondary" id="refreshTowersBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
+      </div>
+      <div id="towerStats" style="margin-bottom:12px;font-size:13px;color:var(--sub)">載入中…</div>
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+        <div>
+          <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:3px">
+            CSV 檔（必填欄：cell_id,lat,lng；選填：carrier_name,memo）
+          </label>
+          <input type="file" id="towerFile" accept=".csv" />
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:3px">業者（選填，可覆蓋 CSV 欄）</label>
+          <input type="text" id="towerCarrier" placeholder="如：中華電信" style="width:140px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px" />
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:3px">來源描述（選填）</label>
+          <input type="text" id="towerSource" placeholder="如：CHT 2024Q1 座標表" style="width:200px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px" />
+        </div>
+        <button id="importTowersBtn">匯入</button>
+        <button class="secondary" id="clearTowersBtn" style="color:var(--bad);border-color:var(--bad)">清空全部</button>
+      </div>
+      <div id="towerImportResult" style="font-size:13px;min-height:20px"></div>
+    </div>
+
     <!-- 稽核日誌（最新 50 筆） -->
     <div class="section">
       <div class="section-title">
@@ -544,10 +572,81 @@
     }
     document.getElementById('refreshAuditBtn').addEventListener('click', loadAudit);
 
+    // ── 本地基地台座標表 ──
+    async function loadTowerStats() {
+      const el = document.getElementById('towerStats');
+      try {
+        const r = await fetch(`${API}/admin/cell-towers/stats`, { headers: authHeaders() });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = await r.json();
+        if (d.total === 0) {
+          el.textContent = '尚未匯入任何資料。';
+          return;
+        }
+        const carrierStr = d.carriers.map(c => `${escH(c.carrier_name)} ${c.count} 筆`).join('、');
+        const latestStr  = d.latest_import
+          ? new Date(d.latest_import).toLocaleString('zh-TW')
+          : '—';
+        el.innerHTML = `共 <strong>${d.total}</strong> 筆 ｜ ${carrierStr} ｜ 最近匯入：${latestStr}`;
+      } catch (e) {
+        el.textContent = `載入失敗：${e.message}`;
+      }
+    }
+
+    document.getElementById('refreshTowersBtn').addEventListener('click', loadTowerStats);
+
+    document.getElementById('importTowersBtn').addEventListener('click', async () => {
+      const fileEl   = document.getElementById('towerFile');
+      const carrier  = document.getElementById('towerCarrier').value.trim();
+      const source   = document.getElementById('towerSource').value.trim();
+      const resultEl = document.getElementById('towerImportResult');
+
+      if (!fileEl.files.length) { resultEl.textContent = '請先選擇 CSV 檔案。'; return; }
+
+      const fd = new FormData();
+      fd.append('file', fileEl.files[0]);
+      if (carrier) fd.append('carrier_name', carrier);
+      if (source)  fd.append('source', source);
+
+      resultEl.textContent = '匯入中…';
+      try {
+        const r = await fetch(`${API}/admin/cell-towers/import`, {
+          method: 'POST', headers: authHeaders(), body: fd,
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+        let msg = `新增 ${d.inserted} 筆，更新 ${d.updated} 筆，跳過 ${d.skipped} 筆。`;
+        if (d.errors && d.errors.length) {
+          msg += `<br><span style="color:var(--bad)">錯誤（前 ${d.errors.length} 條）：${d.errors.map(escH).join('<br>')}</span>`;
+        }
+        resultEl.innerHTML = `<span style="color:var(--ok)">${msg}</span>`;
+        loadTowerStats();
+      } catch (e) {
+        resultEl.innerHTML = `<span style="color:var(--bad)">匯入失敗：${escH(e.message)}</span>`;
+      }
+    });
+
+    document.getElementById('clearTowersBtn').addEventListener('click', async () => {
+      if (!confirm('確定要清空全部基地台座標資料？此動作無法復原。')) return;
+      const resultEl = document.getElementById('towerImportResult');
+      try {
+        const r = await fetch(`${API}/admin/cell-towers?confirm=true`, {
+          method: 'DELETE', headers: authHeaders(),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+        resultEl.innerHTML = `<span style="color:var(--warn)">已清空。</span>`;
+        loadTowerStats();
+      } catch (e) {
+        resultEl.innerHTML = `<span style="color:var(--bad)">清空失敗：${escH(e.message)}</span>`;
+      }
+    });
+
     // 初始載入
     loadRequests();
     loadUsers();
     loadAudit();
+    loadTowerStats();
   </script>
 </body>
 </html>
