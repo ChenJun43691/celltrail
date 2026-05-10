@@ -151,6 +151,36 @@
       max-width:160px; overflow:hidden; text-overflow:ellipsis;
     }
     #projectId::placeholder{ color:#bbb; }
+
+    /* ── ctrl 區塊系統 ── */
+    .ctrl-section {
+      padding: 10px 0;
+      border-top: 1px solid #eee;
+    }
+    .ctrl-section-title {
+      font-size: 10px; font-weight: 700; color: #aaa;
+      letter-spacing: .1em; text-transform: uppercase; margin-bottom: 8px;
+    }
+
+    /* ── 使用者列 ── */
+    .ctrl-userbar {
+      display: flex; align-items: center; gap: 8px;
+      flex-wrap: wrap; padding-bottom: 10px;
+    }
+    #userChip { flex: 1; min-width: 0; }
+    .ctrl-userbar-btns {
+      display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
+    }
+    .ctrl-btn {
+      font-size: 12px; padding: 3px 8px; border: 1px solid #ddd;
+      border-radius: 5px; background: #f8f8f8; cursor: pointer;
+      color: #333; white-space: nowrap; line-height: 1.4;
+    }
+    .ctrl-btn:hover { background: #ebebeb; }
+    .ctrl-btn-link {
+      font-size: 12px; color: #0b5ed7; text-decoration: none; white-space: nowrap;
+    }
+    .ctrl-btn-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -182,101 +212,126 @@
   </div>
 
   <div class="control">
-    <div class="row">
-      <label>案件名稱或編號
+
+    <!-- ── 使用者列 ── -->
+    <div class="ctrl-userbar">
+      <span id="userChip" title="當前登入身份" style="font-size:12px;color:#007aff;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px"></span>
+      <span id="modeChip" style="display:none;font-size:12px;font-weight:600;padding:2px 8px;border-radius:10px;cursor:pointer" title="點擊切換使用模式"></span>
+      <div class="ctrl-userbar-btns">
+        <button id="membersBtn" type="button" class="ctrl-btn" title="管理此案件的共辦人員授權" style="display:none">授權共辦人員</button>
+        <button id="courtBtn" type="button" class="ctrl-btn" title="方位角北方基準標註狀態（法庭可防禦性）" style="position:relative">
+          ⚖ 法庭防禦
+          <span id="courtBadge" style="display:none;position:absolute;top:-5px;right:-6px;background:#dc3545;color:#fff;border-radius:9px;font-size:10px;font-weight:700;padding:1px 5px;min-width:16px;text-align:center;line-height:1.4"></span>
+        </button>
+        <a href="./audit.html" class="ctrl-btn-link" title="查看上傳／刪除／還原的稽核紀錄">🛡️ 稽核</a>
+        <a href="./admin.html" id="adminLink" style="display:none" class="ctrl-btn-link" title="帳號與系統管理">管理後台</a>
+        <span id="tourHelpBtn" title="重新觀看新手導覽" style="cursor:pointer;font-size:14px;color:#888;padding:2px 6px;border:1px solid #ddd;border-radius:50%;line-height:1.4">?</span>
+        <button id="logoutBtn" type="button" class="ctrl-btn">登出</button>
+      </div>
+    </div>
+
+    <!-- ── 區塊一：案件 ── -->
+    <div class="ctrl-section">
+      <div class="ctrl-section-title">案件</div>
+      <label style="display:block;font-size:12px;color:#555;font-weight:500;margin-bottom:4px">案件名稱或編號
         <input id="projectId" type="text" list="projectList"
-               placeholder="A某涉嫌槍砲案"
-               autocomplete="off"
-               style="width:220px" />
+               placeholder="A某涉嫌槍砲案" autocomplete="off"
+               style="display:block;width:100%;margin-top:4px;padding:5px 7px;border:1px solid #ccc;border-radius:6px;font-size:13px" />
         <datalist id="projectList"></datalist>
       </label>
-      <label>Target ID  <input id="targetId"  type="text" value="" placeholder="留空=整個專案；填入=只看此 target" /></label>
-      <button id="membersBtn" type="button" class="small" title="管理此案件的成員授權" style="padding:4px 8px">成員管理</button>
-    </div>
-    <div class="row" style="width:100%">
-      <button id="loadBtn">顯示資料（從資料庫）</button>
-      <span id="status" class="small"></span>
-      <span id="userChip" title="當前登入身份"></span>
-      <span id="modeChip" style="display:none;font-size:12px;font-weight:600;padding:2px 8px;border-radius:10px;cursor:pointer" title="點擊切換使用模式"></span>
-      <a href="./audit.html" style="font-size:13px;color:#0b5ed7;text-decoration:none" title="檢視所有上傳/刪除/還原的稽核紀錄">🛡️ 稽核</a>
-      <button id="courtBtn" type="button" class="small" title="方位角北方基準標註狀態（法庭可防禦性 P2.5-C）" style="padding:4px 8px;position:relative">
-        ⚖ 法庭防禦
-        <span id="courtBadge" style="display:none;position:absolute;top:-5px;right:-6px;background:#dc3545;color:#fff;border-radius:9px;font-size:10px;font-weight:700;padding:1px 5px;min-width:16px;text-align:center;line-height:1.4"></span>
-      </button>
-      <a href="./admin.html" id="adminLink" style="display:none;font-size:13px;color:#0b5ed7;text-decoration:none" title="帳號與系統管理">👤 管理</a>
-      <span id="tourHelpBtn" title="重新觀看新手導覽" style="cursor:pointer;font-size:14px;color:#888;padding:2px 6px;border:1px solid #ddd;border-radius:50%;line-height:1.4">?</span>
-      <button id="logoutBtn" type="button">登出</button>
-    </div>
-    <div class="small">上傳/新增資料請使用下方「上傳」區塊；本區只負責從資料庫顯示。Target ID 留空 = 顯示整個專案；填入 = 僅顯示該 target。</div>
-
-    <hr/>
-
-    <div class="row">
-      <label><input type="checkbox" id="showAcc" checked /> 精度圓</label>
-      <label><input type="checkbox" id="showSector" checked /> 扇形</label>
-      <span class="small" id="totalDistLabel"></span>
-    </div>
-
-    <div class="row">
-      <label>扇形角度
-        <input type="range" id="angleInput" min="20" max="120" step="5" value="60" />
-        <span id="angleVal" class="small">60°</span>
-      </label>
-      <label>扇形最小半徑（m）
-        <input type="number" id="minRadiusInput" min="50" step="50" value="250" />
-      </label>
-    </div>
-
-    <div class="legend small" style="margin-top:6px">
-      每檔固定色（按上傳順序、同一 Project 會記住）：
-      <span class="swatch" style="background:#ff3b30"></span>紅、
-      <span class="swatch" style="background:#ff9500"></span>橙、
-      <span class="swatch" style="background:#34c759"></span>綠、
-      <span class="swatch" style="background:#007aff"></span>藍、
-      <span class="swatch" style="background:#af52de"></span>紫
-    </div>
-
-    <hr/>
-
-    <div class="row">
-      <label><input type="checkbox" id="onlyStops" /> 僅顯示停留時間及地點</label>
-    </div>
-
-    <hr/>
-
-    <div class="row" style="justify-content:space-between;width:100%">
-      <b>資料組（最多 5 檔）</b>
-      <span class="small">
-        <span class="link" id="allShow">全部顯示</span> /
-        <span class="link" id="allHide">全部隱藏</span> /
-        <span class="link" id="allRouteOn">全部路徑</span> /
-        <span class="link" id="allRouteOff">關閉路徑</span> /
-        <span class="link" id="recenterBtn">定位到資料</span>
-      </span>
-    </div>
-    <div id="seriesPanel"></div>
-
-    <hr/>
-
-    <!-- 上傳（單一上傳框，可多檔＋拖放） -->
-    <div id="uploader" class="row" style="flex-direction:column;align-items:stretch;gap:8px;width:100%">
-      <div id="dropzone" class="dropzone">拖放檔案到此或點擊選擇（可多檔：CSV / Excel / PDF）</div>
-      <!-- W1: 補完整 OOXML 家族 — .xltx (Excel 範本)、.xlsm (含巨集)、.xltm 是台灣電信業者實際交付會用到的副檔名 -->
-      <input type="file" id="upl" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.xltx,.xltm,.pdf" multiple hidden />
-      <div class="row">
-        <input type="text" id="tid" placeholder="target_id（全檔共用；留空=以檔名）" />
-        <button id="btnUpload">上傳</button>
+      <div class="row" style="margin-top:8px">
+        <button id="loadBtn">顯示資料（從資料庫）</button>
+        <span id="status" class="small"></span>
       </div>
-      <ul id="uploadList" class="small"></ul>
     </div>
-    <div class="small">支援 CSV / Excel / PDF。後端以 <b>時間</b>＋<b>地址</b> 為主、cell_id 為輔。未填 target_id 時，以上傳檔名（去副檔名）作為 target_id。</div>
 
-    <hr/>
-    <div class="small footer-line">
-      製作人：高市刑大冠鈞　｜　mail：<a href="mailto:e43691@kcg.gov.tw">e43691@kcg.gov.tw</a>
-      <br>
-      <span id="counterText">使用次數統計載入中…</span>
+    <!-- ── 區塊二：顯示對象 ── -->
+    <div class="ctrl-section">
+      <div class="ctrl-section-title">顯示對象</div>
+      <div class="row" style="gap:14px">
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+          <input type="radio" name="targetMode" id="targetAll" value="all" checked />全部對象
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+          <input type="radio" name="targetMode" id="targetOne" value="one" />指定對象
+        </label>
+      </div>
+      <div id="targetIdRow" style="display:none;margin-top:6px">
+        <input id="targetId" type="text" list="targetList"
+               placeholder="輸入或選擇對象名稱" autocomplete="off"
+               style="width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:6px;font-size:13px" />
+        <datalist id="targetList"></datalist>
+      </div>
     </div>
+
+    <!-- ── 區塊三：顯示設定 ── -->
+    <div class="ctrl-section">
+      <div class="ctrl-section-title">顯示設定</div>
+      <div class="row">
+        <label><input type="checkbox" id="showAcc" checked /> 精度圓</label>
+        <label><input type="checkbox" id="showSector" checked /> 扇形</label>
+        <span class="small" id="totalDistLabel"></span>
+      </div>
+      <div class="row" style="margin-top:4px">
+        <label>扇形角度
+          <input type="range" id="angleInput" min="20" max="120" step="5" value="60" />
+          <span id="angleVal" class="small">60°</span>
+        </label>
+        <label>扇形最小半徑（m）
+          <input type="number" id="minRadiusInput" min="50" step="50" value="250" />
+        </label>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <label><input type="checkbox" id="onlyStops" /> 僅顯示停留時間及地點</label>
+      </div>
+      <div class="legend small" style="margin-top:6px">
+        每檔固定色：
+        <span class="swatch" style="background:#ff3b30"></span>紅、
+        <span class="swatch" style="background:#ff9500"></span>橙、
+        <span class="swatch" style="background:#34c759"></span>綠、
+        <span class="swatch" style="background:#007aff"></span>藍、
+        <span class="swatch" style="background:#af52de"></span>紫
+      </div>
+    </div>
+
+    <!-- ── 資料組 ── -->
+    <div class="ctrl-section">
+      <div class="row" style="justify-content:space-between;width:100%">
+        <b>資料組（最多 5 檔）</b>
+        <span class="small">
+          <span class="link" id="allShow">全部顯示</span> /
+          <span class="link" id="allHide">全部隱藏</span> /
+          <span class="link" id="allRouteOn">全部路徑</span> /
+          <span class="link" id="allRouteOff">關閉路徑</span> /
+          <span class="link" id="recenterBtn">定位到資料</span>
+        </span>
+      </div>
+      <div id="seriesPanel"></div>
+    </div>
+
+    <!-- ── 上傳區 ── -->
+    <div class="ctrl-section">
+      <div id="uploader" class="row" style="flex-direction:column;align-items:stretch;gap:8px;width:100%">
+        <div id="dropzone" class="dropzone">拖放檔案到此或點擊選擇（可多檔：CSV / Excel / PDF）</div>
+        <input type="file" id="upl" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.xltx,.xltm,.pdf" multiple hidden />
+        <div class="row">
+          <input type="text" id="tid" placeholder="target_id（全檔共用；留空=以檔名）" />
+          <button id="btnUpload">上傳</button>
+        </div>
+        <ul id="uploadList" class="small"></ul>
+      </div>
+      <div class="small" style="margin-top:6px">支援 CSV / Excel / PDF。後端以 <b>時間</b>＋<b>地址</b> 為主、cell_id 為輔。未填 target_id 時，以上傳檔名（去副檔名）作為 target_id。</div>
+    </div>
+
+    <!-- ── Footer ── -->
+    <div class="ctrl-section">
+      <div class="small footer-line">
+        製作人：高市刑大冠鈞　｜　mail：<a href="mailto:e43691@kcg.gov.tw">e43691@kcg.gov.tw</a>
+        <br>
+        <span id="counterText">使用次數統計載入中…</span>
+      </div>
+    </div>
+
   </div>
 
   <!-- 底部時間範圍 -->
@@ -478,6 +533,7 @@
       _sessionMode = 'temp';
       showTempBanner();
       updateModeChip();
+      updateMembersBtn();
       loadProjectList(); // 臨時模式 → 清空 datalist
     }
 
@@ -512,6 +568,7 @@
         $('projectId').value = name;
         hideTempBanner();
         updateModeChip();
+        updateMembersBtn();
         loadProjectList(); // 進入專案模式 → 重新載入下拉清單
         showToast(`進入專案模式：${name}`, 'success', 2000);
       };
@@ -934,12 +991,28 @@
       const chip = $('userChip');
       if (!chip) return;
       const name = user.real_name || user.username;
-      const unit = user.unit ? ` · ${user.unit}` : '';
-      chip.textContent = `${name}${unit}`;
+      const unit = user.unit ? `｜${user.unit}` : '';
+      chip.innerHTML = `👤 <b>${escH(name)}</b>${unit ? `<span style="color:#aaa;font-weight:400"> ${escH(unit)}</span>` : ''}`;
       chip.title = `@${user.username}（${user.role}）`;
       if (user.role === 'admin') $('adminLink').style.display = '';
       window.__currentUser = user;
       updateModeChip();
+      updateMembersBtn();
+    }
+
+    function updateMembersBtn() {
+      const btn = $('membersBtn');
+      if (!btn) return;
+      const visible = _sessionMode === 'project' && !!$('projectId')?.value?.trim();
+      btn.style.display = visible ? '' : 'none';
+    }
+
+    function populateTargetList() {
+      const dl = $('targetList');
+      if (!dl) return;
+      dl.innerHTML = [...seriesMap.keys()]
+        .map(k => `<option value="${escH(k)}">`)
+        .join('');
     }
 
     function fmtROC(dt){
@@ -1385,7 +1458,7 @@
     async function load(){
       colorMap = loadColorMap(); // 依當前 Project ID 讀色盤
       const projectId=$('projectId').value.trim();
-      const targetId=$('targetId').value.trim();
+      const targetId = ($('targetAll')?.checked) ? '' : ($('targetId')?.value?.trim() || '');
       const url=new URL(`${API_BASE}/projects/${encodeURIComponent(projectId)}/map-layers`);
       if(targetId) url.searchParams.set('target_id',targetId);
 
@@ -1399,6 +1472,8 @@
         await render();
         showToast(`載入完成：${[...seriesMap.values()].reduce((a,s)=>a+s.records.length,0)} 點（共 ${seriesMap.size} 組）`,'success',1800);
         refreshCourtBadge();
+        updateMembersBtn();
+        populateTargetList();
       }catch(e){
         console.error(e);
         showToast('讀取失敗（請看 Console）','error',2200);
@@ -1957,7 +2032,18 @@
         if (!val) return;
         _sessionProjectId = val;
         updateModeChip();
+        updateMembersBtn();
         load();
+      });
+
+      // 顯示對象 radio
+      $('targetAll').addEventListener('change', () => {
+        $('targetIdRow').style.display = 'none';
+      });
+      $('targetOne').addEventListener('change', () => {
+        $('targetIdRow').style.display = '';
+        populateTargetList();
+        $('targetId').focus();
       });
 
       load(); // 初次載入
