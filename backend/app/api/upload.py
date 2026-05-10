@@ -21,7 +21,7 @@ from app.security import (
 )
 from app.services.audit import write_audit
 from app.services.evidence import register_evidence, update_evidence_stats
-from app.services.ingest import ingest_auto, ingest_pdf
+from app.services.ingest import ingest_auto, ingest_pdf, parse_file_only
 
 router = APIRouter()
 
@@ -168,3 +168,63 @@ async def upload_file(
             status_code=400, error_text=str(e),
         )
         raise HTTPException(status_code=400, detail=f"匯入失敗：{type(e).__name__}: {e}")
+
+
+# ---------- 臨時解析端點（不寫 DB，回傳 GeoJSON）----------
+@router.post("/parse-temp")
+async def parse_temp(
+    file: UploadFile = File(...),
+    target_id: str = Form(""),
+    _current_user: dict = Depends(get_current_user),
+):
+    """
+    解析 + geocode 但不寫 DB，供前端臨時模式使用。
+    回傳 GeoJSON FeatureCollection（與 /map-layers 同格式）。
+    """
+    filename = file.filename or "upload"
+    content = await file.read()
+
+    if not target_id:
+        target_id = filename.rsplit(".", 1)[0]
+
+    try:
+        records = parse_file_only(target_id, filename, content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"解析失敗：{type(e).__name__}: {e}")
+
+    features = []
+    skipped = 0
+    for r in records:
+        if r.get("lat") is None or r.get("lng") is None:
+            skipped += 1
+            continue
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [r["lng"], r["lat"]]},
+            "properties": {
+                "target_id":   r["target_id"],
+                "cell_addr":   r.get("cell_addr"),
+                "start_ts":    r.get("start_ts"),
+                "end_ts":      r.get("end_ts"),
+                "cell_id":     r.get("cell_id"),
+                "accuracy_m":  r.get("accuracy_m"),
+                "azimuth":     r.get("azimuth"),
+                "azimuth_ref": r.get("azimuth_ref", "unknown"),
+                "sector_id":   r.get("sector_id"),
+                "sector_name": r.get("sector_name"),
+                "site_code":   r.get("site_code"),
+            },
+        })
+
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "total":   len(records),
+        "plotted": len(features),
+        "skipped": skipped,
+        "_source":  "parse-temp",
+        "_records": records,  # 完整記錄供「儲存為專案」時使用（含無座標列）
+    }

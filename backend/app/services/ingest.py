@@ -923,3 +923,119 @@ def ingest_pdf(project_id: str, target_id: str, file_bytes: bytes) -> Dict[str, 
         inserted = _insert_records(rows)
 
     return {"total": total, "inserted": inserted, "skipped": skipped, "errors": errors[:50]}
+
+
+# ====== Parse-only（臨時模式）：解析 + geocode，不寫 DB ======
+
+def parse_file_only(target_id: str, filename: str, file_bytes: bytes) -> List[Dict[str, Any]]:
+    """
+    解析 + geocode，但不寫入 DB。供前端臨時模式使用。
+    回傳 record dict list（含 lat/lng/start_ts 等所有欄位）。
+    """
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext in {"csv", "txt", "tsv"}:
+        return _parse_rows_to_records(target_id, _iter_rows_csv(file_bytes))
+    elif ext in {"xlsx", "xltx", "xlsm", "xltm"}:
+        return _parse_rows_to_records(target_id, _iter_rows_excel(file_bytes))
+    elif ext == "pdf":
+        return _parse_pdf_to_records(target_id, file_bytes)
+    else:
+        raise ValueError("不支援的檔案格式：請使用 CSV / TXT / XLSX / XLTX / PDF")
+
+
+def _parse_rows_to_records(target_id: str, rows_iter: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把 rows 解析 + geocode，不做 DB insert，回傳 list[dict]。"""
+    _geo_cache: Dict[tuple, Optional[tuple]] = {}
+    result: List[Dict[str, Any]] = []
+
+    for idx, raw in enumerate(rows_iter, start=1):
+        r = _normalize_row(raw)
+
+        start_ts = _parse_ts(r.get("start_ts"))
+        if not start_ts:
+            continue
+        end_ts = _parse_ts(r.get("end_ts")) or start_ts
+
+        cell_id   = (str(r.get("cell_id")   or "").strip() or None)
+        cell_addr = (str(r.get("cell_addr") or "").strip() or None)
+        if not cell_addr and not cell_id:
+            continue
+
+        geo_key = (cell_id, cell_addr)
+        if geo_key not in _geo_cache:
+            try:
+                _geo_cache[geo_key] = geocode.lookup(cell_id, cell_addr)
+            except Exception:
+                _geo_cache[geo_key] = None
+        ll = _geo_cache[geo_key]
+        lat = lng = None
+        if ll:
+            lat, lng = ll
+
+        result.append({
+            "target_id":   target_id,
+            "start_ts":    start_ts.isoformat(),
+            "end_ts":      end_ts.isoformat(),
+            "cell_id":     cell_id,
+            "cell_addr":   cell_addr,
+            "sector_name": (str(r.get("sector_name") or "").strip() or None),
+            "site_code":   (str(r.get("site_code")   or "").strip() or None),
+            "sector_id":   (str(r.get("sector_id")   or "").strip() or None),
+            "azimuth":     _to_int(r.get("azimuth")),
+            "lat":         _to_float(lat),
+            "lng":         _to_float(lng),
+            "accuracy_m":  _to_int(_guess_accuracy(cell_addr)),
+            "azimuth_ref": "unknown",
+        })
+    return result
+
+
+def _parse_pdf_to_records(target_id: str, file_bytes: bytes) -> List[Dict[str, Any]]:
+    """同 ingest_pdf 但不寫 DB，回傳 list[dict]。"""
+    if pdfplumber is None:
+        raise ValueError("後端缺少 pdfplumber")
+    result: List[Dict[str, Any]] = []
+
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for pno, page in enumerate(pdf.pages, start=1):
+            tables = _extract_tables_from_page(page)
+            for t in tables:
+                if not t:
+                    continue
+                header = [(c or "").strip() for c in t[0]]
+                col = _match_col_idx(header)
+                for row in t[1:]:
+                    rr = [(row[i] if i < len(row) else "") for i in range(len(header))]
+                    start_ts = _parse_ts(rr[col["start"]]) if col.get("start", -1) >= 0 else None
+                    if not start_ts:
+                        continue
+                    end_ts = _parse_ts(rr[col["end"]]) if col.get("end", -1) >= 0 else start_ts
+                    cell_id   = (rr[col["cellid"]].strip() if col.get("cellid", -1) >= 0 and rr[col["cellid"]] else None)
+                    cell_addr = (rr[col["addr"]].strip()   if col.get("addr", -1)   >= 0 and rr[col["addr"]]   else None)
+                    if not cell_addr and not cell_id:
+                        continue
+
+                    lat = lng = None
+                    try:
+                        ll = geocode.lookup(cell_id, cell_addr)
+                        if ll:
+                            lat, lng = ll
+                    except Exception:
+                        pass
+
+                    result.append({
+                        "target_id":   target_id,
+                        "start_ts":    start_ts.isoformat(),
+                        "end_ts":      end_ts.isoformat(),
+                        "cell_id":     cell_id,
+                        "cell_addr":   cell_addr,
+                        "sector_name": (rr[col["sector"]].strip() if col.get("sector", -1) >= 0 and rr[col["sector"]] else None),
+                        "site_code":   (rr[col["site"]].strip()   if col.get("site",   -1) >= 0 and rr[col["site"]]   else None),
+                        "sector_id":   (rr[col["cid"]].strip()    if col.get("cid",    -1) >= 0 and rr[col["cid"]]    else None),
+                        "azimuth":     (_to_int(rr[col["az"]]) if col.get("az", -1) >= 0 else None),
+                        "lat":         _to_float(lat),
+                        "lng":         _to_float(lng),
+                        "accuracy_m":  _to_int(_guess_accuracy(cell_addr)),
+                        "azimuth_ref": "unknown",
+                    })
+    return result

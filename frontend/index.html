@@ -190,6 +190,7 @@
       <button id="loadBtn">顯示資料（從資料庫）</button>
       <span id="status" class="small"></span>
       <span id="userChip" title="當前登入身份"></span>
+      <span id="modeChip" style="display:none;font-size:12px;font-weight:600;padding:2px 8px;border-radius:10px;cursor:pointer" title="點擊切換使用模式"></span>
       <a href="./audit.html" style="font-size:13px;color:#0b5ed7;text-decoration:none" title="檢視所有上傳/刪除/還原的稽核紀錄">🛡️ 稽核</a>
       <a href="./admin.html" id="adminLink" style="display:none;font-size:13px;color:#0b5ed7;text-decoration:none" title="帳號與系統管理">👤 管理</a>
       <span id="tourHelpBtn" title="重新觀看新手導覽" style="cursor:pointer;font-size:14px;color:#888;padding:2px 6px;border:1px solid #ddd;border-radius:50%;line-height:1.4">?</span>
@@ -349,21 +350,346 @@
       window.location.href = './login.html';
     }
 
-    // ── 臨時查看 vs 儲存為專案 ──────────────────────────────────
-    let _tempMode = false;
-    let _lastQueuedFiles = []; // 臨時模式上傳後保留備份供「儲存為專案」重用
+    // ── Session 模式 + 臨時查看 vs 儲存為專案 ────────────────
+    // _sessionMode：登入後選一次，整個 session 有效
+    //   'temp'    → 臨時模式（不呼叫存檔 API）
+    //   'project' → 專案模式（呼叫存檔 API）
+    //   null      → 尚未選擇（首次選擇）
+    let _sessionMode = null;
+    let _sessionProjectId = null;  // 專案模式下的 project_id
+    // _tempRecordsStore：target_id → _records[]（parse-temp 回傳的完整紀錄，供儲存用）
+    const _tempRecordsStore = new Map();
 
+    const SESSION_MODE_KEY = 'ct_session_mode';  // localStorage key for remember
+
+    // 衍生：是否在臨時模式（向後相容 showTempBanner/hideTempBanner）
+    function isTemporary() { return _sessionMode === 'temp'; }
+    let _tempMode = false; // kept for legacy references
     function showTempBanner() {
       _tempMode = true;
       $('tempBanner').style.display = 'flex';
     }
     function hideTempBanner() {
-      _tempMode = false;
       $('tempBanner').style.display = 'none';
     }
 
     $('dismissTempBtn').addEventListener('click', hideTempBanner);
-    $('saveAsProjectBtn').addEventListener('click', () => openUploadModeModal(_lastQueuedFiles, true));
+    $('saveAsProjectBtn').addEventListener('click', () => openSaveToProjectModal());
+
+    // ── mode chip 顯示 ──
+    function updateModeChip() {
+      const el = $('modeChip');
+      if (!el) return;
+      if (_sessionMode === 'temp') {
+        el.style.display = '';
+        el.style.background = '#fff3e0';
+        el.style.color = '#e65100';
+        el.style.border = '1px solid #ffcc80';
+        el.textContent = '⚠ 臨時模式';
+      } else if (_sessionMode === 'project' && _sessionProjectId) {
+        el.style.display = '';
+        el.style.background = '#e8f0fe';
+        el.style.color = '#1a56db';
+        el.style.border = '1px solid #c7d7fd';
+        el.textContent = '📁 ' + _sessionProjectId;
+      } else {
+        el.style.display = 'none';
+      }
+    }
+    // mode chip 點擊 → 重新選擇模式
+    $('modeChip').addEventListener('click', () => {
+      if (window.__currentUser) showModeSelectionModal(window.__currentUser);
+    });
+
+    // ── 登入後模式選擇 modal ──
+    function showModeSelectionModal(user) {
+      const remembered = localStorage.getItem(SESSION_MODE_KEY);
+      if (remembered === 'temp') { applyTempMode(); return; }
+      if (remembered === 'project') { openProjectCreationModal(user); return; }
+
+      const overlay = _makeOverlay();
+      overlay.innerHTML = `
+        <div style="background:#fff;border-radius:14px;padding:28px 24px;width:min(96vw,540px);box-shadow:0 8px 32px rgba(0,0,0,.25);font:14px/1.5 system-ui,-apple-system,sans-serif;">
+          <div style="font-size:17px;font-weight:700;margin-bottom:20px;text-align:center">請選擇使用模式</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px">
+            <div id="_smTemp" style="border:2px solid #e65100;border-radius:10px;padding:18px;cursor:pointer;transition:.15s" onmouseover="this.style.background='#fff3e0'" onmouseout="this.style.background=''">
+              <div style="font-size:15px;font-weight:700;color:#e65100;margin-bottom:8px">⚡ 臨時使用</div>
+              <div style="font-size:12px;color:#555;line-height:1.75">不存檔<br/>關閉後資料消失<br/>無法分享協作</div>
+            </div>
+            <div id="_smProject" style="border:2px solid #1a56db;border-radius:10px;padding:18px;cursor:pointer;transition:.15s" onmouseover="this.style.background='#eef6ff'" onmouseout="this.style.background=''">
+              <div style="font-size:15px;font-weight:700;color:#1a56db;margin-bottom:8px">📁 專案管理</div>
+              <div style="font-size:12px;color:#555;line-height:1.75">存檔<br/>可跨裝置查看<br/>可授權給同事</div>
+            </div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#555;cursor:pointer">
+            <input type="checkbox" id="_smRemember" />
+            記住我的選擇，下次不再詢問
+          </label>
+        </div>`;
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('#_smTemp').onclick = () => {
+        if (overlay.querySelector('#_smRemember').checked) localStorage.setItem(SESSION_MODE_KEY, 'temp');
+        overlay.remove();
+        applyTempMode();
+      };
+      overlay.querySelector('#_smProject').onclick = () => {
+        const remember = overlay.querySelector('#_smRemember').checked;
+        overlay.remove();
+        if (remember) localStorage.setItem(SESSION_MODE_KEY, 'project');
+        openProjectCreationModal(user, remember);
+      };
+    }
+
+    function applyTempMode() {
+      _sessionMode = 'temp';
+      showTempBanner();
+      updateModeChip();
+    }
+
+    function openProjectCreationModal(user, rememberMode = false) {
+      const overlay = _makeOverlay();
+      overlay.innerHTML = `
+        <div style="background:#fff;border-radius:14px;padding:26px 24px;width:min(96vw,420px);box-shadow:0 8px 32px rgba(0,0,0,.25);font:14px/1.5 system-ui,-apple-system,sans-serif;">
+          <div style="font-size:16px;font-weight:700;margin-bottom:18px">📁 建立新專案</div>
+          <label style="display:block;margin-bottom:14px;font-size:13px;color:#555;font-weight:500">
+            專案名稱（Project ID）
+            <input id="_pcName" type="text" placeholder="例：2026_HL001" autocomplete="off"
+              style="display:block;width:100%;padding:9px 10px;margin-top:5px;border:1px solid #ccc;border-radius:7px;font-size:14px;box-sizing:border-box"/>
+          </label>
+          <div id="_pcMsg" style="font-size:12px;color:#d00;min-height:16px;margin-bottom:12px"></div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="this.closest('[data-overlay]').remove();showModeSelectionModal(window.__currentUser);" style="padding:8px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;background:#fff">← 返回</button>
+            <button id="_pcConfirm" style="padding:8px 18px;border:none;border-radius:6px;cursor:pointer;font-size:13px;background:#1a56db;color:#fff">建立專案</button>
+          </div>
+        </div>`;
+      overlay.setAttribute('data-overlay','1');
+      document.body.appendChild(overlay);
+
+      const nameEl = overlay.querySelector('#_pcName');
+      const msgEl  = overlay.querySelector('#_pcMsg');
+      nameEl.focus();
+      overlay.querySelector('#_pcConfirm').onclick = () => {
+        const name = nameEl.value.trim();
+        if (!name) { msgEl.textContent = '請填入專案名稱'; return; }
+        overlay.remove();
+        _sessionMode = 'project';
+        _sessionProjectId = name;
+        $('projectId').value = name;
+        hideTempBanner();
+        updateModeChip();
+        showToast(`進入專案模式：${name}`, 'success', 2000);
+      };
+    }
+
+    // ── 臨時模式：upload → parse-temp → appendGeoJsonToSeries ──
+    async function doTempUpload(files) {
+      showToast('臨時解析中…', 'info', 1200);
+      for (const file of files) {
+        const tid = file.name.replace(/\.[^.]+$/, '');
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('target_id', tid);
+        try {
+          const res = await fetch(
+            (API_BASE || 'http://localhost:8000') + '/api/upload/parse-temp',
+            { method:'POST', headers: { ...authHeaders() }, body: fd }
+          );
+          if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            throw new Error(j.detail || 'HTTP ' + res.status);
+          }
+          const geo = await res.json();
+          // 存原始 records 供儲存為專案使用
+          _tempRecordsStore.set(tid, geo._records || []);
+          appendGeoJsonToSeries(geo);
+          showToast(`${tid}：解析 ${geo.plotted} 點（${geo.skipped} 筆無座標跳過）`, 'success', 2200);
+        } catch(e) {
+          showToast(`${tid} 解析失敗：${e.message}`, 'error', 3000);
+          console.error('[parse-temp]', e);
+        }
+      }
+      shouldFit = true;
+      refreshSeriesPanel();
+      await render();
+    }
+
+    // 不清除現有 series，直接追加新 series 的 features
+    function appendGeoJsonToSeries(geo) {
+      (geo.features || []).forEach(f => {
+        const coords = f?.geometry?.coordinates; if (!coords) return;
+        const [lng, lat] = coords;
+        const p = f.properties || {};
+        const id = String(p.target_id || 'unknown');
+        const start = toDate(p.start_ts), end = toDate(p.end_ts);
+        const acc = Number(p.accuracy_m || 0);
+        if (!seriesMap.has(id)) {
+          const color = getSeriesColor(id);
+          seriesMap.set(id, {
+            color, visible:true, showTrack:true, showRoute:false, showTimeLabels:false,
+            records: [],
+            layers: {
+              points: L.layerGroup().addTo(map),
+              over:   L.layerGroup().addTo(map),
+              stops:  L.layerGroup().addTo(map),
+              track:  L.polyline([], { pane:'paneTrack', color, weight:3, opacity:.9 }).addTo(map),
+              route:  L.polyline([], { pane:'paneRoute', color, weight:3, dashArray:'6 6', opacity:.9 }).addTo(map),
+              timelabels: L.layerGroup().addTo(map)
+            },
+            lastRouteKey:'', abort:null, distM:0
+          });
+        }
+        seriesMap.get(id).records.push({ lat, lng, acc, az:Number(p.azimuth), props:p, start, end });
+      });
+      for (const s of seriesMap.values()) s.records.sort((a,b) => (a.start||0) - (b.start||0));
+    }
+
+    // ── 專案模式：upload → 正常 API ──
+    async function doProjectUpload(files) {
+      const projId = _sessionProjectId || $('projectId').value.trim();
+      if (!projId) { showToast('請先設定專案名稱', 'error', 2000); return; }
+
+      if (files.length === 1) {
+        await _askTargetAndUpload(projId, files[0]);
+      } else {
+        // 多檔：依序詢問
+        for (const f of files) {
+          await _askTargetAndUpload(projId, f);
+        }
+      }
+    }
+
+    function _askTargetAndUpload(projId, file) {
+      return new Promise(resolve => {
+        const overlay = _makeOverlay();
+        const defaultTid = file.name.replace(/\.[^.]+$/, '');
+        overlay.innerHTML = `
+          <div style="background:#fff;border-radius:14px;padding:24px;width:min(96vw,400px);box-shadow:0 8px 32px rgba(0,0,0,.25);font:14px/1.5 system-ui,-apple-system,sans-serif;">
+            <div style="font-size:15px;font-weight:700;margin-bottom:14px">上傳至專案 <code style="font-size:13px;color:#1a56db">${escH(projId)}</code></div>
+            <label style="display:block;margin-bottom:12px;font-size:13px;color:#555;font-weight:500">
+              歷程名稱（Target ID）
+              <input id="_atTid" type="text" value="${escH(defaultTid)}" placeholder="留空=使用檔名"
+                style="display:block;width:100%;padding:8px 10px;margin-top:4px;border:1px solid #ccc;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+            </label>
+            <div style="font-size:12px;color:#888;margin-bottom:12px">檔案：${escH(file.name)}</div>
+            <div id="_atMsg" style="font-size:12px;color:#d00;min-height:14px;margin-bottom:10px"></div>
+            <div style="display:flex;gap:8px;justify-content:flex-end">
+              <button id="_atCancel" style="padding:8px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;background:#fff">取消</button>
+              <button id="_atOk" style="padding:8px 18px;border:none;border-radius:6px;cursor:pointer;font-size:13px;background:#1a56db;color:#fff">上傳</button>
+            </div>
+          </div>`;
+        document.body.appendChild(overlay);
+        overlay.querySelector('#_atCancel').onclick = () => { overlay.remove(); resolve(); };
+        overlay.querySelector('#_atOk').onclick = async () => {
+          const tid = overlay.querySelector('#_atTid').value.trim() || defaultTid;
+          overlay.remove();
+          showToast(`上傳 ${file.name}…`, 'info', 1200);
+          try {
+            await uploadOneFile(projId, tid, file);
+            $('projectId').value = projId;
+            colorMap = loadColorMap();
+            showToast('上傳完成，重新載入…', 'success', 1400);
+            await load();
+          } catch(e) {
+            showToast('上傳失敗：' + (e.message || '請看 Console'), 'error', 3000);
+          }
+          resolve();
+        };
+      });
+    }
+
+    // ── 臨時→專案：儲存為專案 modal ──
+    function openSaveToProjectModal() {
+      const series = [...seriesMap.entries()];
+      if (series.length === 0) {
+        showToast('目前無資料可儲存', 'error', 1800);
+        return;
+      }
+      const tidInputs = series.map(([id], i) =>
+        `<label style="display:block;margin-bottom:10px;font-size:13px;color:#555;font-weight:500">
+          第 ${i+1} 筆歷程名稱
+          <input type="text" class="_stpTid" data-orig="${escH(id)}" value="${escH(id)}"
+            style="display:block;width:100%;padding:7px 10px;margin-top:3px;border:1px solid #ccc;border-radius:6px;font-size:13px;box-sizing:border-box"/>
+         </label>`
+      ).join('');
+
+      const overlay = _makeOverlay();
+      overlay.innerHTML = `
+        <div style="background:#fff;border-radius:14px;padding:26px 24px;width:min(96vw,460px);max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25);font:14px/1.5 system-ui,-apple-system,sans-serif;">
+          <div style="font-size:16px;font-weight:700;margin-bottom:18px">📁 將目前資料儲存為專案</div>
+          <label style="display:block;margin-bottom:14px;font-size:13px;color:#555;font-weight:500">
+            專案名稱（Project ID）
+            <input id="_stpProj" type="text" placeholder="例：2026_HL001" autocomplete="off"
+              style="display:block;width:100%;padding:8px 10px;margin-top:4px;border:1px solid #ccc;border-radius:7px;font-size:14px;box-sizing:border-box"/>
+          </label>
+          <div style="font-size:13px;color:#555;font-weight:500;margin-bottom:8px">目前已上傳的歷程請逐一命名：</div>
+          ${tidInputs}
+          <div id="_stpMsg" style="font-size:12px;color:#d00;min-height:14px;margin-bottom:12px"></div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="this.closest('[data-overlay]').remove()" style="padding:8px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;background:#fff">取消</button>
+            <button id="_stpConfirm" style="padding:8px 18px;border:none;border-radius:6px;cursor:pointer;font-size:13px;background:#1a56db;color:#fff">確認儲存</button>
+          </div>
+        </div>`;
+      overlay.setAttribute('data-overlay','1');
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('#_stpConfirm').onclick = async () => {
+        const projId = overlay.querySelector('#_stpProj').value.trim();
+        const msgEl  = overlay.querySelector('#_stpMsg');
+        if (!projId) { msgEl.textContent = '請填入專案名稱'; return; }
+        const tidEls = [...overlay.querySelectorAll('._stpTid')];
+        if (tidEls.some(el => !el.value.trim())) { msgEl.textContent = '所有歷程名稱均不能為空'; return; }
+
+        msgEl.textContent = '儲存中…';
+        overlay.querySelector('#_stpConfirm').disabled = true;
+        let allOk = true;
+
+        for (const el of tidEls) {
+          const origId = el.dataset.orig;
+          const newTid = el.value.trim();
+          const records = _tempRecordsStore.get(origId) || [];
+          if (!records.length) {
+            msgEl.textContent = `歷程「${origId}」無資料可儲存`;
+            allOk = false; break;
+          }
+          // 更新 target_id
+          const body = { records: records.map(r => ({ ...r, target_id: newTid })), source_note: 'converted from temp mode' };
+          try {
+            const r = await fetch(
+              `${API_BASE}/projects/${encodeURIComponent(projId)}/targets/${encodeURIComponent(newTid)}/save-records`,
+              { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) }
+            );
+            if (!r.ok) {
+              const j = await r.json().catch(() => ({}));
+              throw new Error(j.detail || 'HTTP ' + r.status);
+            }
+          } catch(e) {
+            msgEl.textContent = `儲存「${newTid}」失敗：${e.message}`;
+            allOk = false; break;
+          }
+        }
+
+        if (allOk) {
+          overlay.remove();
+          _sessionMode = 'project';
+          _sessionProjectId = projId;
+          $('projectId').value = projId;
+          hideTempBanner();
+          _tempRecordsStore.clear();
+          updateModeChip();
+          showToast(`已儲存為專案「${projId}」`, 'success', 2500);
+        } else {
+          overlay.querySelector('#_stpConfirm').disabled = false;
+        }
+      };
+    }
+
+    // 工具：建立半透明 overlay
+    function _makeOverlay() {
+      const el = document.createElement('div');
+      el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+      return el;
+    }
 
     function openUploadModeModal(files, skipToSave = false) {
       if (!files || files.length === 0) {
@@ -568,7 +894,7 @@
       initAfterLogin(user);
     }
 
-    // 更新右上角使用者 chip
+    // 更新右上角使用者 chip（同時初始化 mode chip）
     function updateUserChip(user){
       const chip = $('userChip');
       if (!chip) return;
@@ -578,6 +904,7 @@
       chip.title = `@${user.username}（${user.role}）`;
       if (user.role === 'admin') $('adminLink').style.display = '';
       window.__currentUser = user;
+      updateModeChip();
     }
 
     function fmtROC(dt){
@@ -1108,13 +1435,18 @@
 
     async function uploadQueued(){
       if (queuedFiles.length === 0) { showToast('請先選擇檔案', 'error', 1800); return; }
-      // 開啟選擇 modal（臨時查看 vs 儲存為專案）
-      // modal 內部選擇後呼叫 doActualUpload()，上傳完成後 queuedFiles 不在此清空
-      // （doActualUpload 會自行更新 projectId 與地圖，queuedFiles 保留供「儲存為專案」重用）
       const snapshot = [...queuedFiles];
       queuedFiles = [];
       refreshUploadList();
-      openUploadModeModal(snapshot);
+
+      if (_sessionMode === 'temp') {
+        await doTempUpload(snapshot);
+      } else if (_sessionMode === 'project') {
+        await doProjectUpload(snapshot);
+      } else {
+        // 未選擇模式（fallback：維持舊的 per-upload 選擇 modal）
+        openUploadModeModal(snapshot);
+      }
     }
 
     // ── P2.5-B：方位角北方基準標註 modal ───────────────────────
@@ -1450,6 +1782,8 @@
       bumpAndShowCounter();
       // 首次登入自動啟動導覽
       if (!localStorage.getItem(TOUR_DONE_KEY)) startTour();
+      // 模式選擇（有 token 才詢問；匿名直接跳過）
+      if (TOKEN) showModeSelectionModal(user);
       load(); // 初次載入
     }
 

@@ -10,14 +10,15 @@ P1 改動（2026-04-26）：
   改為 UPDATE deleted_at = now()，搭配 audit_logs 記錄誰刪、何時刪、為何刪。
   證物保全的核心：「刪不掉的紀錄」 + 「可還原的軟刪」。
 """
-from typing import Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.db.session import get_conn
-from app.security import assert_project_access, get_current_user, require_admin
+from app.security import AUTH_ENABLED, assert_project_access, get_current_user, require_admin
 from app.services.audit import write_audit
+from app.services.ingest import _insert_records, _parse_ts
 
 router = APIRouter()
 
@@ -416,4 +417,83 @@ def get_project_azimuth_ref_summary(
         "project_id": project_id,
         "project_unknown_pct": round(all_unknown / all_total * 100, 1) if all_total else 0.0,
         "targets": items,
+    }
+
+
+# ============================================================
+# P4.3：儲存臨時模式記錄至 DB（臨時→專案轉換）
+# ============================================================
+class SaveRecordsIn(BaseModel):
+    records: List[Dict[str, Any]] = Field(
+        ..., description="從 parse-temp 取得的 record list，每筆含 lat/lng/start_ts 等"
+    )
+    source_note: str = Field(default="converted from temp mode", max_length=255)
+
+
+@router.post("/projects/{project_id}/targets/{target_id}/save-records")
+def save_records(
+    project_id: str,
+    target_id: str,
+    request: Request,
+    body: SaveRecordsIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    將前端臨時模式解析好的 records 直接寫入 DB（不需重新上傳原始檔案）。
+
+    records 格式與 parse-temp response._records 相同：
+      [{ start_ts, end_ts, cell_id, cell_addr, lat, lng, azimuth, ... }]
+
+    注意：
+    - 不建立 evidence_file 記錄（無原始檔案可 hash）
+    - audit_logs 會記錄此轉換動作，包含 source_note
+    - lat/lng 為 None 的記錄仍會寫入（geom = NULL，不在地圖顯示）
+    """
+    if AUTH_ENABLED and current_user.get("role") != "admin":
+        assert_project_access(current_user, project_id, "collaborator")
+
+    db_records: List[Dict[str, Any]] = []
+    for r in body.records:
+        start_ts = _parse_ts(r.get("start_ts"))
+        end_ts   = _parse_ts(r.get("end_ts")) or start_ts
+        if not start_ts:
+            continue
+        db_records.append({
+            "project_id":  project_id,
+            "target_id":   target_id,
+            "start_ts":    start_ts,
+            "end_ts":      end_ts,
+            "cell_id":     r.get("cell_id"),
+            "cell_addr":   r.get("cell_addr"),
+            "sector_name": r.get("sector_name"),
+            "site_code":   r.get("site_code"),
+            "sector_id":   r.get("sector_id"),
+            "azimuth":     r.get("azimuth"),
+            "lat":         r.get("lat"),
+            "lng":         r.get("lng"),
+            "accuracy_m":  r.get("accuracy_m"),
+        })
+
+    inserted = _insert_records(db_records)
+
+    write_audit(
+        action="save_temp_records",
+        user=current_user,
+        request=request,
+        target_type="raw_traces",
+        target_ref=target_id,
+        project_id=project_id,
+        details={
+            "inserted":    inserted,
+            "total_in":    len(body.records),
+            "source_note": body.source_note,
+        },
+        status_code=200,
+    )
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "target_id":  target_id,
+        "inserted":   inserted,
+        "total_in":   len(body.records),
     }
