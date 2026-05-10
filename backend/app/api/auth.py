@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 
@@ -11,12 +11,14 @@ from app.security import (
     verify_password,
     verify_password_db,
 )
+from app.services.limiter import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/login")
-def login(form: OAuth2PasswordRequestForm = Depends()):
+@limiter.limit("10/5minutes")
+def login(request: Request, form: OAuth2PasswordRequestForm = Depends()):
     """
     Content-Type: application/x-www-form-urlencoded
     username=...&password=...
@@ -79,7 +81,9 @@ class ChangePasswordIn(BaseModel):
 
 
 @router.post("/change-password")
+@limiter.limit("5/5minutes")
 def change_password(
+    request: Request,
     payload: ChangePasswordIn,
     current_user: dict = Depends(get_current_user),
 ):

@@ -59,6 +59,18 @@
       </label>
       <div id="loginMsg" class="msg"></div>
       <button id="loginBtn" class="primary">登入</button>
+
+      <div style="margin-top:14px;text-align:center;font-size:12px;display:flex;flex-direction:column;gap:6px">
+        <a href="./register.html" style="color:#007aff;text-decoration:none">申請帳號</a>
+        <span id="forgotToggle" style="color:#888;cursor:pointer;text-decoration:underline">
+          忘記帳號或密碼？
+        </span>
+      </div>
+      <div id="forgotBox" style="display:none;margin-top:10px;background:#f8f9fa;border:1px solid #dde;border-radius:8px;padding:10px 14px;font-size:12px;color:#444;line-height:1.8">
+        請電洽管理員辦理重設<br/>
+        <b>管理員電話：</b>07-7193020<br/>
+        <b>服務時間：</b>週一至週五 09:00–17:00
+      </div>
     </div>
 
     <!-- 首次登入修改密碼（must_change_password=true 時顯示） -->
@@ -96,6 +108,11 @@
   let _tempToken = null;   // 登入後暫存；成功修改密碼後失效
   let _oldPassword = '';   // 僅存於記憶體，不寫入 localStorage
 
+  // 過期提示（從 index.html 或其他頁帶 ?expired=1 跳過來）
+  if (new URLSearchParams(location.search).get('expired') === '1') {
+    setLoginMsg('登入已過期，請重新登入');
+  }
+
   // 已有 token → 驗證後決定導向
   (async function init() {
     const tok = localStorage.getItem(TOKEN_KEY);
@@ -105,9 +122,9 @@
       if (!r.ok) throw 0;
       const user = await r.json();
       if (user.must_change_password) {
-        // 有舊 token 但需改密碼：清掉強制重登，避免 _oldPassword 遺失
+        // 有舊 token 但需改密碼：清掉強制重登，避免舊密碼遺失
         localStorage.removeItem(TOKEN_KEY);
-        setLoginMsg('您的帳號需要修改密碼，請重新輸入以繼續');
+        setLoginMsg('請重新輸入帳號密碼以完成密碼修改');
       } else {
         window.location.href = './index.html';
       }
@@ -152,8 +169,9 @@
       _tempToken = j.access_token;
       if (j.must_change_password) {
         _oldPassword = p;  // 暫存供 change-password API 使用
+        sessionStorage.setItem('_cp_old', p);  // sessionStorage 跨頁傳遞
         setLoginMsg('');
-        showChangeSection();
+        window.location.href = './change-password.html';
       } else {
         window.location.href = './index.html';
       }
@@ -195,6 +213,10 @@
   document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   document.getElementById('loginUser').addEventListener('keydown', e => {
     if (e.key === 'Enter') document.getElementById('loginPass').focus();
+  });
+  document.getElementById('forgotToggle').addEventListener('click', () => {
+    const box = document.getElementById('forgotBox');
+    box.style.display = box.style.display === 'none' ? '' : 'none';
   });
   document.getElementById('changeBtn').addEventListener('click', doChangePassword);
   document.getElementById('newPass1').addEventListener('keydown', e => {

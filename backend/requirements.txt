@@ -10,6 +10,10 @@ psycopg-binary==3.2.10
 psycopg-pool==3.2.6
 python-multipart==0.0.9
 
+# === Rate Limiting ===
+slowapi==0.1.9
+limits==5.8.0
+
 # === Auth / Security ===
 passlib==1.7.4
 # 注意：passlib 1.7.4 與 bcrypt 5.x 不相容（會觸發 "password cannot be longer than 72 bytes"），

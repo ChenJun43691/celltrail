@@ -10,13 +10,22 @@ CellTrail FastAPI 入口。
 from dotenv import load_dotenv
 load_dotenv()
 
+import logging
 import os
+import traceback
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.db.session import pool
+from app.services.limiter import limiter
+
+logger = logging.getLogger("celltrail")
 
 
 # ---------- Lifespan ----------
@@ -71,6 +80,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# slowapi：Rate limiter 掛在 app.state
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
@@ -78,6 +92,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------- 全局 500 錯誤處理：不洩漏 stack trace ----------
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        "Unhandled exception %s %s — %s\n%s",
+        request.method, request.url.path,
+        type(exc).__name__,
+        traceback.format_exc(),
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "系統發生錯誤，請稍後再試"},
+    )
 
 
 # ---------- Routers ----------
@@ -92,7 +121,8 @@ from app.api.users   import router as users_router    # noqa: E402
 from app.api.geocode import router as geocode_router  # noqa: E402
 from app.api.audit   import router as audit_router    # noqa: E402
 from app.api.report  import router as report_router   # noqa: E402
-from app.api.members import router as members_router  # noqa: E402
+from app.api.members  import router as members_router   # noqa: E402
+from app.api.requests import router as requests_router  # noqa: E402
 
 app.include_router(health_router,  prefix="/api/health", tags=["health"])
 app.include_router(auth_router,    prefix="/api",        tags=["auth"])
@@ -104,7 +134,8 @@ app.include_router(stats_router,   prefix="/api",        tags=["stats"])
 app.include_router(geocode_router, prefix="/api",        tags=["geocode"])
 app.include_router(audit_router,   prefix="/api",        tags=["audit"])
 app.include_router(report_router,  prefix="/api",        tags=["report"])
-app.include_router(members_router, prefix="/api",        tags=["members"])
+app.include_router(members_router,  prefix="/api",        tags=["members"])
+app.include_router(requests_router, prefix="/api",        tags=["account-requests"])
 
 
 @app.get("/api")

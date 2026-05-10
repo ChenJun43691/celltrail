@@ -42,23 +42,56 @@
     .link { color:#06c; text-decoration:underline; cursor:pointer }
     .danger { color:#d00 }
 
-    @media (max-width: 768px){
-      .control{ left:8px; right:8px; max-width:none; width:calc(100% - 16px); max-height:60vh; overflow:auto; border-radius:8px; }
-      .row{ gap:6px; }
-      .control input[type="text"]{ width:100%; }
+    /* === 桌面/平板：左上角面板 === */
+    @media (min-width: 769px){
+      .control.hidden{ display:none; }
     }
 
     .toggle-btn{
       position:fixed; top:10px; left:10px; z-index:1100; background:#fff; border:1px solid rgba(0,0,0,.15);
       border-radius:8px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,.2); font-size:18px; line-height:1;
     }
-    .control.hidden{ display:none; }
+
+    /* === 手機：底部抽屜 === */
+    @media (max-width: 768px){
+      .control{
+        top: auto !important;
+        left: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        max-height: 65vh;
+        overflow-y: auto;
+        border-radius: 16px 16px 0 0 !important;
+        padding: 14px 16px 24px;
+        box-shadow: 0 -4px 20px rgba(0,0,0,.15);
+        transition: transform .25s ease;
+        transform: translateY(0);
+      }
+      .control.hidden{
+        transform: translateY(100%);
+        /* 保留 display:block 讓轉場有效；透過 transform 隱藏 */
+        display: block !important;
+        pointer-events: none;
+      }
+      .toggle-btn{
+        top: 12px !important;
+        left: 50% !important;
+        transform: translateX(-50%);
+        right: auto !important;
+      }
+      .row{ gap:6px; }
+      .control input[type="text"]{ width:100%; }
+      /* 底部時間條移上來避免被面板遮住 */
+      .bar{ bottom: 68vh; }
+    }
 
     .toast{ position:fixed; left:50%; transform:translateX(-50%); bottom:84px; z-index:1100; background:#333; color:#fff; padding:8px 12px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.25); opacity:.95; }
     .toast.success{ background:#2e7d32; }
     .toast.error{ background:#d32f2f; }
     .toast.info{ background:#333; }
-    @media (max-width: 768px){ .toggle-btn{ top:8px; left:8px; } }
+    @media (max-width: 768px){ .toast{ bottom: 70vh; } }
 
     /* 上傳區（更直觀） */
     .dropzone{ padding:12px; border:2px dashed #aaa; border-radius:8px; text-align:center; cursor:pointer; background:#fafafa; transition:.15s ease }
@@ -250,13 +283,15 @@
       window.location.href = './login.html';
     }
 
-    // 啟動：驗證 token；無效 → 導向登入頁
+    // 啟動：驗證 token；無效 → 導向登入頁（帶 expired=1 hint）
     async function initAuth(){
+      const hadToken = !!TOKEN;
       const user = await verifyToken();
       if (!user){
         TOKEN = '';
         localStorage.removeItem('ct_token');
-        window.location.href = './login.html';
+        // 若原本有 token 但驗證失敗，代表 token 過期
+        window.location.href = hadToken ? './login.html?expired=1' : './login.html';
         return;
       }
       initAfterLogin(user);
@@ -308,6 +343,14 @@
       const panel = document.querySelector('.control');
       const btn = $('panelToggle');
       if (!panel || !btn) return;
+      const isMobile = window.innerWidth <= 768;
+      if (isMobile) {
+        // 手機：toggle 固定置中頂部，CSS 負責位置
+        btn.style.left = '';
+        btn.style.right = '';
+        return;
+      }
+      // 桌面/平板：toggle 緊貼面板右側
       if (panel.classList.contains('hidden')) {
         btn.style.left = '10px';
       } else {

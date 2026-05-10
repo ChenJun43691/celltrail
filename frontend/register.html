@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>申請帳號 · CellTrail</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #f0f2f5;
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, 'Noto Sans TC'; }
+    .wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 16px; }
+    .card {
+      background: #fff; width: min(92vw, 420px); border-radius: 14px;
+      padding: 32px 28px; box-shadow: 0 4px 32px rgba(0,0,0,.12);
+    }
+    .brand { text-align: center; margin-bottom: 22px; }
+    .brand h1 { margin: 0; font-size: 22px; font-weight: 700; color: #1a1a2e; }
+    .brand p  { margin: 6px 0 0; font-size: 12px; color: #888; }
+    .section-title { font-size: 14px; font-weight: 600; color: #333; margin-bottom: 14px; }
+    label { display: block; margin-bottom: 14px; font-size: 13px; color: #555; font-weight: 500; }
+    label span.req { color: #d32f2f; }
+    input[type="text"], input[type="tel"] {
+      display: block; width: 100%; padding: 10px 12px; margin-top: 5px;
+      border: 1px solid #d0d5dd; border-radius: 8px; font-size: 14px;
+      outline: none; transition: border-color .15s, box-shadow .15s;
+    }
+    input:focus { border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,.15); }
+    button.primary {
+      width: 100%; padding: 11px; border: none; border-radius: 8px;
+      background: #007aff; color: #fff; font-size: 14px; font-weight: 600;
+      cursor: pointer; margin-top: 6px; transition: background .15s;
+    }
+    button.primary:hover { background: #0062cc; }
+    button.primary:disabled { background: #a0c4ff; cursor: not-allowed; }
+    .msg { min-height: 18px; font-size: 12px; color: #d32f2f; margin: 6px 0 10px; }
+    .msg.ok { color: #2e7d32; }
+    .hint { font-size: 12px; color: #888; margin-top: 4px; line-height: 1.5; }
+    .success-box {
+      background: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 10px;
+      padding: 18px 20px; text-align: center; font-size: 14px; color: #1a5c2a; line-height: 1.8;
+    }
+    .success-box h3 { margin: 0 0 8px; font-size: 18px; }
+    .footer { text-align: center; font-size: 11px; color: #bbb; margin-top: 20px; }
+    a.back-link { display: block; text-align: center; margin-top: 14px; font-size: 13px; color: #007aff; text-decoration: none; }
+    a.back-link:hover { text-decoration: underline; }
+    .note-box {
+      background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px;
+      padding: 10px 14px; font-size: 12px; color: #6d4c00; margin-bottom: 18px; line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+<div class="wrapper">
+  <div class="card">
+    <div class="brand">
+      <h1>CellTrail</h1>
+      <p>帳號申請</p>
+    </div>
+
+    <!-- 申請表單 -->
+    <div id="formSection">
+      <div class="note-box">
+        ⚠ 本系統為刑事偵查專用，申請帳號需由管理員審核。<br>
+        核准後將以電話通知您登入密碼。
+      </div>
+      <div class="section-title">填寫申請資料</div>
+      <label>帳號名稱 <span class="req">*</span>
+        <input id="fUsername" type="text" placeholder="建議使用警號，例：E43691"
+               maxlength="64" autocomplete="username" />
+        <span class="hint">僅限英文、數字、底線、連字號；申請後不可更改</span>
+      </label>
+      <label>姓名 <span class="req">*</span>
+        <input id="fRealName" type="text" placeholder="真實姓名" maxlength="64" />
+      </label>
+      <label>服務單位 <span class="req">*</span>
+        <input id="fUnit" type="text" placeholder="例：高雄市刑大六隊" maxlength="64" />
+      </label>
+      <label>聯絡電話 <span class="req">*</span>
+        <input id="fPhone" type="tel" placeholder="例：0912345678" maxlength="20" />
+        <span class="hint">核准後管理員將以此電話告知密碼；同電話不得重複申請</span>
+      </label>
+      <div id="formMsg" class="msg"></div>
+      <button id="submitBtn" class="primary">送出申請</button>
+      <a href="./login.html" class="back-link">← 返回登入頁</a>
+    </div>
+
+    <!-- 成功畫面 -->
+    <div id="successSection" style="display:none">
+      <div class="success-box">
+        <h3>✅ 申請已送出</h3>
+        申請已送出，請等候管理員審核。<br>
+        核准後將以電話通知您登入密碼。<br><br>
+        <b>帳號名稱：</b><span id="successUsername"></span><br>
+        <b>申請時間：</b><span id="successTime"></span>
+      </div>
+      <a href="./login.html" class="back-link">← 返回登入頁</a>
+    </div>
+
+    <div class="footer">CellTrail · 高市刑大冠鈞</div>
+  </div>
+</div>
+
+<script>
+  function getApiBase() {
+    if (window.__CELLTRAIL_API__) return window.__CELLTRAIL_API__.replace(/\/$/, '');
+    const host = location.hostname || '';
+    if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/.test(host))
+      return 'http://localhost:8000';
+    return 'https://celltrail-api.onrender.com';
+  }
+  const API = getApiBase() + '/api';
+
+  function setMsg(txt, ok) {
+    const el = document.getElementById('formMsg');
+    el.textContent = txt;
+    el.className = ok ? 'msg ok' : 'msg';
+  }
+
+  // 聯絡電話 blur → 即時查重
+  document.getElementById('fPhone').addEventListener('blur', async function () {
+    const phone = this.value.trim();
+    if (phone.length < 5) return;
+    try {
+      const r = await fetch(`${API}/account-requests/check-phone?phone=${encodeURIComponent(phone)}`);
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j.blocked) {
+        setMsg(`此電話已有申請紀錄（${j.status_text}），忘記帳號密碼請洽管理員`);
+        document.getElementById('submitBtn').disabled = true;
+      } else {
+        // 清除之前因電話阻擋的錯誤訊息（如果有）
+        const msg = document.getElementById('formMsg');
+        if (msg.textContent.includes('此電話已有申請紀錄')) {
+          msg.textContent = '';
+          document.getElementById('submitBtn').disabled = false;
+        }
+      }
+    } catch {}
+  });
+
+  async function doSubmit() {
+    const username  = document.getElementById('fUsername').value.trim();
+    const real_name = document.getElementById('fRealName').value.trim();
+    const unit      = document.getElementById('fUnit').value.trim();
+    const phone     = document.getElementById('fPhone').value.trim();
+
+    if (!username)  { setMsg('請填入帳號名稱'); return; }
+    if (!/^[A-Za-z0-9_\-]+$/.test(username)) { setMsg('帳號名稱只允許英文、數字、底線、連字號'); return; }
+    if (!real_name) { setMsg('請填入姓名'); return; }
+    if (!unit)      { setMsg('請填入服務單位'); return; }
+    if (!phone)     { setMsg('請填入聯絡電話'); return; }
+
+    const btn = document.getElementById('submitBtn');
+    btn.disabled = true;
+    setMsg('送出中…');
+
+    try {
+      const res = await fetch(`${API}/account-requests`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, real_name, unit, phone }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+
+      // 成功
+      document.getElementById('successUsername').textContent = username;
+      const ts = j.created_at ? new Date(j.created_at).toLocaleString('zh-TW') : '';
+      document.getElementById('successTime').textContent = ts;
+      document.getElementById('formSection').style.display = 'none';
+      document.getElementById('successSection').style.display = '';
+    } catch (e) {
+      setMsg(e.message || '送出失敗，請稍後再試');
+      btn.disabled = false;
+    }
+  }
+
+  document.getElementById('submitBtn').addEventListener('click', doSubmit);
+  document.getElementById('fPhone').addEventListener('keydown', e => { if (e.key === 'Enter') doSubmit(); });
+</script>
+</body>
+</html>

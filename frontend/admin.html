@@ -90,6 +90,44 @@
 
   <div class="container">
 
+    <!-- 帳號申請審核 -->
+    <div class="section">
+      <div class="section-title">
+        📋 帳號申請審核
+        <button class="secondary" id="refreshReqBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
+        <label style="font-size:12px;font-weight:normal;margin:0;cursor:pointer">
+          <input type="checkbox" id="showAllReq" /> 顯示已審核
+        </label>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>帳號名稱</th><th>姓名</th><th>服務單位</th><th>聯絡電話</th>
+            <th>申請時間</th><th>狀態</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="reqTbody">
+          <tr><td class="empty" colspan="7">載入中…</td></tr>
+        </tbody>
+      </table>
+      <!-- 核准後顯示臨時密碼 -->
+      <div id="approveResultBox" style="display:none" class="temp-pass">
+        ✅ 帳號已建立！請<b>電話告知申請者</b>臨時密碼（<b>僅顯示一次</b>）：<br/>
+        申請者：<b id="approveUsername"></b>　臨時密碼：<code id="approveTempPass"></code>
+        <div style="font-size:11px;color:#a07000;margin-top:4px">首次登入後系統將強制要求修改密碼。</div>
+      </div>
+      <!-- 拒絕原因輸入框 -->
+      <div id="rejectPanel" style="display:none;margin-top:12px;padding:12px;background:#fff3e0;border:1px solid #ffe0b2;border-radius:8px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px">拒絕原因 <span id="rejectTarget" style="font-weight:normal;color:#888"></span></div>
+        <textarea id="rejectReason" rows="2" style="width:100%;padding:6px;border:1px solid #ccc;border-radius:6px;font-size:13px;font-family:inherit" placeholder="請填寫拒絕原因（必填）"></textarea>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button id="rejectConfirmBtn" class="danger" style="padding:5px 14px;font-size:13px">確認拒絕</button>
+          <button id="rejectCancelBtn" class="secondary" style="padding:5px 14px;font-size:13px">取消</button>
+        </div>
+        <div id="rejectMsg" class="msg"></div>
+      </div>
+    </div>
+
     <!-- 建立帳號 -->
     <div class="section">
       <div class="section-title">➕ 建立新帳號</div>
@@ -219,6 +257,96 @@
       localStorage.removeItem(TOKEN_KEY);
       window.location.href = './login.html';
     });
+
+    // ── 帳號申請審核 ──
+    let _pendingRejectId = null;
+
+    async function loadRequests() {
+      const tbody = document.getElementById('reqTbody');
+      const all = document.getElementById('showAllReq').checked;
+      tbody.innerHTML = '<tr><td class="empty" colspan="7">載入中…</td></tr>';
+      document.getElementById('approveResultBox').style.display = 'none';
+      document.getElementById('rejectPanel').style.display = 'none';
+      try {
+        const qs = all ? '?status=all' : '';
+        const res = await fetch(`${API}/account-requests${qs}`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const j = await res.json();
+        const items = j.items || [];
+        if (items.length === 0) {
+          tbody.innerHTML = `<tr><td class="empty" colspan="7">${all ? '無申請紀錄' : '無待審申請'}</td></tr>`;
+          return;
+        }
+        tbody.innerHTML = items.map(r => {
+          const ts = r.created_at ? r.created_at.replace('T',' ').replace(/\..*$/,'').replace(/\+.*/,'') : '';
+          let statusHtml;
+          if (r.status === 'pending')  statusHtml = '<span class="badge badge-warn">待審中</span>';
+          else if (r.status === 'approved') statusHtml = '<span class="badge badge-ok">已核准</span>';
+          else statusHtml = `<span class="badge badge-off" title="${escH(r.reason||'')}">已拒絕</span>`;
+          const actions = r.status === 'pending'
+            ? `<button class="sm" onclick="approveRequest(${r.id},'${escH(r.username)}')">✅ 核准</button>
+               <button class="sm danger" onclick="promptReject(${r.id},'${escH(r.username)}')">❌ 拒絕</button>`
+            : `<span style="font-size:11px;color:#888">${r.reviewed_by_name||'—'}</span>`;
+          return `<tr>
+            <td>${escH(r.username)}</td>
+            <td>${escH(r.real_name)}</td>
+            <td>${escH(r.unit)}</td>
+            <td>${escH(r.phone)}</td>
+            <td style="font-size:11px">${escH(ts)}</td>
+            <td>${statusHtml}</td>
+            <td style="white-space:nowrap">${actions}</td>
+          </tr>`;
+        }).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td class="empty" colspan="7" style="color:var(--bad)">載入失敗：${escH(e.message)}</td></tr>`;
+      }
+    }
+
+    async function approveRequest(id, username) {
+      if (!confirm(`確認核准「${username}」的帳號申請？\n將自動建立帳號並產生臨時密碼。`)) return;
+      try {
+        const res = await fetch(`${API}/account-requests/${id}/approve`, {
+          method: 'POST', headers: authHeaders(),
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+        document.getElementById('approveUsername').textContent = j.username;
+        document.getElementById('approveTempPass').textContent = j.temp_password;
+        document.getElementById('approveResultBox').style.display = '';
+        loadRequests();
+      } catch (e) { alert('核准失敗：' + e.message); }
+    }
+
+    function promptReject(id, username) {
+      _pendingRejectId = id;
+      document.getElementById('rejectTarget').textContent = `（${username}）`;
+      document.getElementById('rejectReason').value = '';
+      document.getElementById('rejectMsg').textContent = '';
+      document.getElementById('rejectPanel').style.display = '';
+      document.getElementById('rejectReason').focus();
+    }
+
+    document.getElementById('rejectConfirmBtn').addEventListener('click', async () => {
+      const reason = document.getElementById('rejectReason').value.trim();
+      const msgEl  = document.getElementById('rejectMsg');
+      if (!reason) { msgEl.textContent = '請填寫拒絕原因'; return; }
+      try {
+        const res = await fetch(`${API}/account-requests/${_pendingRejectId}/reject`, {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json', ...authHeaders() },
+          body: JSON.stringify({ reason }),
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+        document.getElementById('rejectPanel').style.display = 'none';
+        loadRequests();
+      } catch (e) { msgEl.textContent = '失敗：' + e.message; }
+    });
+    document.getElementById('rejectCancelBtn').addEventListener('click', () => {
+      document.getElementById('rejectPanel').style.display = 'none';
+    });
+    document.getElementById('refreshReqBtn').addEventListener('click', loadRequests);
+    document.getElementById('showAllReq').addEventListener('change', loadRequests);
 
     // ── 帳號清單 ──
     async function loadUsers() {
@@ -356,6 +484,7 @@
     });
 
     // 初始載入
+    loadRequests();
     loadUsers();
   </script>
 </body>
