@@ -52,49 +52,43 @@
       gap: 0;
     }
 
-    /* ── Logo 區塊 ── */
-    .logo-wrap {
-      width: 100%;
-      max-width: 500px;
-      text-align: center;
-      margin-bottom: 10px;
+    /* ── 登入卡片（含 Logo） ── */
+    .card {
+      width: min(90vw, 420px);
+      border-radius: 12px;
+      padding: 0 0 28px;      /* 頂部 padding 由 .card-logo 控制 */
+      background: rgba(8, 18, 40, 0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: none;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.60);
       opacity: 0;
-      animation: fadeInUp .7s ease .1s forwards;
+      animation: fadeInUp .7s ease .2s forwards;
+      overflow: hidden;       /* 讓 Logo 區塊貼齊圓角 */
     }
-    .logo-wrap img {
+
+    /* ── 卡片頂部 Logo 區塊 ── */
+    .card-logo {
+      padding: 24px 30px 0;
+      text-align: center;
+    }
+    .card-logo img {
       width: 100%;
-      max-width: 500px;
+      max-width: 380px;
       height: auto;
       display: block;
       margin: 0 auto;
       background: transparent;
-      filter: drop-shadow(0 2px 16px rgba(0,120,255,0.35));
     }
-    .logo-divider {
-      margin: 14px auto 0;
-      width: min(90%, 400px);
-      height: 1px;
-      background: linear-gradient(90deg,
-        transparent 0%, rgba(0,150,255,0.6) 30%,
-        rgba(0,200,255,0.8) 50%,
-        rgba(0,150,255,0.6) 70%, transparent 100%);
+    .card-logo-divider {
+      margin: 18px 0 0;
+      border: none;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.10);
     }
 
-    /* ── 登入卡片 ── */
-    .card {
-      width: min(90vw, 420px);
-      border-radius: 12px;
-      padding: 32px 30px 28px;
-      background: rgba(5, 15, 35, 0.82);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(0, 150, 255, 0.15);
-      box-shadow:
-        0 8px 32px rgba(0, 0, 0, 0.40),
-        inset 0 1px 0 rgba(255,255,255,0.04);
-      opacity: 0;
-      animation: fadeInUp .7s ease .3s forwards;
-      margin-top: 18px;
+    /* ── 卡片內容區（Logo 下方） ── */
+    .card-body {
+      padding: 24px 30px 0;
     }
 
     /* ── 卡片標題 ── */
@@ -261,9 +255,9 @@
 
     /* ── RWD ── */
     @media (max-width: 480px) {
-      .logo-wrap { max-width: 90vw; }
-      .logo-wrap img { max-width: 90vw; }
-      .card { padding: 26px 20px 22px; }
+      .card-logo { padding: 20px 18px 0; }
+      .card-body  { padding: 20px 18px 0; }
+      .card { padding-bottom: 22px; }
     }
   </style>
 </head>
@@ -277,14 +271,17 @@
 
 <div class="page">
 
-  <!-- Logo -->
-  <div class="logo-wrap">
-    <img src="assets/logo.png" alt="CellTrail" />
-    <div class="logo-divider"></div>
-  </div>
-
-  <!-- 登入卡片 -->
+  <!-- 登入卡片（Logo 在卡片內） -->
   <div class="card">
+
+    <!-- Logo 頂部 -->
+    <div class="card-logo">
+      <img src="assets/logo.png" alt="CellTrail" />
+      <hr class="card-logo-divider" />
+    </div>
+
+    <!-- 表單主體 -->
+    <div class="card-body">
 
     <!-- 登入表單 -->
     <div id="loginSection">
@@ -329,8 +326,9 @@
     </div>
 
     <div class="footer">CellTrail · 高市刑大冠鈞</div>
-  </div>
-</div>
+    </div><!-- /.card-body -->
+  </div><!-- /.card -->
+</div><!-- /.page -->
 
 <script>
   const TOKEN_KEY = 'ct_token';
