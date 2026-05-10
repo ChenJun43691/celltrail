@@ -199,6 +199,10 @@
       <span id="userChip" title="當前登入身份"></span>
       <span id="modeChip" style="display:none;font-size:12px;font-weight:600;padding:2px 8px;border-radius:10px;cursor:pointer" title="點擊切換使用模式"></span>
       <a href="./audit.html" style="font-size:13px;color:#0b5ed7;text-decoration:none" title="檢視所有上傳/刪除/還原的稽核紀錄">🛡️ 稽核</a>
+      <button id="courtBtn" type="button" class="small" title="方位角北方基準標註狀態（法庭可防禦性 P2.5-C）" style="padding:4px 8px;position:relative">
+        ⚖ 法庭防禦
+        <span id="courtBadge" style="display:none;position:absolute;top:-5px;right:-6px;background:#dc3545;color:#fff;border-radius:9px;font-size:10px;font-weight:700;padding:1px 5px;min-width:16px;text-align:center;line-height:1.4"></span>
+      </button>
       <a href="./admin.html" id="adminLink" style="display:none;font-size:13px;color:#0b5ed7;text-decoration:none" title="帳號與系統管理">👤 管理</a>
       <span id="tourHelpBtn" title="重新觀看新手導覽" style="cursor:pointer;font-size:14px;color:#888;padding:2px 6px;border:1px solid #ddd;border-radius:50%;line-height:1.4">?</span>
       <button id="logoutBtn" type="button">登出</button>
@@ -1394,6 +1398,7 @@
         refreshSeriesPanel();
         await render();
         showToast(`載入完成：${[...seriesMap.values()].reduce((a,s)=>a+s.records.length,0)} 點（共 ${seriesMap.size} 組）`,'success',1800);
+        refreshCourtBadge();
       }catch(e){
         console.error(e);
         showToast('讀取失敗（請看 Console）','error',2200);
@@ -1478,6 +1483,133 @@
         // 未選擇模式（fallback：維持舊的 per-upload 選擇 modal）
         openUploadModeModal(snapshot);
       }
+    }
+
+    // ── P2.5-C：法庭防禦性 dashboard ───────────────────────────
+    async function refreshCourtBadge() {
+      const badge = $('courtBadge');
+      if (!badge) return;
+      const projectId = $('projectId')?.value?.trim();
+      if (!projectId || _sessionMode === 'temp' || !TOKEN) {
+        badge.style.display = 'none'; return;
+      }
+      try {
+        const res = await fetch(
+          `${API_BASE}/projects/${encodeURIComponent(projectId)}/azimuth-ref-summary`,
+          { headers: authHeaders() }
+        );
+        if (!res.ok) { badge.style.display = 'none'; return; }
+        const j = await res.json();
+        const nUnknown = (j.targets || []).filter(t => (t.by_ref?.unknown || 0) > 0).length;
+        if (nUnknown > 0) {
+          badge.textContent = nUnknown;
+          badge.style.display = '';
+        } else {
+          badge.style.display = 'none';
+        }
+      } catch { badge.style.display = 'none'; }
+    }
+
+    async function openCourtDefenseModal() {
+      const projectId = $('projectId')?.value?.trim();
+      if (!projectId) { showToast('請先填入案件名稱', 'error', 1800); return; }
+
+      const overlay = _makeOverlay();
+      overlay.setAttribute('data-overlay', '1');
+      overlay.innerHTML = `
+        <div style="background:#fff;border-radius:10px;padding:24px;width:min(96vw,700px);max-height:88vh;overflow-y:auto;box-shadow:0 8px 36px rgba(0,0,0,.32);font:14px/1.5 system-ui,-apple-system,sans-serif;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
+            <span style="font-size:17px;font-weight:700">⚖ 法庭防禦性狀態</span>
+            <span style="font-size:13px;color:#555;background:#f0f0f0;padding:2px 8px;border-radius:4px">${escH(projectId)}</span>
+            <button onclick="this.closest('[data-overlay]').remove()" style="margin-left:auto;padding:5px 12px;border:1px solid #ccc;border-radius:6px;cursor:pointer;background:#fff;font-size:12px">關閉</button>
+          </div>
+          <div id="__cdContent" style="color:#888;text-align:center;padding:20px">載入中…</div>
+        </div>`;
+      document.body.appendChild(overlay);
+
+      try {
+        const res = await fetch(
+          `${API_BASE}/projects/${encodeURIComponent(projectId)}/azimuth-ref-summary`,
+          { headers: authHeaders() }
+        );
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const j = await res.json();
+        _renderCourtDashboard(overlay.querySelector('#__cdContent'), j, overlay);
+      } catch (e) {
+        overlay.querySelector('#__cdContent').innerHTML =
+          `<span style="color:#c00">載入失敗：${escH(e.message)}</span>`;
+      }
+    }
+
+    function _renderCourtDashboard(el, j, overlay) {
+      const pct = j.project_unknown_pct;
+      const statusColor = pct === 0 ? '#2e7d32' : pct === 100 ? '#c62828' : '#d97706';
+      const statusText  = pct === 0 ? '✅ 全部已標註' : `⚠ ${pct}% 未標`;
+      const summaryBg   = pct === 0 ? '#e8f5e9' : '#fff8e1';
+      const summaryBdr  = pct === 0 ? '#c8e6c9' : '#ffe082';
+      const fmtDt = s => s
+        ? new Date(s).toLocaleString('zh-TW', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })
+        : '—';
+
+      const rows = (j.targets || []).map(t => {
+        const unk  = t.by_ref?.unknown  || 0;
+        const mag  = t.by_ref?.magnetic || 0;
+        const tru  = t.by_ref?.true     || 0;
+        const rowBg = unk === 0 ? '#f0fff4' : t.unknown_pct === 100 ? '#fff5f5' : '#fffde7';
+        const pctColor = unk === 0 ? '#2e7d32' : t.unknown_pct === 100 ? '#c62828' : '#d97706';
+        return `<tr style="background:${rowBg};border-bottom:1px solid #eee">
+          <td style="padding:7px 8px;font-weight:600;white-space:nowrap">${escH(t.target_id)}</td>
+          <td style="padding:7px 8px;text-align:center">${t.total}</td>
+          <td style="padding:7px 8px;text-align:center;color:#1565c0">${mag || '—'}</td>
+          <td style="padding:7px 8px;text-align:center;color:#2e7d32">${tru || '—'}</td>
+          <td style="padding:7px 8px;text-align:center;color:${pctColor};font-weight:700">${unk || '—'}</td>
+          <td style="padding:7px 8px;text-align:center;color:${pctColor};font-weight:700">${unk > 0 ? t.unknown_pct + '%' : '✓'}</td>
+          <td style="padding:7px 8px;font-size:12px;color:#444;white-space:nowrap">${t.last_annotator ? escH(t.last_annotator) + '<br/><span style="color:#888">' + fmtDt(t.last_annotated_at) + '</span>' : '<span style="color:#bbb">—</span>'}</td>
+          <td style="padding:7px 8px;font-size:11px;color:#666;max-width:150px;word-break:break-all">${t.last_evidence ? escH(t.last_evidence) : '<span style="color:#bbb">—</span>'}</td>
+          <td style="padding:7px 8px;text-align:center">
+            <button onclick="this.closest('[data-overlay]').remove();openAzRefModal(${JSON.stringify(t.target_id)})"
+              style="padding:4px 10px;font-size:12px;cursor:pointer;background:${unk > 0 ? '#0066cc' : '#6c757d'};color:#fff;border:none;border-radius:4px;white-space:nowrap">
+              ${unk > 0 ? '⚠ 標註' : '重標'}
+            </button>
+          </td>
+        </tr>`;
+      }).join('');
+
+      el.innerHTML = `
+        <div style="padding:12px 16px;border-radius:8px;background:${summaryBg};border:1px solid ${summaryBdr};margin-bottom:16px;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <span style="font-weight:700;font-size:15px;color:${statusColor}">${statusText}</span>
+            <span style="color:#777;font-size:13px;margin-left:10px">· ${j.targets?.length || 0} 個 target</span>
+          </div>
+          <a href="./audit.html" target="_blank" style="font-size:12px;color:#0b5ed7;text-decoration:none" title="開啟完整稽核紀錄">📋 稽核紀錄 ↗</a>
+        </div>
+        ${pct > 0 ? `<div style="font-size:12px;color:#c62828;background:#fff5f5;border:1px solid #ffcdd2;border-radius:6px;padding:8px 12px;margin-bottom:14px">
+          ⚠ 未標 target 在法庭上無法回答「此方位角北方基準為何」。台灣高雄磁偏角約 −4°～−5°（IGRF），500 m 距離下磁北 vs 真北差距≈ 45 m，建議出庭前完成標註。
+        </div>` : ''}
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+              <tr style="background:#f5f7fa;border-bottom:2px solid #dee2e6">
+                <th style="padding:8px;text-align:left;white-space:nowrap">Target</th>
+                <th style="padding:8px;text-align:center">總計</th>
+                <th style="padding:8px;text-align:center;color:#1565c0">磁北</th>
+                <th style="padding:8px;text-align:center;color:#2e7d32">真北</th>
+                <th style="padding:8px;text-align:center;color:#c62828">未標</th>
+                <th style="padding:8px;text-align:center">未標%</th>
+                <th style="padding:8px;text-align:left;white-space:nowrap">最後標註人 / 時間</th>
+                <th style="padding:8px;text-align:left">書面依據</th>
+                <th style="padding:8px;text-align:center">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows || '<tr><td colspan="9" style="text-align:center;padding:20px;color:#aaa">此案件無 azimuth 資料</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+        <div style="margin-top:14px;font-size:11px;color:#aaa;line-height:1.7">
+          本表由 audit_logs 驅動（action=update_azimuth_ref）。點擊「標註」完成後系統自動記錄操作人、時間、書面依據。<br/>
+          完整稽核鏈請見 <a href="./audit.html" target="_blank" style="color:#0b5ed7">稽核頁面</a> 或下載 PDF 報告（三、方位角北方基準標註狀態）。
+        </div>`;
     }
 
     // ── P2.5-B：方位角北方基準標註 modal ───────────────────────
@@ -1572,6 +1704,7 @@
           const j = JSON.parse(txt);
           dispose();
           showToast(`已標註 ${j.azimuth_ref}（影響 ${j.affected_rows} 筆）`,'success',2400);
+          refreshCourtBadge();
           await load();  // 重新載入 map 讓 popup 顯示新值
         }catch(e){
           console.error('azref patch failed:', e);
@@ -1780,6 +1913,7 @@
       $('btnUpload').addEventListener('click', uploadQueued);
       $('logoutBtn').addEventListener('click', logout);
       $('membersBtn').addEventListener('click', () => openMembersModal($('projectId').value.trim()));
+      $('courtBtn').addEventListener('click', openCourtDefenseModal);
       $('tourHelpBtn').addEventListener('click', startTour);
 
       $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
