@@ -92,6 +92,7 @@ from app.api.users   import router as users_router    # noqa: E402
 from app.api.geocode import router as geocode_router  # noqa: E402
 from app.api.audit   import router as audit_router    # noqa: E402
 from app.api.report  import router as report_router   # noqa: E402
+from app.api.members import router as members_router  # noqa: E402
 
 app.include_router(health_router,  prefix="/api/health", tags=["health"])
 app.include_router(auth_router,    prefix="/api",        tags=["auth"])
@@ -103,6 +104,7 @@ app.include_router(stats_router,   prefix="/api",        tags=["stats"])
 app.include_router(geocode_router, prefix="/api",        tags=["geocode"])
 app.include_router(audit_router,   prefix="/api",        tags=["audit"])
 app.include_router(report_router,  prefix="/api",        tags=["report"])
+app.include_router(members_router, prefix="/api",        tags=["members"])
 
 
 @app.get("/api")

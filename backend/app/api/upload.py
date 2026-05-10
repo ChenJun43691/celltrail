@@ -12,7 +12,13 @@ import traceback
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Request
 
-from app.security import get_current_user
+from app.security import (
+    add_project_member,
+    assert_project_access,
+    get_current_user,
+    project_has_members,
+    AUTH_ENABLED,
+)
 from app.services.audit import write_audit
 from app.services.evidence import register_evidence, update_evidence_stats
 from app.services.ingest import ingest_auto, ingest_pdf
@@ -44,6 +50,16 @@ async def upload_file(
         f"user={current_user.get('username')} project={project_id} "
         f"target={target_id} name={filename} size={len(content)}B"
     )
+
+    # ---- 專案權限驗證 ----
+    # 非 admin：需具備 collaborator 以上權限。
+    # 若 project 尚無任何成員（全新 project），上傳者自動成為 owner。
+    if AUTH_ENABLED and current_user.get("role") != "admin":
+        if not project_has_members(project_id):
+            add_project_member(project_id, current_user["id"], "owner",
+                               granted_by=current_user["id"])
+        else:
+            assert_project_access(current_user, project_id, "collaborator")
 
     # ---- (A) 證物指紋封存（在 ingest 之前；若 ingest 失敗 hash 仍在）----
     evidence: dict | None = None

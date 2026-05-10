@@ -16,7 +16,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.db.session import get_conn
-from app.security import get_current_user, require_admin
+from app.security import assert_project_access, get_current_user, require_admin
 from app.services.audit import write_audit
 
 router = APIRouter()
@@ -44,6 +44,7 @@ def delete_target(
     可由 body 傳 { "reason": "..." }；若未提供，audit log 仍會記但 reason 留空。
     舊版 cURL 沒帶 body 也能繼續用，避免相容性中斷。
     """
+    assert_project_access(current_user, project_id, "owner")
     reason = (body.reason if body else None) or None
     user_id = current_user.get("id")
 
@@ -108,7 +109,8 @@ def restore_target(
     body: RestoreTargetIn,
     current_user: dict = Depends(get_current_user),
 ):
-    """還原軟刪的 target 紀錄；強制填還原理由。"""
+    """還原軟刪的 target 紀錄；強制填還原理由。需 owner 以上。"""
+    assert_project_access(current_user, project_id, "owner")
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -197,7 +199,9 @@ def update_azimuth_ref(
 
     僅針對「未軟刪」的紀錄（deleted_at IS NULL）；
     若需更新已軟刪的紀錄（罕見），請先 restore 再 patch。
+    需 owner 以上。
     """
+    assert_project_access(current_user, project_id, "owner")
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -248,11 +252,12 @@ def update_azimuth_ref(
     }
 
 
-@router.get(
-    "/projects/{project_id}/targets/{target_id}/azimuth-ref",
-    dependencies=[Depends(get_current_user)],
-)
-def get_azimuth_ref_summary(project_id: str, target_id: str):
+@router.get("/projects/{project_id}/targets/{target_id}/azimuth-ref")
+def get_azimuth_ref_summary(
+    project_id: str,
+    target_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """
     查詢某 target 目前的 azimuth_ref 分佈統計。
 
@@ -262,7 +267,9 @@ def get_azimuth_ref_summary(project_id: str, target_id: str):
           "total": 100,
           "by_ref": { "magnetic": 80, "unknown": 20 }
         }
+    需 viewer 以上。
     """
+    assert_project_access(current_user, project_id, "viewer")
     sql = """
     SELECT azimuth_ref, COUNT(*)
       FROM raw_traces
@@ -324,11 +331,11 @@ def list_deleted_traces(project_id: str, target_id: str):
 # ============================================================
 # P2.5-C：Project 層級方位角基準彙總 dashboard
 # ============================================================
-@router.get(
-    "/projects/{project_id}/azimuth-ref-summary",
-    dependencies=[Depends(get_current_user)],
-)
-def get_project_azimuth_ref_summary(project_id: str):
+@router.get("/projects/{project_id}/azimuth-ref-summary")
+def get_project_azimuth_ref_summary(
+    project_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """
     一次回傳 project 內所有 target 的 azimuth_ref 分佈 + 最後標註人。
 
@@ -354,7 +361,9 @@ def get_project_azimuth_ref_summary(project_id: str):
           ...
         ]
       }
+    需 viewer 以上。
     """
+    assert_project_access(current_user, project_id, "viewer")
     ref_sql = """
     SELECT target_id, azimuth_ref, COUNT(*) AS cnt
       FROM raw_traces

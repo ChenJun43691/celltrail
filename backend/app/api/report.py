@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 
 import io
 
-from app.security import get_current_user, require_admin
+from app.security import assert_project_access, get_current_user, require_admin
 from app.services.audit import write_audit
 from app.services.report import build_evidence_report
 
@@ -33,7 +33,8 @@ def evidence_report(
     target_id: Optional[str] = Query(None, description="留空 = 全部 target"),
     current_user: dict = Depends(get_current_user),
 ):
-    """產出 PDF 報告。下載檔名：CellTrail_{project_id}_{YYYYmmdd_HHMMSS}.pdf"""
+    """產出 PDF 報告。下載檔名：CellTrail_{project_id}_{YYYYmmdd_HHMMSS}.pdf  需 viewer 以上。"""
+    assert_project_access(current_user, project_id, "viewer")
     try:
         pdf_bytes = build_evidence_report(
             project_id=project_id,

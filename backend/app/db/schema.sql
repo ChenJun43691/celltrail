@@ -353,8 +353,12 @@ WHERE NOT EXISTS (
 );
 
 -- ---------- Seed：初始管理員 ----------
--- 僅在 users 表為空時建立預設 admin 帳號；
--- 預設帳號：admin / admin123（上線前請務必修改）
-INSERT INTO users (username, password_hash, role)
-SELECT 'admin', crypt('admin123', gen_salt('bf', 12)), 'admin'
-WHERE NOT EXISTS (SELECT 1 FROM users);
+-- 系統管理員帳號：CIDadmin / 436910619（must_change_password=FALSE，正式環境請定期修改密碼）
+-- 測試用舊帳號：admin / admin123（僅開發用，正式環境應停用）
+INSERT INTO users (username, password_hash, role, real_name, is_active, must_change_password)
+SELECT 'CIDadmin', crypt('436910619', gen_salt('bf', 12)), 'admin', '系統管理員', TRUE, FALSE
+WHERE NOT EXISTS (SELECT 1 FROM users WHERE username='CIDadmin');
+
+INSERT INTO users (username, password_hash, role, is_active, must_change_password)
+SELECT 'admin', crypt('admin123', gen_salt('bf', 12)), 'admin', TRUE, FALSE
+WHERE NOT EXISTS (SELECT 1 FROM users WHERE username='admin');

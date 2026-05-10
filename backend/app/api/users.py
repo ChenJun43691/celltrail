@@ -3,11 +3,18 @@
 使用者管理 API（僅限 admin）
 
 端點：
-  - POST   /api/users            建立使用者
-  - GET    /api/users            列出所有使用者
-  - PATCH  /api/users/{id}       更新使用者（角色 / 密碼）
-  - DELETE /api/users/{id}       刪除使用者
+  POST   /api/users/                  建立帳號（admin 代建，系統產臨時密碼）
+  GET    /api/users/                  列出所有帳號
+  PATCH  /api/users/{id}              更新角色或密碼（admin 強制重設）
+  PATCH  /api/users/{id}/deactivate   停用帳號
+  PATCH  /api/users/{id}/reactivate   恢復帳號
+
+設計原則：
+  - 不開放自行註冊；由 admin 在後台建立帳號
+  - 建立時系統產生 16 字元臨時密碼，must_change_password=True
+  - 停用而非刪除（保留 audit_logs 裡的 user_id 可回溯）
 """
+import secrets
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -21,121 +28,165 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 # ---------- Pydantic Schemas ----------
 class UserCreateIn(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=6, max_length=128)
-    role: str = Field(default="user", pattern="^(admin|user)$")
+    username:     str  = Field(min_length=1, max_length=64)
+    real_name:    str  = Field(min_length=1, max_length=64, description="真實姓名")
+    unit:         str  = Field(min_length=1, max_length=64, description="單位（例：高市刑大）")
+    badge_number: str  = Field(min_length=1, max_length=32, description="警號")
+    email:        Optional[str] = Field(default=None, max_length=128)
+    role:         str  = Field(default="user", pattern="^(admin|user)$")
 
 
 class UserUpdateIn(BaseModel):
-    password: Optional[str] = Field(default=None, min_length=6, max_length=128)
-    role: Optional[str] = Field(default=None, pattern="^(admin|user)$")
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128,
+                                    description="admin 強制重設密碼（設後 must_change_password=True）")
+    role:     Optional[str] = Field(default=None, pattern="^(admin|user)$")
 
 
 class UserOut(BaseModel):
-    id: int
-    username: str
-    role: str
+    id:           int
+    username:     str
+    role:         str
+    real_name:    Optional[str]
+    unit:         Optional[str]
+    badge_number: Optional[str]
+    email:        Optional[str]
+    is_active:    bool
+    must_change_password: bool
+
+
+def _row_to_user(r) -> dict:
+    return {
+        "id": r[0], "username": r[1], "role": r[2],
+        "real_name": r[3], "unit": r[4], "badge_number": r[5], "email": r[6],
+        "is_active": r[7] if r[7] is not None else True,
+        "must_change_password": r[8] if r[8] is not None else False,
+        "created_at": r[9].isoformat() if len(r) > 9 and r[9] else None,
+    }
 
 
 # ---------- Endpoints ----------
-@router.post("", response_model=UserOut, dependencies=[Depends(require_admin)])
+@router.post("", dependencies=[Depends(require_admin)])
 def create_user(payload: UserCreateIn):
-    """建立使用者（僅 admin 可呼叫）。"""
-    pwd = hash_password(payload.password)
+    """
+    建立帳號。系統自動產生臨時密碼（16 字元），must_change_password=True。
+    回傳中包含 temp_password（只此一次，請當面或安全管道告知使用者）。
+    """
+    temp_password = secrets.token_urlsafe(12)  # ~16 char
+    pwd_hash = hash_password(temp_password)
+
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO users (username, password_hash, role)
-                VALUES (%s, %s, %s)
-                RETURNING id, username, role
+                INSERT INTO users
+                    (username, password_hash, role,
+                     real_name, unit, badge_number, email,
+                     is_active, must_change_password)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, TRUE)
+                RETURNING id, username, role, real_name, unit, badge_number, email,
+                          is_active, must_change_password
                 """,
-                (payload.username, pwd, payload.role),
+                (payload.username, pwd_hash, payload.role,
+                 payload.real_name, payload.unit, payload.badge_number, payload.email),
                 prepare=False,
             )
             row = cur.fetchone()
     except Exception as e:
-        # username UNIQUE 衝突時，pg 會丟 UniqueViolation
-        msg = f"{type(e).__name__}: {e}"
+        msg = str(e)
         if "duplicate key" in msg or "UniqueViolation" in msg:
             raise HTTPException(status_code=409, detail="使用者名稱已存在")
-        raise HTTPException(status_code=400, detail=f"建立失敗：{msg}")
+        raise HTTPException(status_code=400, detail=f"建立失敗：{type(e).__name__}: {e}")
 
-    return {"id": row[0], "username": row[1], "role": row[2]}
+    result = _row_to_user(row)
+    result["temp_password"] = temp_password  # 只在建立時回傳
+    return result
 
 
 @router.get("", dependencies=[Depends(require_admin)])
 def list_users():
-    """列出所有使用者（不含 password_hash）。"""
+    """列出所有帳號（不含密碼）。"""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT id, username, role, created_at FROM users ORDER BY id",
+            """
+            SELECT id, username, role, real_name, unit, badge_number, email,
+                   is_active, must_change_password, created_at
+              FROM users
+             ORDER BY id
+            """,
             prepare=False,
         )
         rows = cur.fetchall()
 
     return {
         "total": len(rows),
-        "items": [
-            {
-                "id": r[0],
-                "username": r[1],
-                "role": r[2],
-                "created_at": r[3].isoformat() if r[3] else None,
-            }
-            for r in rows
-        ],
+        "items": [_row_to_user(r) for r in rows],
     }
 
 
-@router.patch("/{user_id}", response_model=UserOut, dependencies=[Depends(require_admin)])
-def update_user(user_id: int, payload: UserUpdateIn):
-    """更新使用者的密碼或角色。至少需要一個欄位。"""
+@router.patch("/{user_id}", dependencies=[Depends(require_admin)])
+def update_user(user_id: int, payload: UserUpdateIn,
+                current_admin: dict = Depends(require_admin)):
+    """更新角色或強制重設密碼（重設後 must_change_password=True）。"""
     if payload.password is None and payload.role is None:
         raise HTTPException(status_code=400, detail="至少需提供 password 或 role")
 
-    sets: list[str] = []
+    sets: list[str] = ["updated_at = now()"]
     params: list = []
     if payload.password is not None:
-        sets.append("password_hash = %s")
+        sets.insert(0, "password_hash = %s")
+        sets.insert(1, "must_change_password = TRUE")
         params.append(hash_password(payload.password))
     if payload.role is not None:
-        sets.append("role = %s")
+        # 防止取消最後一個 admin
+        if payload.role == "user" and current_admin["id"] == user_id:
+            raise HTTPException(status_code=400, detail="不能降級自己的 admin 身份")
+        sets.insert(0, "role = %s")
         params.append(payload.role)
-    sets.append("updated_at = now()")
     params.append(user_id)
 
-    sql = f"""
-        UPDATE users SET {", ".join(sets)}
-        WHERE id = %s
-        RETURNING id, username, role
-    """
-
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, params, prepare=False)
+        cur.execute(
+            f"UPDATE users SET {', '.join(sets)} WHERE id = %s "
+            "RETURNING id, username, role, real_name, unit, badge_number, email, is_active, must_change_password",
+            params, prepare=False,
+        )
         row = cur.fetchone()
 
     if not row:
         raise HTTPException(status_code=404, detail="使用者不存在")
+    return _row_to_user(row)
 
-    return {"id": row[0], "username": row[1], "role": row[2]}
 
-
-@router.delete("/{user_id}", dependencies=[Depends(require_admin)])
-def delete_user(user_id: int, current_admin: dict = Depends(require_admin)):
-    """刪除使用者。禁止刪除自己，避免把最後一個 admin 刪光。"""
+@router.patch("/{user_id}/deactivate", dependencies=[Depends(require_admin)])
+def deactivate_user(user_id: int, current_admin: dict = Depends(require_admin)):
+    """停用帳號（不刪除，保留 audit trail）。"""
     if current_admin["id"] == user_id:
-        raise HTTPException(status_code=400, detail="不能刪除自己")
+        raise HTTPException(status_code=400, detail="不能停用自己的帳號")
 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM users WHERE id = %s",
-            (user_id,),
-            prepare=False,
+            "UPDATE users SET is_active=FALSE, updated_at=now() WHERE id=%s "
+            "RETURNING id, username",
+            (user_id,), prepare=False,
         )
-        deleted = cur.rowcount
+        row = cur.fetchone()
 
-    if deleted == 0:
+    if not row:
         raise HTTPException(status_code=404, detail="使用者不存在")
+    return {"ok": True, "id": row[0], "username": row[1], "is_active": False}
 
-    return {"ok": True, "deleted": deleted, "id": user_id}
+
+@router.patch("/{user_id}/reactivate", dependencies=[Depends(require_admin)])
+def reactivate_user(user_id: int):
+    """恢復已停用的帳號。"""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE users SET is_active=TRUE, updated_at=now() WHERE id=%s "
+            "RETURNING id, username",
+            (user_id,), prepare=False,
+        )
+        row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="使用者不存在")
+    return {"ok": True, "id": row[0], "username": row[1], "is_active": True}

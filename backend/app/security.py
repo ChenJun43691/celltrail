@@ -3,10 +3,6 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-# ── 抑制 passlib 1.7.4 在 bcrypt 4.x 下吐的 "(trapped) error reading bcrypt version"
-# 原因：passlib 1.7.4 讀 bcrypt.__about__.__version__，但 bcrypt 4.x 已移除該屬性。
-# passlib 內部 try/except 後會 fallback 成功，所以是「警告級」雜訊，非實際錯誤。
-# 等 passlib 1.8 釋出後可移除這兩行。
 logging.getLogger("passlib").setLevel(logging.ERROR)
 logging.getLogger("passlib.handlers.bcrypt").setLevel(logging.ERROR)
 
@@ -15,22 +11,18 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
-from app.db.session import get_conn  # 連線池
+from app.db.session import get_conn
 
-# ===== JWT 基本設定 =====
+# ===== JWT =====
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-please")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 8 * 60  # 8 小時
+ACCESS_TOKEN_EXPIRE_MINUTES = 12 * 60  # 12 小時（一個工作天）
 
-# 同時支援 bcrypt 與 pbkdf2_sha256（保留舊資料相容性）
 pwd_context = CryptContext(
     schemes=["bcrypt", "pbkdf2_sha256"],
     deprecated="auto",
 )
 
-# 前端用 /api/auth/login 換 token
-# auto_error=False：沒帶 token 時不自動丟 401，而是把 token 設為 None 交給 get_current_user 自行判斷
-# 配合下方「關閉身份驗證」機制，讓未登入呼叫也能通過
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 
@@ -39,7 +31,6 @@ def hash_password(plain: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    """優先用 passlib 驗；遇到例外就回 False（呼叫端可再用 DB 端 crypt() 補驗）"""
     try:
         return pwd_context.verify(plain, hashed)
     except Exception:
@@ -47,12 +38,6 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """
-    建立 JWT access token。
-
-    使用 timezone-aware datetime（UTC），因 Python 3.12 起 datetime.utcnow() 已 deprecated。
-    jose 會自動把 tz-aware 的 datetime 轉為 UNIX timestamp 寫入 exp claim。
-    """
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -61,24 +46,29 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def get_user_by_username(username: str):
-    sql = "SELECT id, username, password_hash, role FROM users WHERE username=%s"
+def get_user_by_username(username: str) -> Optional[dict]:
+    sql = """
+    SELECT id, username, password_hash, role,
+           is_active, must_change_password,
+           real_name, unit, badge_number, email
+      FROM users WHERE username = %s
+    """
     with get_conn() as conn, conn.cursor() as cur:
-        # 關鍵：針對 execute 明確關閉 prepared（pooler 友善）
         cur.execute(sql, (username,), prepare=False)
         row = cur.fetchone()
     if not row:
         return None
-    return {"id": row[0], "username": row[1], "password_hash": row[2], "role": row[3]}
+    return {
+        "id": row[0], "username": row[1], "password_hash": row[2], "role": row[3],
+        "is_active": row[4] if row[4] is not None else True,
+        "must_change_password": row[5] if row[5] is not None else False,
+        "real_name": row[6], "unit": row[7], "badge_number": row[8], "email": row[9],
+    }
 
 
 def verify_password_db(username: str, plain: str) -> bool:
-    """
-    使用 Postgres 端 pgcrypto/crypt() 驗密，確保與 DB 內 hash 100% 相容。
-    """
     sql = "SELECT crypt(%s, password_hash) = password_hash AS ok FROM users WHERE username=%s"
     with get_conn() as conn, conn.cursor() as cur:
-        # 同樣關掉 prepared
         cur.execute(sql, (plain, username), prepare=False)
         row = cur.fetchone()
         return bool(row and row[0])
@@ -86,40 +76,25 @@ def verify_password_db(username: str, plain: str) -> bool:
 
 # ============================================================
 # 身份驗證總開關
-# ------------------------------------------------------------
-# AUTH_ENABLED=true（預設，2026-04-26 變更）→ 走完整 JWT 驗證
-# AUTH_ENABLED=false                       → 匿名通行，任何請求視為 admin
-#
-# 為什麼預設改 true：
-#   1. 法庭可防禦性：證物系統若預設裸奔，audit log 內 user_id=0/anonymous
-#      佔多數，等於失去「可究責性」，被告律師可主張紀錄不可信
-#   2. 偵查機密：raw_traces 內含未公開案件嫌疑人位置軌跡，外洩風險不可承擔
-#   3. CTF/red team 風險：開源/部署到雲端時若預設 false，相當於把 admin
-#      端點直接暴露給網際網路
-#
-# 為什麼保留開關而不是直接拆掉：
-#   1. 路由簽章（Depends(get_current_user)、Depends(require_admin)）完全不動
-#   2. 純本機開發 / pytest 整合測試時，可在環境內 export AUTH_ENABLED=false 跳過
-#   3. Production 應「絕對不要」設 false（請參考 .env.example 警示）
 # ============================================================
 AUTH_ENABLED = os.getenv("AUTH_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 if not AUTH_ENABLED:
-    # 啟動時印一行明顯警告，讓 ops 看到 log 立刻意識到風險
     logging.getLogger("celltrail.security").warning(
         "AUTH_ENABLED=false 已啟用：所有請求將以 anonymous admin 身份通行。"
         " 若這是 production 環境，請立即在 .env 設 AUTH_ENABLED=true 並重啟。"
     )
 
-# 匿名使用者的預設身份，關閉驗證時所有端點都視為 admin 通過
-_ANONYMOUS_ADMIN = {"id": 0, "username": "anonymous", "role": "admin"}
+_ANONYMOUS_ADMIN = {
+    "id": 0, "username": "anonymous", "role": "admin",
+    "is_active": True, "must_change_password": False,
+    "real_name": None, "unit": None, "badge_number": None, "email": None,
+}
 
 
-def get_current_user(token: Optional[str] = Depends(oauth2_scheme)):
-    # ── 若關閉身份驗證：無條件回傳匿名 admin
+def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> dict:
     if not AUTH_ENABLED:
         return _ANONYMOUS_ADMIN
 
-    # ── 以下為原本的 JWT 驗證流程，AUTH_ENABLED=true 時才會執行
     cred_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="無效或過期的 Token",
@@ -138,11 +113,80 @@ def get_current_user(token: Optional[str] = Depends(oauth2_scheme)):
     user = get_user_by_username(username)
     if not user:
         raise cred_exc
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="帳號已停用，請聯絡管理員")
     return user
 
 
-def require_admin(user=Depends(get_current_user)):
-    # 關閉驗證時 get_current_user 已回傳 admin，這裡自然通過
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="需要管理員權限")
     return user
+
+
+# ============================================================
+# 專案層級權限檢查
+# ============================================================
+_PERM_LEVELS = {"viewer": 0, "collaborator": 1, "owner": 2}
+
+
+def assert_project_access(user: dict, project_id: str, min_permission: str = "viewer") -> None:
+    """
+    若 user 對 project_id 不具備 min_permission 以上的權限則拋 403。
+    - AUTH_ENABLED=false → anonymous admin → 直接通過
+    - system admin (role='admin') → 直接通過
+    - 其他 → 查 project_members，驗 permission 層級與有效期
+    - project 尚無任何成員（全新 project）→ 403（需先由 admin 授權或 upload 時自動賦予 owner）
+
+    Permission 層級：viewer(0) < collaborator(1) < owner(2)
+    """
+    if not AUTH_ENABLED or user["role"] == "admin":
+        return
+
+    required = _PERM_LEVELS.get(min_permission, 0)
+    sql = """
+    SELECT permission FROM project_members
+     WHERE project_id = %s
+       AND user_id    = %s
+       AND (expires_at IS NULL OR expires_at > now())
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (project_id, user["id"]), prepare=False)
+        row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=403, detail="無此案件的存取權限")
+    if _PERM_LEVELS.get(row[0], -1) < required:
+        raise HTTPException(
+            status_code=403,
+            detail=f"需要 {min_permission} 以上權限（目前：{row[0]}）",
+        )
+
+
+def add_project_member(project_id: str, user_id: int, permission: str, granted_by: Optional[int] = None) -> None:
+    """
+    新增或更新 project 成員。用於首次上傳時自動賦予 owner。
+    使用 ON CONFLICT DO UPDATE 確保冪等。
+    """
+    sql = """
+    INSERT INTO project_members (project_id, user_id, permission, granted_by)
+    VALUES (%s, %s, %s, %s)
+    ON CONFLICT (project_id, user_id)
+    DO UPDATE SET permission = EXCLUDED.permission,
+                  granted_by = EXCLUDED.granted_by
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (project_id, user_id, permission, granted_by), prepare=False)
+
+
+def project_has_members(project_id: str) -> bool:
+    """檢查 project 是否已有任何有效成員（決定是否走「新 project 自動授權 owner」邏輯）。"""
+    sql = """
+    SELECT 1 FROM project_members
+     WHERE project_id = %s
+       AND (expires_at IS NULL OR expires_at > now())
+     LIMIT 1
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(sql, (project_id,), prepare=False)
+        return cur.fetchone() is not None

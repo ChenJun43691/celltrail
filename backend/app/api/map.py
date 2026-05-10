@@ -2,24 +2,23 @@
 from fastapi import APIRouter, Query, Depends
 from typing import Optional
 from app.db.session import get_conn
-from app.security import get_current_user
+from app.security import assert_project_access, get_current_user
 
 router = APIRouter()
 
 # --- 主要：回傳 GeoJSON（已定位：geom IS NOT NULL） ---
-@router.get(
-    "/projects/{project_id}/map-layers",
-    dependencies=[Depends(get_current_user)]
-)
+@router.get("/projects/{project_id}/map-layers")
 def project_map_layers(
     project_id: str,
     target_id: Optional[str] = None,
-    limit: int = Query(5000, ge=1, le=10000)
+    limit: int = Query(5000, ge=1, le=10000),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     依 project（可選 target）取得地圖圖層（標準 GeoJSON）。
-    只回傳已定位的資料（geom IS NOT NULL）。
+    只回傳已定位的資料（geom IS NOT NULL）。需 viewer 以上權限。
     """
+    assert_project_access(current_user, project_id, "viewer")
     # 軟刪過濾：永遠不顯示已刪除的紀錄（deleted_at IS NULL）
     where = ["project_id = %s", "geom IS NOT NULL", "deleted_at IS NULL"]
     params = [project_id]
@@ -86,19 +85,18 @@ def project_map_layers(
         return row[0] or {"type": "FeatureCollection", "features": []}
 
 # --- 附加：未定位清單（方便除錯） ---
-@router.get(
-    "/projects/{project_id}/unlocated",
-    dependencies=[Depends(get_current_user)]
-)
+@router.get("/projects/{project_id}/unlocated")
 def project_unlocated_list(
     project_id: str,
     target_id: Optional[str] = None,
-    limit: int = Query(1000, ge=1, le=10000)
+    limit: int = Query(1000, ge=1, le=10000),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     列出 geom IS NULL 的資料，協助找出無法 geocode 的列。
-    這個端點「不」回 GeoJSON；前端可做成清單提醒。
+    這個端點「不」回 GeoJSON；前端可做成清單提醒。需 viewer 以上權限。
     """
+    assert_project_access(current_user, project_id, "viewer")
     # 軟刪過濾：未定位清單也只看「在線」的資料
     where = ["project_id = %s", "geom IS NULL", "deleted_at IS NULL"]
     params = [project_id]
