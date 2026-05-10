@@ -78,22 +78,11 @@
     /* 面板底部資訊 */
     .footer-line{ color:#555; }
 
-    /* === 登入遮罩 === */
-    .overlay{
-      position:fixed; inset:0; background:rgba(0,0,0,.55);
-      display:flex; align-items:center; justify-content:center; z-index:2000;
+    /* === 使用者身份 chip === */
+    #userChip{
+      font-size:12px; color:#007aff; font-weight:500; white-space:nowrap;
+      max-width:160px; overflow:hidden; text-overflow:ellipsis;
     }
-    .login-card{
-      background:#fff; width:min(92vw,380px); border-radius:12px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.25);
-      font:14px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial;
-    }
-    .login-card h3{ margin:0 0 8px 0 }
-    .login-card .row{ margin-top:8px }
-    .login-card input[type="text"], .login-card input[type="password"]{
-      width:100%; padding:8px 10px; border:1px solid #ccc; border-radius:8px; box-sizing:border-box; /* 防溢出 */
-    }
-    .login-card button{ padding:8px 12px; border-radius:8px; border:1px solid rgba(0,0,0,.1); background:#007aff; color:#fff; cursor:pointer }
-    .login-msg{ min-height:18px; color:#d00; margin-top:4px; }
   </style>
 </head>
 <body>
@@ -101,31 +90,18 @@
 
   <button id="panelToggle" class="toggle-btn" title="顯示/隱藏控制面板">☰</button>
 
-  <!-- 登入遮罩 -->
-  <div id="loginOverlay" class="overlay" style="display:none">
-    <div class="login-card">
-      <h3>登入 CellTrail</h3>
-      <div class="small">請輸入帳號與密碼</div>
-      <div class="row" style="flex-direction:column;align-items:stretch">
-        <input id="loginUser" type="text" placeholder="帳號" autocomplete="username" />
-        <input id="loginPass" type="password" placeholder="密碼" autocomplete="current-password" />
-        <div class="row" style="justify-content:space-between;width:100%">
-          <button id="loginBtn">登入</button>
-          <span id="loginMsg" class="login-msg"></span>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <div class="control">
     <div class="row">
       <label>Project ID <input id="projectId" type="text" value="demo_case" /></label>
       <label>Target ID  <input id="targetId"  type="text" value="" placeholder="留空=整個專案；填入=只看此 target" /></label>
+      <button id="membersBtn" type="button" class="small" title="管理此案件的成員授權" style="padding:4px 8px">成員管理</button>
     </div>
     <div class="row" style="width:100%">
       <button id="loadBtn">顯示資料（從資料庫）</button>
       <span id="status" class="small"></span>
-      <a href="./audit.html" style="margin-left:auto;font-size:13px;color:#0b5ed7;text-decoration:none" title="檢視所有上傳/刪除/還原的稽核紀錄">🛡️ 稽核</a>
+      <span id="userChip" title="當前登入身份"></span>
+      <a href="./audit.html" style="font-size:13px;color:#0b5ed7;text-decoration:none" title="檢視所有上傳/刪除/還原的稽核紀錄">🛡️ 稽核</a>
+      <a href="./admin.html" id="adminLink" style="display:none;font-size:13px;color:#0b5ed7;text-decoration:none" title="帳號與系統管理">👤 管理</a>
       <button id="logoutBtn" type="button">登出</button>
     </div>
     <div class="small">上傳/新增資料請使用下方「上傳」區塊；本區只負責從資料庫顯示。Target ID 留空 = 顯示整個專案；填入 = 僅顯示該 target。</div>
@@ -253,63 +229,49 @@
     const toDate = s => s ? new Date(s) : null;
     const safeIdFor = id => 'dist_' + String(id).replace(/[^\w\-:.]/g, '_');
 
-    // --- Auth: Token & overlay ---
+    // --- Auth: Token & headers ---
     let TOKEN = localStorage.getItem('ct_token') || '';
     function authHeaders(){ return TOKEN ? { 'Authorization': 'Bearer ' + TOKEN } : {}; }
-    function showOverlay(on){ $('loginOverlay').style.display = on ? 'flex' : 'none'; }
 
+    // 回傳 user 物件（驗證成功）或 null（驗證失敗）
     async function verifyToken(){
-      if (!TOKEN) return false;
+      if (!TOKEN) return null;
       try{
-        const res = await fetch(`${API_BASE}/auth/me`, { headers: { ...authHeaders() } });
-        if (!res.ok) throw 0;
-        return true;
-      }catch{ return false; }
+        const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() });
+        if (!res.ok) return null;
+        return await res.json();
+      }catch{ return null; }
     }
 
-    // 登入：x-www-form-urlencoded
-    async function doLogin(){
-      const u = $('loginUser').value.trim();
-      const p = $('loginPass').value;
-      $('loginMsg').textContent = '登入中…';
-      try{
-        const body = new URLSearchParams({ username: u, password: p });
-        const res = await fetch(`${API_BASE}/auth/login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body
-        });
-        const j = await res.json();
-        if (!res.ok) throw new Error(j.detail || '登入失敗');
-        TOKEN = j.access_token; localStorage.setItem('ct_token', TOKEN);
-        $('loginMsg').textContent = '';
-        showOverlay(false);
-        initAfterLogin();
-      }catch(e){
-        $('loginMsg').textContent = (e && e.message) ? e.message : '登入失敗';
-      }
-    }
-    $('loginBtn').addEventListener('click', doLogin);
-    $('loginPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
-    $('loginUser').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
-
-    // 登出
+    // 登出：清 token 並導向登入頁
     function logout(){
       TOKEN = '';
       localStorage.removeItem('ct_token');
-      disposeAllSeries();
-      document.getElementById('seriesPanel').innerHTML = '';
-      document.getElementById('status').textContent = '';
-      render();
-      showOverlay(true);
-      showToast('已登出','info',1200);
+      window.location.href = './login.html';
     }
 
+    // 啟動：驗證 token；無效 → 導向登入頁
     async function initAuth(){
-      // 登入已關閉：直接跳過 overlay，進入主介面
-      // 如需恢復登入，把下方兩行還原為 verifyToken 流程即可（見 git 歷史）
-      showOverlay(false);
-      initAfterLogin();
+      const user = await verifyToken();
+      if (!user){
+        TOKEN = '';
+        localStorage.removeItem('ct_token');
+        window.location.href = './login.html';
+        return;
+      }
+      initAfterLogin(user);
+    }
+
+    // 更新右上角使用者 chip
+    function updateUserChip(user){
+      const chip = $('userChip');
+      if (!chip) return;
+      const name = user.real_name || user.username;
+      const unit = user.unit ? ` · ${user.unit}` : '';
+      chip.textContent = `${name}${unit}`;
+      chip.title = `@${user.username}（${user.role}）`;
+      if (user.role === 'admin') $('adminLink').style.display = '';
+      window.__currentUser = user;
     }
 
     function fmtROC(dt){
@@ -941,11 +903,164 @@
       }).catch(()=>{});
     }
 
+    // ── 成員管理 modal ──────────────────────────────────────────
+    function escH(s){ return s==null?'':String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+    async function openMembersModal(projectId){
+      if (!projectId){ showToast('請先填入 Project ID','error',1800); return; }
+
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+      const card = document.createElement('div');
+      card.style.cssText = 'background:#fff;padding:20px 22px;border-radius:10px;width:min(96vw,560px);max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25);font:13px/1.5 system-ui,-apple-system,sans-serif;';
+      card.innerHTML = `
+        <div style="font-size:15px;font-weight:700;margin-bottom:4px">成員管理：${escH(projectId)}</div>
+        <div id="__membersBody" style="margin-top:10px"><i>載入中…</i></div>
+        <hr style="margin:14px 0;border:none;border-top:1px solid #eee"/>
+        <div style="font-size:13px;font-weight:600;margin-bottom:10px">新增成員</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <div>
+            <div style="font-size:11px;color:#666;margin-bottom:3px">帳號</div>
+            <select id="__grantUser" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;min-width:160px">
+              <option value="">（載入帳號清單…）</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:11px;color:#666;margin-bottom:3px">權限</div>
+            <select id="__grantPerm" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px">
+              <option value="viewer">viewer（唯讀）</option>
+              <option value="collaborator" selected>collaborator（上傳）</option>
+              <option value="owner">owner（管理）</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:11px;color:#666;margin-bottom:3px">到期（可留空）</div>
+            <input id="__grantExpiry" type="datetime-local" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px"/>
+          </div>
+          <button id="__grantBtn" style="padding:6px 14px;background:#007aff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">授權</button>
+        </div>
+        <div id="__grantMsg" style="min-height:16px;font-size:12px;color:#d00;margin-top:6px"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:14px">
+          <button id="__membersClose" style="padding:6px 16px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px">關閉</button>
+        </div>`;
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      const dispose = () => { try{ overlay.remove(); }catch{} };
+      card.querySelector('#__membersClose').onclick = dispose;
+      overlay.addEventListener('click', e => { if (e.target === overlay) dispose(); });
+
+      // 載入成員列表
+      async function loadMembers(){
+        const body = card.querySelector('#__membersBody');
+        try{
+          const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/members`, { headers: authHeaders() });
+          if (res.status === 403){
+            body.innerHTML = '<span style="color:#c00">您沒有此案件的管理權限（需要 owner 或 admin）</span>';
+            return;
+          }
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const j = await res.json();
+          const items = j.items || [];
+          if (items.length === 0){
+            body.innerHTML = '<span style="color:#888">尚無成員授權</span>';
+            return;
+          }
+          const rows = items.map(m => {
+            const valid = m.is_valid ? '' : ' style="opacity:.5;text-decoration:line-through"';
+            const exp = m.expires_at ? m.expires_at.replace('T',' ').replace(/\..*$/,'').replace(/\+.*/,'') : '永久';
+            return `<tr${valid}>
+              <td style="padding:5px 8px">${escH(m.username)}</td>
+              <td style="padding:5px 8px">${escH(m.real_name||'')}</td>
+              <td style="padding:5px 8px">${escH(m.permission)}</td>
+              <td style="padding:5px 8px;font-size:11px;color:#666">${escH(exp)}</td>
+              <td style="padding:5px 8px">
+                <button data-uid="${m.user_id}" class="__revokeBtn" style="padding:2px 8px;font-size:12px;color:#c00;border:1px solid #c00;border-radius:4px;cursor:pointer;background:#fff">撤銷</button>
+              </td>
+            </tr>`;
+          }).join('');
+          body.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr style="color:#666;font-size:11px">
+              <th style="padding:4px 8px;text-align:left">帳號</th>
+              <th style="padding:4px 8px;text-align:left">姓名</th>
+              <th style="padding:4px 8px;text-align:left">權限</th>
+              <th style="padding:4px 8px;text-align:left">到期</th>
+              <th></th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+          body.querySelectorAll('.__revokeBtn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+              const uid = btn.dataset.uid;
+              if (!confirm(`確定撤銷 user_id=${uid} 的授權？`)) return;
+              try{
+                const r = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/members/${uid}`,
+                  { method:'DELETE', headers: authHeaders() });
+                if (!r.ok) { const t=await r.text(); throw new Error(JSON.parse(t).detail||t); }
+                showToast('已撤銷','success',1400);
+                loadMembers();
+              }catch(e){ showToast('撤銷失敗：'+e.message,'error',2200); }
+            });
+          });
+        }catch(e){
+          body.innerHTML = `<span style="color:#c00">載入失敗：${escH(e.message)}</span>`;
+        }
+      }
+
+      // 載入帳號清單供選擇
+      async function loadUserOptions(){
+        const sel = card.querySelector('#__grantUser');
+        try{
+          const res = await fetch(`${API_BASE}/users`, { headers: authHeaders() });
+          if (!res.ok) throw 0;
+          const j = await res.json();
+          sel.innerHTML = (j.items||[]).map(u =>
+            `<option value="${u.id}">${escH(u.username)}${u.real_name?' ('+escH(u.real_name)+')':''}</option>`
+          ).join('');
+        }catch{
+          sel.innerHTML = '<option value="">（無法載入帳號清單，請手動輸入 user_id）</option>';
+          // 改為 number input 備援
+          sel.outerHTML = '<input id="__grantUser" type="number" min="1" placeholder="user_id" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;width:80px"/>';
+        }
+      }
+
+      card.querySelector('#__grantBtn').onclick = async () => {
+        const uidEl = card.querySelector('#__grantUser');
+        const uid = Number(uidEl.value);
+        const perm = card.querySelector('#__grantPerm').value;
+        const expiry = card.querySelector('#__grantExpiry').value;
+        const msgEl = card.querySelector('#__grantMsg');
+        if (!uid){ msgEl.textContent = '請選擇帳號'; return; }
+        msgEl.textContent = '授權中…';
+        try{
+          const body = { user_id: uid, permission: perm };
+          if (expiry) body.expires_at = new Date(expiry).toISOString();
+          const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/members`, {
+            method: 'POST',
+            headers: { 'Content-Type':'application/json', ...authHeaders() },
+            body: JSON.stringify(body),
+          });
+          const j = await res.json();
+          if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+          msgEl.textContent = '';
+          showToast(`已授權 ${j.username} 為 ${j.permission}`,'success',1800);
+          loadMembers();
+        }catch(e){
+          msgEl.textContent = '失敗：' + e.message;
+        }
+      };
+
+      loadMembers();
+      loadUserOptions();
+    }
+
     // 綁事件（登入成功後才生效的初始化）
-    function initAfterLogin(){
+    function initAfterLogin(user){
+      updateUserChip(user);
       $('loadBtn').addEventListener('click', load);
       $('btnUpload').addEventListener('click', uploadQueued);
       $('logoutBtn').addEventListener('click', logout);
+      $('membersBtn').addEventListener('click', () => openMembersModal($('projectId').value.trim()));
 
       $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
       $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });

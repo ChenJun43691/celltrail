@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>登入 · CellTrail</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #f0f2f5;
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, 'Noto Sans TC'; }
+    .wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 16px; }
+    .card {
+      background: #fff; width: min(92vw, 400px); border-radius: 14px;
+      padding: 32px 28px; box-shadow: 0 4px 32px rgba(0,0,0,.12);
+    }
+    .brand { text-align: center; margin-bottom: 26px; }
+    .brand h1 { margin: 0; font-size: 24px; font-weight: 700; color: #1a1a2e; }
+    .brand p  { margin: 6px 0 0; font-size: 12px; color: #888; }
+    .section-title { font-size: 14px; font-weight: 600; color: #333; margin-bottom: 14px; }
+    label { display: block; margin-bottom: 14px; font-size: 13px; color: #555; font-weight: 500; }
+    input[type="text"], input[type="password"] {
+      display: block; width: 100%; padding: 10px 12px; margin-top: 5px;
+      border: 1px solid #d0d5dd; border-radius: 8px; font-size: 14px;
+      outline: none; transition: border-color .15s, box-shadow .15s;
+    }
+    input:focus { border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,.15); }
+    button.primary {
+      width: 100%; padding: 11px; border: none; border-radius: 8px;
+      background: #007aff; color: #fff; font-size: 14px; font-weight: 600;
+      cursor: pointer; margin-top: 6px; transition: background .15s;
+    }
+    button.primary:hover { background: #0062cc; }
+    button.primary:disabled { background: #a0c4ff; cursor: not-allowed; }
+    .msg { min-height: 18px; font-size: 12px; color: #d32f2f; margin: 6px 0 10px; }
+    .msg.ok { color: #2e7d32; }
+    .alert-box {
+      background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px;
+      padding: 10px 14px; font-size: 13px; color: #6d4c00; margin-bottom: 18px; line-height: 1.5;
+    }
+    .footer { text-align: center; font-size: 11px; color: #bbb; margin-top: 20px; }
+  </style>
+</head>
+<body>
+<div class="wrapper">
+  <div class="card">
+    <div class="brand">
+      <h1>CellTrail</h1>
+      <p>刑事偵查 · 基地台連線歷程分析系統</p>
+    </div>
+
+    <!-- 登入表單 -->
+    <div id="loginSection">
+      <div class="section-title">請登入</div>
+      <label>帳號
+        <input id="loginUser" type="text" placeholder="username" autocomplete="username" />
+      </label>
+      <label>密碼
+        <input id="loginPass" type="password" placeholder="password" autocomplete="current-password" />
+      </label>
+      <div id="loginMsg" class="msg"></div>
+      <button id="loginBtn" class="primary">登入</button>
+    </div>
+
+    <!-- 首次登入修改密碼（must_change_password=true 時顯示） -->
+    <div id="changePassSection" style="display:none">
+      <div class="alert-box">
+        ⚠ 首次登入需修改密碼，才能進入系統。
+      </div>
+      <div class="section-title">設定新密碼</div>
+      <label>新密碼（至少 8 字元）
+        <input id="newPass1" type="password" autocomplete="new-password" />
+      </label>
+      <label>確認新密碼
+        <input id="newPass2" type="password" autocomplete="new-password" />
+      </label>
+      <div id="changeMsg" class="msg"></div>
+      <button id="changeBtn" class="primary">修改密碼並進入系統</button>
+    </div>
+
+    <div class="footer">CellTrail · 高市刑大冠鈞</div>
+  </div>
+</div>
+
+<script>
+  const TOKEN_KEY = 'ct_token';
+
+  function getApiBase() {
+    if (window.__CELLTRAIL_API__) return window.__CELLTRAIL_API__.replace(/\/$/, '');
+    const host = location.hostname || '';
+    if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/.test(host))
+      return 'http://localhost:8000';
+    return 'https://celltrail-api.onrender.com';
+  }
+  const API = getApiBase() + '/api';
+
+  let _tempToken = null;   // 登入後暫存；成功修改密碼後失效
+  let _oldPassword = '';   // 僅存於記憶體，不寫入 localStorage
+
+  // 已有 token → 驗證後決定導向
+  (async function init() {
+    const tok = localStorage.getItem(TOKEN_KEY);
+    if (!tok) return;
+    try {
+      const r = await fetch(`${API}/auth/me`, { headers: { Authorization: `Bearer ${tok}` } });
+      if (!r.ok) throw 0;
+      const user = await r.json();
+      if (user.must_change_password) {
+        // 有舊 token 但需改密碼：清掉強制重登，避免 _oldPassword 遺失
+        localStorage.removeItem(TOKEN_KEY);
+        setLoginMsg('您的帳號需要修改密碼，請重新輸入以繼續');
+      } else {
+        window.location.href = './index.html';
+      }
+    } catch {
+      localStorage.removeItem(TOKEN_KEY);
+    }
+  })();
+
+  function setLoginMsg(txt, ok) {
+    const el = document.getElementById('loginMsg');
+    el.textContent = txt;
+    el.className = ok ? 'msg ok' : 'msg';
+  }
+  function setChangeMsg(txt, ok) {
+    const el = document.getElementById('changeMsg');
+    el.textContent = txt;
+    el.className = ok ? 'msg ok' : 'msg';
+  }
+
+  function showChangeSection() {
+    document.getElementById('loginSection').style.display = 'none';
+    document.getElementById('changePassSection').style.display = '';
+    document.getElementById('newPass1').focus();
+  }
+
+  async function doLogin() {
+    const u = document.getElementById('loginUser').value.trim();
+    const p = document.getElementById('loginPass').value;
+    if (!u || !p) { setLoginMsg('請填入帳號與密碼'); return; }
+    const btn = document.getElementById('loginBtn');
+    btn.disabled = true;
+    setLoginMsg('登入中…');
+    try {
+      const res = await fetch(`${API}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ username: u, password: p }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+      localStorage.setItem(TOKEN_KEY, j.access_token);
+      _tempToken = j.access_token;
+      if (j.must_change_password) {
+        _oldPassword = p;  // 暫存供 change-password API 使用
+        setLoginMsg('');
+        showChangeSection();
+      } else {
+        window.location.href = './index.html';
+      }
+    } catch (e) {
+      setLoginMsg(e.message || '登入失敗');
+      btn.disabled = false;
+    }
+  }
+
+  async function doChangePassword() {
+    const p1 = document.getElementById('newPass1').value;
+    const p2 = document.getElementById('newPass2').value;
+    if (p1.length < 8) { setChangeMsg('新密碼至少 8 個字元'); return; }
+    if (p1 !== p2) { setChangeMsg('兩次輸入不一致'); return; }
+    const btn = document.getElementById('changeBtn');
+    btn.disabled = true;
+    setChangeMsg('修改中…');
+    try {
+      const res = await fetch(`${API}/auth/change-password`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${_tempToken}`,
+        },
+        body: JSON.stringify({ current_password: _oldPassword, new_password: p1 }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+      _oldPassword = '';  // 使用後立即清除
+      setChangeMsg('密碼修改成功，正在進入系統…', true);
+      setTimeout(() => { window.location.href = './index.html'; }, 700);
+    } catch (e) {
+      setChangeMsg(e.message || '修改失敗');
+      btn.disabled = false;
+    }
+  }
+
+  document.getElementById('loginBtn').addEventListener('click', doLogin);
+  document.getElementById('loginPass').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('loginUser').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('loginPass').focus();
+  });
+  document.getElementById('changeBtn').addEventListener('click', doChangePassword);
+  document.getElementById('newPass1').addEventListener('keydown', e => {
+    if (e.key === 'Enter') document.getElementById('newPass2').focus();
+  });
+  document.getElementById('newPass2').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doChangePassword();
+  });
+</script>
+</body>
+</html>

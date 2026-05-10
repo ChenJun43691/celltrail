@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CellTrail · 系統管理</title>
+  <style>
+    :root{
+      --primary:#0b5ed7; --bg:#f6f7fa; --card:#fff; --border:#e3e6ee;
+      --text:#222; --sub:#666; --ok:#1f7a3f; --bad:#b3261e; --warn:#a07000;
+    }
+    *{ box-sizing: border-box; }
+    html,body{ margin:0; padding:0; background:var(--bg); color:var(--text);
+      font:14px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,'Noto Sans TC'; }
+
+    header{
+      position:sticky; top:0; z-index:10; background:#fff;
+      border-bottom:1px solid var(--border); padding:10px 16px;
+      display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    }
+    h1{ font-size:18px; margin:0; font-weight:600; }
+    a.back{ color:var(--primary); text-decoration:none; font-size:13px; }
+    a.back:hover{ text-decoration:underline; }
+    #adminUserChip{ margin-left:auto; font-size:12px; color:var(--primary); font-weight:500; }
+
+    .container{ max-width:1100px; margin:20px auto; padding:0 16px; }
+
+    .section{
+      background:var(--card); border:1px solid var(--border); border-radius:10px;
+      padding:16px 18px; margin-bottom:20px;
+    }
+    .section-title{
+      font-size:15px; font-weight:600; margin-bottom:14px;
+      display:flex; align-items:center; gap:10px;
+    }
+
+    table{ width:100%; border-collapse:collapse; }
+    th,td{ padding:8px 10px; text-align:left; border-bottom:1px solid var(--border); font-size:13px; }
+    th{ color:var(--sub); font-weight:600; font-size:12px; background:#fafbfd; position:sticky; top:50px; }
+    tr:hover td{ background:#fbfcfe; }
+    .badge{
+      display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:600;
+    }
+    .badge-admin{ background:#e8f0fe; color:#1a56db; border:1px solid #c7d7fd; }
+    .badge-user{ background:#f3f4f6; color:#555; border:1px solid #e0e0e0; }
+    .badge-ok{ background:#e8f5e9; color:var(--ok); border:1px solid #c8e6c9; }
+    .badge-off{ background:#ffebee; color:var(--bad); border:1px solid #ffcdd2; }
+    .badge-warn{ background:#fff8e1; color:var(--warn); border:1px solid #ffe082; }
+
+    .form-grid{
+      display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;
+    }
+    .form-group label{ font-size:12px; color:var(--sub); display:block; margin-bottom:3px; }
+    .form-group input, .form-group select{
+      width:100%; padding:7px 9px; border:1px solid var(--border);
+      border-radius:6px; font-size:13px; outline:none;
+    }
+    .form-group input:focus, .form-group select:focus{
+      border-color:var(--primary); box-shadow:0 0 0 2px rgba(11,93,215,.12);
+    }
+
+    button{
+      padding:7px 14px; border:1px solid var(--primary); background:var(--primary);
+      color:#fff; border-radius:6px; cursor:pointer; font-size:13px;
+    }
+    button.secondary{ background:#fff; color:var(--primary); }
+    button.danger{ background:#fff; color:var(--bad); border-color:var(--bad); }
+    button.sm{ padding:3px 9px; font-size:12px; }
+    button:disabled{ opacity:.5; cursor:not-allowed; }
+
+    .msg{ font-size:12px; color:var(--bad); min-height:16px; margin-top:6px; }
+    .msg.ok{ color:var(--ok); }
+
+    .temp-pass{
+      background:#fff8e1; border:1px solid #ffe082; border-radius:6px;
+      padding:10px 14px; font-size:13px; color:#6d4c00; margin-top:10px;
+    }
+    .temp-pass code{ font-size:15px; font-weight:700; letter-spacing:.05em; }
+    .empty{ text-align:center; color:var(--sub); padding:20px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>👤 系統管理</h1>
+    <a class="back" href="./index.html">← 回主畫面</a>
+    <a class="back" href="./audit.html" style="margin-left:8px">🛡️ 稽核紀錄</a>
+    <span id="adminUserChip"></span>
+    <button class="secondary" id="adminLogoutBtn" style="padding:4px 10px;font-size:12px">登出</button>
+  </header>
+
+  <div class="container">
+
+    <!-- 建立帳號 -->
+    <div class="section">
+      <div class="section-title">➕ 建立新帳號</div>
+      <div class="form-grid">
+        <div class="form-group">
+          <label>帳號（username）*</label>
+          <input id="cUsername" type="text" placeholder="officer01" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label>姓名（real_name）</label>
+          <input id="cRealName" type="text" placeholder="陳大明" />
+        </div>
+        <div class="form-group">
+          <label>單位（unit）</label>
+          <input id="cUnit" type="text" placeholder="高市刑大六隊" />
+        </div>
+        <div class="form-group">
+          <label>警號（badge_number）</label>
+          <input id="cBadge" type="text" placeholder="E43691" />
+        </div>
+        <div class="form-group">
+          <label>Email</label>
+          <input id="cEmail" type="email" placeholder="user@kcg.gov.tw" />
+        </div>
+        <div class="form-group">
+          <label>角色（role）</label>
+          <select id="cRole">
+            <option value="user">user（一般偵查員）</option>
+            <option value="admin">admin（系統管理員）</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <button id="createBtn">建立帳號</button>
+        <span class="msg" id="createMsg"></span>
+      </div>
+      <div id="tempPassBox" style="display:none" class="temp-pass">
+        ✅ 帳號建立成功！請將臨時密碼告知使用者（<b>僅顯示一次</b>）：<br/>
+        <code id="tempPassVal"></code>
+        <div style="font-size:11px;color:#a07000;margin-top:4px">首次登入後系統將強制要求修改密碼。</div>
+      </div>
+    </div>
+
+    <!-- 帳號清單 -->
+    <div class="section">
+      <div class="section-title">
+        帳號清單
+        <button class="secondary" id="refreshUsersBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>帳號</th><th>姓名</th><th>單位</th><th>警號</th>
+            <th>角色</th><th>狀態</th><th>需改密碼</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="usersTbody">
+          <tr><td class="empty" colspan="9">載入中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 密碼重設（admin 重設他人） -->
+    <div class="section">
+      <div class="section-title">🔑 重設帳號密碼</div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div class="form-group" style="margin-bottom:0">
+          <label>User ID</label>
+          <input id="resetUid" type="number" min="1" style="width:80px" placeholder="2" />
+        </div>
+        <button id="resetPassBtn">產生新臨時密碼</button>
+        <span class="msg" id="resetMsg"></span>
+      </div>
+      <div id="resetPassBox" style="display:none" class="temp-pass">
+        ✅ 重設成功！新臨時密碼（<b>僅顯示一次</b>）：<br/>
+        <code id="resetPassVal"></code>
+        <div style="font-size:11px;color:#a07000;margin-top:4px">使用者下次登入將被強制要求修改密碼。</div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const TOKEN_KEY = 'ct_token';
+
+    function getApiBase() {
+      if (window.__CELLTRAIL_API__) return window.__CELLTRAIL_API__.replace(/\/$/, '');
+      const host = location.hostname || '';
+      if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/.test(host))
+        return 'http://localhost:8000';
+      return 'https://celltrail-api.onrender.com';
+    }
+    const API = getApiBase() + '/api';
+
+    function getToken() { return localStorage.getItem(TOKEN_KEY); }
+    function authHeaders() {
+      const tok = getToken();
+      return tok ? { Authorization: `Bearer ${tok}` } : {};
+    }
+    function escH(s) {
+      if (s == null) return '';
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    // Auth guard — admin only
+    (async function init() {
+      const tok = getToken();
+      if (!tok) { window.location.href = './login.html'; return; }
+      try {
+        const r = await fetch(`${API}/auth/me`, { headers: authHeaders() });
+        if (!r.ok) throw 0;
+        const u = await r.json();
+        if (u.role !== 'admin') {
+          alert('此頁面需要 admin 權限');
+          window.location.href = './index.html';
+          return;
+        }
+        const chip = document.getElementById('adminUserChip');
+        if (chip) chip.textContent = (u.real_name || u.username) + (u.unit ? ' · ' + u.unit : '');
+      } catch {
+        localStorage.removeItem(TOKEN_KEY);
+        window.location.href = './login.html';
+      }
+    })();
+
+    document.getElementById('adminLogoutBtn').addEventListener('click', () => {
+      localStorage.removeItem(TOKEN_KEY);
+      window.location.href = './login.html';
+    });
+
+    // ── 帳號清單 ──
+    async function loadUsers() {
+      const tbody = document.getElementById('usersTbody');
+      tbody.innerHTML = '<tr><td class="empty" colspan="9">載入中…</td></tr>';
+      try {
+        const res = await fetch(`${API}/users`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const j = await res.json();
+        const items = j.items || [];
+        if (items.length === 0) {
+          tbody.innerHTML = '<tr><td class="empty" colspan="9">無帳號</td></tr>';
+          return;
+        }
+        tbody.innerHTML = items.map(u => {
+          const roleBadge = u.role === 'admin'
+            ? `<span class="badge badge-admin">admin</span>`
+            : `<span class="badge badge-user">user</span>`;
+          const activeBadge = u.is_active
+            ? `<span class="badge badge-ok">啟用</span>`
+            : `<span class="badge badge-off">停用</span>`;
+          const changePw = u.must_change_password
+            ? `<span class="badge badge-warn">待改密碼</span>` : '—';
+          const deactBtn = u.is_active
+            ? `<button class="sm danger" onclick="deactivateUser(${u.id})">停用</button>`
+            : `<button class="sm secondary" onclick="reactivateUser(${u.id})">啟用</button>`;
+          return `<tr>
+            <td>${u.id}</td>
+            <td>${escH(u.username)}</td>
+            <td>${escH(u.real_name || '')}</td>
+            <td>${escH(u.unit || '')}</td>
+            <td>${escH(u.badge_number || '')}</td>
+            <td>${roleBadge}</td>
+            <td>${activeBadge}</td>
+            <td>${changePw}</td>
+            <td>${deactBtn}</td>
+          </tr>`;
+        }).join('');
+      } catch (e) {
+        tbody.innerHTML = `<tr><td class="empty" colspan="9" style="color:var(--bad)">載入失敗：${escH(e.message)}</td></tr>`;
+      }
+    }
+
+    async function deactivateUser(id) {
+      if (!confirm(`確定停用 user_id=${id}？停用後無法登入。`)) return;
+      try {
+        const res = await fetch(`${API}/users/${id}/deactivate`, { method:'PATCH', headers: authHeaders() });
+        if (!res.ok) { const t=await res.text(); throw new Error(JSON.parse(t).detail||t); }
+        loadUsers();
+      } catch (e) { alert('停用失敗：' + e.message); }
+    }
+
+    async function reactivateUser(id) {
+      if (!confirm(`確定重新啟用 user_id=${id}？`)) return;
+      try {
+        const res = await fetch(`${API}/users/${id}/reactivate`, { method:'PATCH', headers: authHeaders() });
+        if (!res.ok) { const t=await res.text(); throw new Error(JSON.parse(t).detail||t); }
+        loadUsers();
+      } catch (e) { alert('啟用失敗：' + e.message); }
+    }
+
+    document.getElementById('refreshUsersBtn').addEventListener('click', loadUsers);
+
+    // ── 建立帳號 ──
+    document.getElementById('createBtn').addEventListener('click', async () => {
+      const username = document.getElementById('cUsername').value.trim();
+      const real_name = document.getElementById('cRealName').value.trim() || undefined;
+      const unit = document.getElementById('cUnit').value.trim() || undefined;
+      const badge_number = document.getElementById('cBadge').value.trim() || undefined;
+      const email = document.getElementById('cEmail').value.trim() || undefined;
+      const role = document.getElementById('cRole').value;
+      const msgEl = document.getElementById('createMsg');
+      const box = document.getElementById('tempPassBox');
+      box.style.display = 'none';
+      if (!username) { msgEl.textContent = '帳號不得為空'; msgEl.className='msg'; return; }
+      msgEl.textContent = '建立中…'; msgEl.className='msg';
+      document.getElementById('createBtn').disabled = true;
+      try {
+        const payload = { username, role };
+        if (real_name)    payload.real_name    = real_name;
+        if (unit)         payload.unit         = unit;
+        if (badge_number) payload.badge_number = badge_number;
+        if (email)        payload.email        = email;
+        const res = await fetch(`${API}/users`, {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json', ...authHeaders() },
+          body: JSON.stringify(payload),
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+        msgEl.textContent = '';
+        document.getElementById('tempPassVal').textContent = j.temp_password;
+        box.style.display = '';
+        // 清空表單
+        ['cUsername','cRealName','cUnit','cBadge','cEmail'].forEach(id => {
+          document.getElementById(id).value = '';
+        });
+        document.getElementById('cRole').value = 'user';
+        loadUsers();
+      } catch (e) {
+        msgEl.textContent = e.message || '建立失敗';
+        msgEl.className = 'msg';
+      } finally {
+        document.getElementById('createBtn').disabled = false;
+      }
+    });
+
+    // ── 重設密碼 ──
+    document.getElementById('resetPassBtn').addEventListener('click', async () => {
+      const uid = document.getElementById('resetUid').value;
+      const msgEl = document.getElementById('resetMsg');
+      const box = document.getElementById('resetPassBox');
+      box.style.display = 'none';
+      if (!uid) { msgEl.textContent = '請填入 User ID'; msgEl.className='msg'; return; }
+      msgEl.textContent = '處理中…'; msgEl.className='msg';
+      document.getElementById('resetPassBtn').disabled = true;
+      try {
+        const res = await fetch(`${API}/users/${uid}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type':'application/json', ...authHeaders() },
+          body: JSON.stringify({ reset_password: true }),
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+        msgEl.textContent = '';
+        document.getElementById('resetPassVal').textContent = j.temp_password;
+        box.style.display = '';
+        loadUsers();
+      } catch (e) {
+        msgEl.textContent = e.message || '重設失敗';
+        msgEl.className = 'msg';
+      } finally {
+        document.getElementById('resetPassBtn').disabled = false;
+      }
+    });
+
+    // 初始載入
+    loadUsers();
+  </script>
+</body>
+</html>

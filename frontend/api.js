@@ -29,12 +29,12 @@ export async function login(username, password) {
     throw new Error(`login failed: ${res.status} ${text}`);
   }
   const data = await res.json(); // { access_token, token_type }
-  localStorage.setItem('token', data.access_token);
+  localStorage.setItem('ct_token', data.access_token);
   return data;
 }
 
 export async function me() {
-  const token = localStorage.getItem('token');
+  const token = localStorage.getItem('ct_token');
   if (!token) throw new Error('no token, please login');
   const res = await fetch(`${API}/api/auth/me`, {
     headers: { Authorization: `Bearer ${token}` }
@@ -47,7 +47,7 @@ export async function me() {
 }
 
 export function logout() {
-  localStorage.removeItem('token');
+  localStorage.removeItem('ct_token');
 }
 
 export { API };

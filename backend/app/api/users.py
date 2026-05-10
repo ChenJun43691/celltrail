@@ -28,18 +28,20 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 # ---------- Pydantic Schemas ----------
 class UserCreateIn(BaseModel):
-    username:     str  = Field(min_length=1, max_length=64)
-    real_name:    str  = Field(min_length=1, max_length=64, description="真實姓名")
-    unit:         str  = Field(min_length=1, max_length=64, description="單位（例：高市刑大）")
-    badge_number: str  = Field(min_length=1, max_length=32, description="警號")
+    username:     str           = Field(min_length=1, max_length=64)
+    real_name:    Optional[str] = Field(default=None, max_length=64)
+    unit:         Optional[str] = Field(default=None, max_length=64)
+    badge_number: Optional[str] = Field(default=None, max_length=32)
     email:        Optional[str] = Field(default=None, max_length=128)
-    role:         str  = Field(default="user", pattern="^(admin|user)$")
+    role:         str           = Field(default="user", pattern="^(admin|user)$")
 
 
 class UserUpdateIn(BaseModel):
-    password: Optional[str] = Field(default=None, min_length=8, max_length=128,
-                                    description="admin 強制重設密碼（設後 must_change_password=True）")
-    role:     Optional[str] = Field(default=None, pattern="^(admin|user)$")
+    password:       Optional[str]  = Field(default=None, min_length=8, max_length=128,
+                                           description="admin 強制設定密碼（設後 must_change_password=True）")
+    reset_password: Optional[bool] = Field(default=None,
+                                           description="True=系統產生新臨時密碼並回傳（僅一次）")
+    role:           Optional[str]  = Field(default=None, pattern="^(admin|user)$")
 
 
 class UserOut(BaseModel):
@@ -127,17 +129,24 @@ def list_users():
 def update_user(user_id: int, payload: UserUpdateIn,
                 current_admin: dict = Depends(require_admin)):
     """更新角色或強制重設密碼（重設後 must_change_password=True）。"""
-    if payload.password is None and payload.role is None:
-        raise HTTPException(status_code=400, detail="至少需提供 password 或 role")
+    if payload.password is None and payload.role is None and not payload.reset_password:
+        raise HTTPException(status_code=400, detail="至少需提供 password、reset_password 或 role")
 
+    temp_password: str | None = None
     sets: list[str] = ["updated_at = now()"]
     params: list = []
-    if payload.password is not None:
+
+    if payload.reset_password:
+        temp_password = secrets.token_urlsafe(12)
+        sets.insert(0, "password_hash = %s")
+        sets.insert(1, "must_change_password = TRUE")
+        params.append(hash_password(temp_password))
+    elif payload.password is not None:
         sets.insert(0, "password_hash = %s")
         sets.insert(1, "must_change_password = TRUE")
         params.append(hash_password(payload.password))
+
     if payload.role is not None:
-        # 防止取消最後一個 admin
         if payload.role == "user" and current_admin["id"] == user_id:
             raise HTTPException(status_code=400, detail="不能降級自己的 admin 身份")
         sets.insert(0, "role = %s")
@@ -154,7 +163,10 @@ def update_user(user_id: int, payload: UserUpdateIn,
 
     if not row:
         raise HTTPException(status_code=404, detail="使用者不存在")
-    return _row_to_user(row)
+    result = _row_to_user(row)
+    if temp_password:
+        result["temp_password"] = temp_password
+    return result
 
 
 @router.patch("/{user_id}/deactivate", dependencies=[Depends(require_admin)])

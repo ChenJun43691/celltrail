@@ -121,6 +121,8 @@
     <span style="margin-left:auto;color:var(--sub);font-size:12px">
       append-only ledger · 不可竄改
     </span>
+    <span id="auditUserChip" style="font-size:12px;color:var(--primary);font-weight:500"></span>
+    <button id="auditLogoutBtn" class="secondary" style="padding:4px 10px;font-size:12px">登出</button>
   </header>
 
   <div class="container">
@@ -200,7 +202,12 @@
     const tbody = $('tbody');
     let state = { page: 1, pageSize: 50, total: 0 };
 
-    function getToken() { return localStorage.getItem('token'); }
+    function getToken() { return localStorage.getItem('ct_token'); }
+
+    // 未登入 → 導回登入頁
+    if (!getToken()) {
+      window.location.href = './login.html';
+    }
 
     async function apiGet(path) {
       const token = getToken();
@@ -460,6 +467,24 @@
 
     // 初始化：先載 action 下拉選單
     loadActions();
+
+    // 顯示使用者身份
+    (async function showUser() {
+      const tok = getToken();
+      if (!tok) return;
+      try {
+        const r = await fetch(`${API}/api/auth/me`, { headers: { Authorization: `Bearer ${tok}` } });
+        if (!r.ok) { window.location.href = './login.html'; return; }
+        const u = await r.json();
+        const chip = $('auditUserChip');
+        if (chip) chip.textContent = (u.real_name || u.username) + (u.unit ? ' · ' + u.unit : '');
+      } catch {}
+    })();
+
+    $('auditLogoutBtn').addEventListener('click', () => {
+      localStorage.removeItem('ct_token');
+      window.location.href = './login.html';
+    });
   </script>
 </body>
 </html>
