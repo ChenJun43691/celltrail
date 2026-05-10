@@ -4,101 +4,197 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>申請帳號 · CellTrail</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; background: #f0f2f5;
-      font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, 'Noto Sans TC'; }
-    .wrapper { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 16px; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { height: 100%; background: #050a19; }
+    body {
+      min-height: 100%; background: transparent;
+      font-family: 'Noto Sans TC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: #e8eef8;
+    }
+    #bgVideo {
+      position: fixed; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; z-index: -1; pointer-events: none;
+    }
+    #bgOverlay {
+      position: fixed; inset: 0;
+      background: rgba(5, 10, 25, 0.62); z-index: 0;
+    }
+    .page {
+      position: relative; z-index: 1; min-height: 100vh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 32px 16px 48px;
+    }
     .card {
-      background: #fff; width: min(92vw, 420px); border-radius: 14px;
-      padding: 32px 28px; box-shadow: 0 4px 32px rgba(0,0,0,.12);
+      width: min(90vw, 440px); border-radius: 12px;
+      padding: 0 0 28px; background: rgba(8, 18, 40, 0.85);
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      border: none; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.60);
+      opacity: 0; animation: fadeInUp .7s ease .2s forwards; overflow: hidden;
     }
-    .brand { text-align: center; margin-bottom: 22px; }
-    .brand h1 { margin: 0; font-size: 22px; font-weight: 700; color: #1a1a2e; }
-    .brand p  { margin: 6px 0 0; font-size: 12px; color: #888; }
-    .section-title { font-size: 14px; font-weight: 600; color: #333; margin-bottom: 14px; }
-    label { display: block; margin-bottom: 14px; font-size: 13px; color: #555; font-weight: 500; }
-    label span.req { color: #d32f2f; }
-    input[type="text"], input[type="tel"] {
-      display: block; width: 100%; padding: 10px 12px; margin-top: 5px;
-      border: 1px solid #d0d5dd; border-radius: 8px; font-size: 14px;
-      outline: none; transition: border-color .15s, box-shadow .15s;
+    .card-logo { padding: 24px 30px 0; text-align: center; }
+    .card-logo img {
+      width: 100%; max-width: 360px; height: auto;
+      display: block; margin: 0 auto; background: transparent;
     }
-    input:focus { border-color: #007aff; box-shadow: 0 0 0 3px rgba(0,122,255,.15); }
-    button.primary {
-      width: 100%; padding: 11px; border: none; border-radius: 8px;
-      background: #007aff; color: #fff; font-size: 14px; font-weight: 600;
-      cursor: pointer; margin-top: 6px; transition: background .15s;
+    .card-logo-divider {
+      margin: 18px 0 0; border: none;
+      border-bottom: 1px solid rgba(255,255,255,0.10);
     }
-    button.primary:hover { background: #0062cc; }
-    button.primary:disabled { background: #a0c4ff; cursor: not-allowed; }
-    .msg { min-height: 18px; font-size: 12px; color: #d32f2f; margin: 6px 0 10px; }
-    .msg.ok { color: #2e7d32; }
-    .hint { font-size: 12px; color: #888; margin-top: 4px; line-height: 1.5; }
-    .success-box {
-      background: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 10px;
-      padding: 18px 20px; text-align: center; font-size: 14px; color: #1a5c2a; line-height: 1.8;
+    .card-body { padding: 22px 30px 0; }
+
+    .card-title {
+      font-size: 15px; font-weight: 600;
+      color: rgba(180,210,255,0.9); margin-bottom: 16px;
+      letter-spacing: .5px; display: flex; align-items: center; gap: 8px;
     }
-    .success-box h3 { margin: 0 0 8px; font-size: 18px; }
-    .footer { text-align: center; font-size: 11px; color: #bbb; margin-top: 20px; }
-    a.back-link { display: block; text-align: center; margin-top: 14px; font-size: 13px; color: #007aff; text-decoration: none; }
-    a.back-link:hover { text-decoration: underline; }
+    .card-title::before {
+      content: ''; display: inline-block; width: 3px; height: 16px;
+      background: linear-gradient(180deg, #0099ff, #0055cc); border-radius: 2px;
+    }
+    .section-sep {
+      border: none; border-top: 1px solid rgba(0,120,255,0.2); margin: 0 0 18px;
+    }
+
     .note-box {
-      background: #fff8e1; border: 1px solid #ffe082; border-radius: 8px;
-      padding: 10px 14px; font-size: 12px; color: #6d4c00; margin-bottom: 18px; line-height: 1.6;
+      background: rgba(80, 60, 0, 0.35); border: 1px solid rgba(255,200,60,0.35);
+      border-radius: 8px; padding: 10px 14px; font-size: 12px;
+      color: #ffd875; margin-bottom: 18px; line-height: 1.7;
+    }
+    .success-box {
+      background: rgba(0,60,20,0.45); border: 1px solid rgba(60,200,80,0.35);
+      border-radius: 10px; padding: 20px; text-align: center;
+      font-size: 13px; color: #80e89a; line-height: 1.85;
+    }
+    .success-box h3 { margin: 0 0 10px; font-size: 18px; color: #a0f0b0; }
+
+    .field { margin-bottom: 14px; }
+    .field label {
+      display: block; font-size: 12px; font-weight: 500;
+      color: rgba(160,200,255,0.75); margin-bottom: 6px; letter-spacing: .3px;
+    }
+    .field label .req { color: #ff8080; margin-left: 2px; }
+    .field input[type="text"],
+    .field input[type="tel"] {
+      display: block; width: 100%; padding: 11px 14px;
+      background: rgba(255,255,255,0.07); border: 1px solid rgba(0,150,255,0.35);
+      border-radius: 8px; font-size: 14px; font-family: inherit; color: #e8eef8;
+      outline: none; transition: border-color .2s, box-shadow .2s, background .2s;
+    }
+    .field input::placeholder { color: rgba(255,255,255,0.25); }
+    .field input:focus {
+      background: rgba(255,255,255,0.11); border-color: rgba(0,170,255,0.75);
+      box-shadow: 0 0 0 3px rgba(0,140,255,0.18), 0 0 12px rgba(0,140,255,0.12);
+    }
+    .hint { font-size: 11px; color: rgba(160,190,230,0.55); margin-top: 5px; line-height: 1.5; }
+
+    .msg { min-height: 17px; font-size: 12px; color: #ff7070; margin: 4px 0 12px; }
+    .msg.ok { color: #60e87a; }
+
+    .btn-primary {
+      width: 100%; padding: 12px; border: none; border-radius: 8px;
+      background: linear-gradient(135deg, #0066cc 0%, #0099ff 100%);
+      color: #fff; font-size: 14px; font-weight: 600; font-family: inherit;
+      letter-spacing: .5px; cursor: pointer;
+      transition: filter .2s, box-shadow .2s, transform .1s;
+      box-shadow: 0 4px 18px rgba(0,120,255,0.35); margin-top: 4px;
+    }
+    .btn-primary:hover { filter: brightness(1.18); box-shadow: 0 6px 24px rgba(0,150,255,0.55); }
+    .btn-primary:active { transform: scale(.985); filter: brightness(.95); }
+    .btn-primary:disabled {
+      background: linear-gradient(135deg, #1a3a66 0%, #1a5577 100%);
+      box-shadow: none; cursor: not-allowed; filter: none;
+    }
+
+    .back-link {
+      display: block; text-align: center; margin-top: 14px;
+      font-size: 12px; color: rgba(100,180,255,0.8); text-decoration: none;
+      transition: color .15s;
+    }
+    .back-link:hover { color: #7dd3fc; }
+
+    .footer {
+      margin-top: 20px; font-size: 11px; color: rgba(255,255,255,0.25);
+      text-align: center; letter-spacing: .3px;
+    }
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(22px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @media (max-width: 480px) {
+      .card-logo { padding: 20px 18px 0; }
+      .card-body  { padding: 20px 18px 0; }
+      .card { padding-bottom: 22px; }
     }
   </style>
 </head>
 <body>
-<div class="wrapper">
+<video id="bgVideo" autoplay muted loop playsinline preload="auto">
+  <source src="assets/mp.mp4" type="video/mp4" />
+</video>
+<div id="bgOverlay"></div>
+
+<div class="page">
   <div class="card">
-    <div class="brand">
-      <h1>CellTrail</h1>
-      <p>帳號申請</p>
+    <div class="card-logo">
+      <img src="assets/logo.png" alt="CellTrail" />
+      <hr class="card-logo-divider" />
     </div>
+    <div class="card-body">
 
-    <!-- 申請表單 -->
-    <div id="formSection">
-      <div class="note-box">
-        ⚠ 本系統為刑事偵查專用，申請帳號需由管理員審核。<br>
-        核准後將以電話通知您登入密碼。
+      <!-- 申請表單 -->
+      <div id="formSection">
+        <div class="card-title">申請帳號</div>
+        <hr class="section-sep" />
+        <div class="note-box">
+          ⚠ 本系統為刑事偵查專用，申請帳號需由管理員審核。<br>
+          核准後將以電話通知您登入密碼。
+        </div>
+        <div class="field">
+          <label for="fUsername">帳號名稱 <span class="req">*</span></label>
+          <input id="fUsername" type="text" placeholder="建議使用警號，例：E43691"
+                 maxlength="64" autocomplete="username" />
+          <div class="hint">僅限英文、數字、底線、連字號；申請後不可更改</div>
+        </div>
+        <div class="field">
+          <label for="fRealName">姓名 <span class="req">*</span></label>
+          <input id="fRealName" type="text" placeholder="真實姓名" maxlength="64" />
+        </div>
+        <div class="field">
+          <label for="fUnit">服務單位 <span class="req">*</span></label>
+          <input id="fUnit" type="text" placeholder="例：高雄市刑大六隊" maxlength="64" />
+        </div>
+        <div class="field">
+          <label for="fPhone">聯絡電話 <span class="req">*</span></label>
+          <input id="fPhone" type="tel" placeholder="例：0912345678" maxlength="20" />
+          <div class="hint">核准後管理員將以此電話告知密碼；同電話不得重複申請</div>
+        </div>
+        <div id="formMsg" class="msg"></div>
+        <button id="submitBtn" class="btn-primary">送出申請</button>
+        <a href="./login.html" class="back-link">← 返回登入頁</a>
       </div>
-      <div class="section-title">填寫申請資料</div>
-      <label>帳號名稱 <span class="req">*</span>
-        <input id="fUsername" type="text" placeholder="建議使用警號，例：E43691"
-               maxlength="64" autocomplete="username" />
-        <span class="hint">僅限英文、數字、底線、連字號；申請後不可更改</span>
-      </label>
-      <label>姓名 <span class="req">*</span>
-        <input id="fRealName" type="text" placeholder="真實姓名" maxlength="64" />
-      </label>
-      <label>服務單位 <span class="req">*</span>
-        <input id="fUnit" type="text" placeholder="例：高雄市刑大六隊" maxlength="64" />
-      </label>
-      <label>聯絡電話 <span class="req">*</span>
-        <input id="fPhone" type="tel" placeholder="例：0912345678" maxlength="20" />
-        <span class="hint">核准後管理員將以此電話告知密碼；同電話不得重複申請</span>
-      </label>
-      <div id="formMsg" class="msg"></div>
-      <button id="submitBtn" class="primary">送出申請</button>
-      <a href="./login.html" class="back-link">← 返回登入頁</a>
-    </div>
 
-    <!-- 成功畫面 -->
-    <div id="successSection" style="display:none">
-      <div class="success-box">
-        <h3>✅ 申請已送出</h3>
-        申請已送出，請等候管理員審核。<br>
-        核准後將以電話通知您登入密碼。<br><br>
-        <b>帳號名稱：</b><span id="successUsername"></span><br>
-        <b>申請時間：</b><span id="successTime"></span>
+      <!-- 成功畫面 -->
+      <div id="successSection" style="display:none">
+        <div class="success-box">
+          <h3>✅ 申請已送出</h3>
+          申請已送出，請等候管理員審核。<br>
+          核准後將以電話通知您登入密碼。<br><br>
+          <b style="color:#c0f0d0">帳號名稱：</b><span id="successUsername"></span><br>
+          <b style="color:#c0f0d0">申請時間：</b><span id="successTime"></span>
+        </div>
+        <a href="./login.html" class="back-link">← 返回登入頁</a>
       </div>
-      <a href="./login.html" class="back-link">← 返回登入頁</a>
-    </div>
 
-    <div class="footer">CellTrail · 高市刑大冠鈞</div>
-  </div>
-</div>
+      <div class="footer">CellTrail · 高市刑大冠鈞</div>
+    </div><!-- /.card-body -->
+  </div><!-- /.card -->
+</div><!-- /.page -->
 
 <script>
   function getApiBase() {
@@ -116,7 +212,6 @@
     el.className = ok ? 'msg ok' : 'msg';
   }
 
-  // 聯絡電話 blur → 即時查重
   document.getElementById('fPhone').addEventListener('blur', async function () {
     const phone = this.value.trim();
     if (phone.length < 5) return;
@@ -128,7 +223,6 @@
         setMsg(`此電話已有申請紀錄（${j.status_text}），忘記帳號密碼請洽管理員`);
         document.getElementById('submitBtn').disabled = true;
       } else {
-        // 清除之前因電話阻擋的錯誤訊息（如果有）
         const msg = document.getElementById('formMsg');
         if (msg.textContent.includes('此電話已有申請紀錄')) {
           msg.textContent = '';
@@ -163,7 +257,6 @@
       const j = await res.json();
       if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
 
-      // 成功
       document.getElementById('successUsername').textContent = username;
       const ts = j.created_at ? new Date(j.created_at).toLocaleString('zh-TW') : '';
       document.getElementById('successTime').textContent = ts;
