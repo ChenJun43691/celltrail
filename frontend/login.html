@@ -4,115 +4,266 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>登入 · CellTrail</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
-    *, *::before, *::after { box-sizing: border-box; }
-    /* fallback 深色漸層放在 html，body 不設背景，避免蓋住 z-index 正常的 video */
-    html {
-      background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
-    }
-    html, body {
-      margin: 0; height: 100%;
-      font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, 'Noto Sans TC';
-      color: #f0f0f0;
-    }
-    body { background: transparent; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    /* ── 影片全螢幕背景 ── */
+    /* fallback 背景（video 不可用時） */
+    html {
+      height: 100%;
+      background: #050a19;
+    }
+    body {
+      min-height: 100%;
+      background: transparent;
+      font-family: 'Noto Sans TC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: #e8eef8;
+      overflow-x: hidden;
+    }
+
+    /* ── 影片背景 ── */
     #bgVideo {
       position: fixed;
       inset: 0;
-      width: 100%;
-      height: 100%;
+      width: 100%; height: 100%;
       object-fit: cover;
-      z-index: 0;
+      z-index: -1;
       pointer-events: none;
     }
-    /* 半透明深色遮罩 */
     #bgOverlay {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.55);
-      z-index: 1;
+      background: rgba(5, 10, 25, 0.60);
+      z-index: 0;
     }
 
-    /* ── 置中容器：疊在影片和遮罩之上 ── */
-    .wrapper {
+    /* ── 主容器 ── */
+    .page {
       position: relative;
-      z-index: 2;
+      z-index: 1;
+      min-height: 100vh;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      min-height: 100vh;
-      padding: 16px;
+      padding: 32px 16px 48px;
+      gap: 0;
     }
 
-    /* ── 毛玻璃登入卡片 ── */
+    /* ── Logo 區塊 ── */
+    .logo-wrap {
+      width: 100%;
+      max-width: 500px;
+      text-align: center;
+      margin-bottom: 10px;
+      opacity: 0;
+      animation: fadeInUp .7s ease .1s forwards;
+    }
+    .logo-wrap img {
+      width: 100%;
+      max-width: 500px;
+      height: auto;
+      display: block;
+      margin: 0 auto;
+      filter: drop-shadow(0 2px 16px rgba(0,120,255,0.35));
+    }
+    .logo-divider {
+      margin: 14px auto 0;
+      width: min(90%, 400px);
+      height: 1px;
+      background: linear-gradient(90deg,
+        transparent 0%, rgba(0,150,255,0.6) 30%,
+        rgba(0,200,255,0.8) 50%,
+        rgba(0,150,255,0.6) 70%, transparent 100%);
+    }
+
+    /* ── 登入卡片 ── */
     .card {
-      width: min(92vw, 400px);
-      border-radius: 16px;
-      padding: 34px 30px;
-      background: rgba(255, 255, 255, 0.15);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border: 1px solid rgba(255, 255, 255, 0.3);
-      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
-    }
-    .brand { text-align: center; margin-bottom: 26px; }
-    .brand h1 { margin: 0; font-size: 26px; font-weight: 700; color: #fff; letter-spacing: .5px; }
-    .brand p  { margin: 7px 0 0; font-size: 12px; color: rgba(255,255,255,0.65); }
-
-    .section-title { font-size: 14px; font-weight: 600; color: rgba(255,255,255,0.9); margin-bottom: 14px; }
-
-    label { display: block; margin-bottom: 14px; font-size: 13px; color: rgba(255,255,255,0.8); font-weight: 500; }
-
-    input[type="text"], input[type="password"] {
-      display: block; width: 100%; padding: 10px 12px; margin-top: 5px;
-      border: 1px solid rgba(255,255,255,0.35);
-      border-radius: 8px; font-size: 14px; color: #fff;
-      background: rgba(255,255,255,0.12);
-      outline: none; transition: border-color .15s, box-shadow .15s;
-    }
-    input::placeholder { color: rgba(255,255,255,0.4); }
-    input:focus {
-      border-color: rgba(99,179,237,0.8);
-      box-shadow: 0 0 0 3px rgba(99,179,237,0.25);
-      background: rgba(255,255,255,0.18);
+      width: min(90vw, 420px);
+      border-radius: 12px;
+      padding: 32px 30px 28px;
+      background: rgba(10, 20, 40, 0.75);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(0, 150, 255, 0.30);
+      box-shadow:
+        0 0 40px rgba(0, 100, 200, 0.20),
+        0 8px 32px rgba(0, 0, 0, 0.50),
+        inset 0 1px 0 rgba(255,255,255,0.06);
+      opacity: 0;
+      animation: fadeInUp .7s ease .3s forwards;
+      margin-top: 18px;
     }
 
-    button.primary {
-      width: 100%; padding: 11px; border: none; border-radius: 8px;
-      background: rgba(0,122,255,0.85); color: #fff;
-      font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 6px;
-      transition: background .15s;
-      backdrop-filter: blur(4px);
+    /* ── 卡片標題 ── */
+    .card-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: rgba(180, 210, 255, 0.9);
+      margin-bottom: 20px;
+      letter-spacing: .5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
-    button.primary:hover { background: rgba(0,98,204,0.95); }
-    button.primary:disabled { background: rgba(0,122,255,0.35); cursor: not-allowed; }
-
-    .msg { min-height: 18px; font-size: 12px; color: #ff9090; margin: 6px 0 10px; }
-    .msg.ok { color: #7ef798; }
-
-    .alert-box {
-      background: rgba(255,248,225,0.15); border: 1px solid rgba(255,224,130,0.5);
-      border-radius: 8px; padding: 10px 14px; font-size: 13px;
-      color: #ffe082; margin-bottom: 18px; line-height: 1.5;
+    .card-title::before {
+      content: '';
+      display: inline-block;
+      width: 3px; height: 16px;
+      background: linear-gradient(180deg, #0099ff, #0055cc);
+      border-radius: 2px;
     }
 
-    .footer { text-align: center; font-size: 11px; color: rgba(255,255,255,0.35); margin-top: 20px; }
+    /* ── 輸入欄位 ── */
+    .field { margin-bottom: 16px; }
+    .field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      color: rgba(160, 200, 255, 0.75);
+      margin-bottom: 6px;
+      letter-spacing: .3px;
+    }
+    .field input[type="text"],
+    .field input[type="password"] {
+      display: block;
+      width: 100%;
+      padding: 11px 14px;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(0, 150, 255, 0.35);
+      border-radius: 8px;
+      font-size: 14px;
+      font-family: inherit;
+      color: #e8eef8;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s, background .2s;
+    }
+    .field input::placeholder { color: rgba(255,255,255,0.25); }
+    .field input:focus {
+      background: rgba(255, 255, 255, 0.11);
+      border-color: rgba(0, 170, 255, 0.75);
+      box-shadow:
+        0 0 0 3px rgba(0, 140, 255, 0.18),
+        0 0 12px rgba(0, 140, 255, 0.12);
+    }
 
-    /* 申請 / 忘記密碼連結 */
-    #loginSection a { color: rgba(99,179,237,0.9); text-decoration: none; }
-    #loginSection a:hover { color: #fff; }
-    #forgotToggle { color: rgba(255,255,255,0.5); cursor: pointer; text-decoration: underline; }
+    /* ── 錯誤訊息 ── */
+    .msg {
+      min-height: 17px;
+      font-size: 12px;
+      color: #ff7070;
+      margin: 4px 0 12px;
+      letter-spacing: .2px;
+    }
+    .msg.ok { color: #60e87a; }
+
+    /* ── 登入按鈕 ── */
+    .btn-primary {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #0066cc 0%, #0099ff 100%);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      font-family: inherit;
+      letter-spacing: .5px;
+      cursor: pointer;
+      transition: filter .2s, box-shadow .2s, transform .1s;
+      box-shadow: 0 4px 18px rgba(0, 120, 255, 0.35);
+      margin-top: 4px;
+    }
+    .btn-primary:hover {
+      filter: brightness(1.18);
+      box-shadow: 0 6px 24px rgba(0, 150, 255, 0.55);
+    }
+    .btn-primary:active { transform: scale(.985); filter: brightness(.95); }
+    .btn-primary:disabled {
+      background: linear-gradient(135deg, #1a3a66 0%, #1a5577 100%);
+      box-shadow: none;
+      cursor: not-allowed;
+      filter: none;
+    }
+
+    /* ── 次要連結 ── */
+    .links {
+      margin-top: 16px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .links a {
+      color: rgba(100, 180, 255, 0.85);
+      text-decoration: none;
+      transition: color .15s;
+    }
+    .links a:hover { color: #7dd3fc; }
+    .links span {
+      color: rgba(130, 170, 220, 0.6);
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      transition: color .15s;
+    }
+    .links span:hover { color: rgba(130, 170, 220, .9); }
+
+    /* ── 忘記密碼展開框 ── */
     #forgotBox {
       margin-top: 10px;
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.2);
+      background: rgba(0, 40, 80, 0.5);
+      border: 1px solid rgba(0, 120, 220, 0.3);
       border-radius: 8px;
       padding: 10px 14px;
       font-size: 12px;
-      color: rgba(255,255,255,0.75);
-      line-height: 1.8;
+      color: rgba(180, 210, 255, 0.8);
+      line-height: 1.85;
+      text-align: left;
+    }
+
+    /* ── 警告框（首次登入） ── */
+    .alert-box {
+      background: rgba(100, 70, 0, 0.4);
+      border: 1px solid rgba(255, 200, 60, 0.4);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      color: #ffd875;
+      margin-bottom: 18px;
+      line-height: 1.5;
+    }
+
+    /* ── Footer ── */
+    .footer {
+      margin-top: 20px;
+      font-size: 11px;
+      color: rgba(255,255,255,0.25);
+      text-align: center;
+      letter-spacing: .3px;
+    }
+
+    /* ── 分隔線 ── */
+    .section-sep {
+      border: none;
+      border-top: 1px solid rgba(0, 120, 255, 0.2);
+      margin: 0 0 18px;
+    }
+
+    /* ── 動畫 ── */
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(22px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── RWD ── */
+    @media (max-width: 480px) {
+      .logo-wrap { max-width: 90vw; }
+      .logo-wrap img { max-width: 90vw; }
+      .card { padding: 26px 20px 22px; }
     }
   </style>
 </head>
@@ -124,50 +275,57 @@
 </video>
 <div id="bgOverlay"></div>
 
-<div class="wrapper">
+<div class="page">
+
+  <!-- Logo -->
+  <div class="logo-wrap">
+    <img src="assets/logo.png" alt="CellTrail" />
+    <div class="logo-divider"></div>
+  </div>
+
+  <!-- 登入卡片 -->
   <div class="card">
-    <div class="brand">
-      <h1>CellTrail</h1>
-      <p>刑事偵查 · 基地台連線歷程分析系統</p>
-    </div>
 
     <!-- 登入表單 -->
     <div id="loginSection">
-      <div class="section-title">請登入</div>
-      <label>帳號
+      <div class="card-title">請登入</div>
+      <hr class="section-sep" />
+      <div class="field">
+        <label for="loginUser">帳號</label>
         <input id="loginUser" type="text" placeholder="username" autocomplete="username" />
-      </label>
-      <label>密碼
+      </div>
+      <div class="field">
+        <label for="loginPass">密碼</label>
         <input id="loginPass" type="password" placeholder="password" autocomplete="current-password" />
-      </label>
+      </div>
       <div id="loginMsg" class="msg"></div>
-      <button id="loginBtn" class="primary">登入</button>
-
-      <div style="margin-top:14px;text-align:center;font-size:12px;display:flex;flex-direction:column;gap:6px">
+      <button id="loginBtn" class="btn-primary">登入</button>
+      <div class="links">
         <a href="./register.html">申請帳號</a>
         <span id="forgotToggle">忘記帳號或密碼？</span>
-      </div>
-      <div id="forgotBox" style="display:none">
-        請電洽管理員辦理重設<br/>
-        <b>管理員電話：</b>07-7193020<br/>
-        <b>服務時間：</b>週一至週五 09:00–17:00
+        <div id="forgotBox" style="display:none">
+          請電洽管理員辦理重設<br/>
+          <b style="color:#aad4ff">管理員電話：</b>07-7193020<br/>
+          <b style="color:#aad4ff">服務時間：</b>週一至週五 09:00–17:00
+        </div>
       </div>
     </div>
 
-    <!-- 首次登入修改密碼（must_change_password=true 時顯示） -->
+    <!-- 首次登入修改密碼 -->
     <div id="changePassSection" style="display:none">
-      <div class="alert-box">
-        ⚠ 首次登入需修改密碼，才能進入系統。
-      </div>
-      <div class="section-title">設定新密碼</div>
-      <label>新密碼（至少 8 字元）
+      <div class="alert-box">⚠ 首次登入需修改密碼，才能進入系統。</div>
+      <div class="card-title">設定新密碼</div>
+      <hr class="section-sep" />
+      <div class="field">
+        <label for="newPass1">新密碼（至少 8 字元）</label>
         <input id="newPass1" type="password" autocomplete="new-password" />
-      </label>
-      <label>確認新密碼
+      </div>
+      <div class="field">
+        <label for="newPass2">確認新密碼</label>
         <input id="newPass2" type="password" autocomplete="new-password" />
-      </label>
+      </div>
       <div id="changeMsg" class="msg"></div>
-      <button id="changeBtn" class="primary">修改密碼並進入系統</button>
+      <button id="changeBtn" class="btn-primary">修改密碼並進入系統</button>
     </div>
 
     <div class="footer">CellTrail · 高市刑大冠鈞</div>
@@ -220,12 +378,6 @@
     const el = document.getElementById('changeMsg');
     el.textContent = txt;
     el.className = ok ? 'msg ok' : 'msg';
-  }
-
-  function showChangeSection() {
-    document.getElementById('loginSection').style.display = 'none';
-    document.getElementById('changePassSection').style.display = '';
-    document.getElementById('newPass1').focus();
   }
 
   async function doLogin() {
