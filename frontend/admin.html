@@ -208,6 +208,29 @@
       </div>
     </div>
 
+    <!-- 稽核日誌（最新 50 筆） -->
+    <div class="section">
+      <div class="section-title">
+        📋 最新操作紀錄
+        <button class="secondary" id="refreshAuditBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
+        <a href="./audit.html" style="font-size:12px;color:var(--primary);text-decoration:none;margin-left:8px">查看完整稽核 →</a>
+      </div>
+      <table id="auditTable">
+        <thead>
+          <tr>
+            <th style="width:160px">時間</th>
+            <th style="width:140px">Action</th>
+            <th>Target / Project</th>
+            <th style="width:100px">操作者</th>
+            <th style="width:60px">狀態</th>
+          </tr>
+        </thead>
+        <tbody id="auditTbody">
+          <tr><td class="empty" colspan="5">載入中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
   </div>
 
   <script>
@@ -483,9 +506,48 @@
       }
     });
 
+    // ── 稽核日誌 ──
+    async function loadAudit() {
+      const tbody = document.getElementById('auditTbody');
+      tbody.innerHTML = '<tr><td class="empty" colspan="5">載入中…</td></tr>';
+      try {
+        const res = await fetch(`${API}/audit/logs?page_size=50&page=1`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const j = await res.json();
+        const items = j.items || [];
+        if (items.length === 0) {
+          tbody.innerHTML = '<tr><td class="empty" colspan="5">無記錄</td></tr>';
+          return;
+        }
+        function statusBadge(sc) {
+          if (sc == null) return '';
+          const cls = sc < 300 ? 'badge-ok' : (sc < 500 ? 'badge-warn' : 'badge-off');
+          return `<span class="badge ${cls}">${sc}</span>`;
+        }
+        tbody.innerHTML = items.map(it => {
+          const ts = it.ts ? it.ts.replace('T',' ').replace(/\..*$/,'').replace(/\+.*/,'') : '';
+          const actionCls = it.action.includes('failed') ? 'style="color:var(--bad);font-weight:600"' :
+                            it.action.startsWith('upload') ? 'style="color:var(--ok);font-weight:600"' : '';
+          return `<tr>
+            <td style="font-size:11px">${escH(ts)}</td>
+            <td ${actionCls}>${escH(it.action)}</td>
+            <td><code style="font-size:11px">${escH(it.target_ref||'')}</code>
+              <span style="color:var(--sub);font-size:11px"> ${escH(it.project_id||'')}</span></td>
+            <td style="font-size:11px">${escH(it.username||'')}</td>
+            <td>${statusBadge(it.status_code)}</td>
+          </tr>`;
+        }).join('');
+      } catch (e) {
+        document.getElementById('auditTbody').innerHTML =
+          `<tr><td class="empty" colspan="5" style="color:var(--bad)">載入失敗：${escH(e.message)}</td></tr>`;
+      }
+    }
+    document.getElementById('refreshAuditBtn').addEventListener('click', loadAudit);
+
     // 初始載入
     loadRequests();
     loadUsers();
+    loadAudit();
   </script>
 </body>
 </html>

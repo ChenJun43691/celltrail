@@ -111,6 +111,34 @@
     /* 面板底部資訊 */
     .footer-line{ color:#555; }
 
+    /* === 臨時查看橘色提示列 === */
+    #tempBanner{
+      position:fixed; left:0; right:0; bottom:0; z-index:1050;
+      background:#e65100; color:#fff;
+      padding:10px 16px; font-size:13px; display:flex; align-items:center; gap:12px;
+      box-shadow:0 -2px 8px rgba(0,0,0,.2);
+    }
+    #tempBanner button{
+      padding:4px 12px; border:1px solid rgba(255,255,255,.5); border-radius:6px;
+      background:transparent; color:#fff; cursor:pointer; font-size:12px; white-space:nowrap;
+    }
+    #tempBanner button:hover{ background:rgba(255,255,255,.15); }
+
+    /* === 新手導覽 === */
+    #tourOverlay{
+      position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:9500;
+      display:flex; align-items:center; justify-content:center;
+    }
+    #tourCard{
+      background:#fff; border-radius:14px; padding:26px 24px; max-width:380px; width:90vw;
+      box-shadow:0 12px 40px rgba(0,0,0,.3); font:14px/1.5 system-ui,-apple-system,sans-serif;
+      position:relative;
+    }
+    .tour-ring{
+      box-shadow: 0 0 0 4px #ff9500, 0 0 0 8px rgba(255,149,0,.3) !important;
+      border-radius:8px; position:relative; z-index:9501;
+    }
+
     /* === 使用者身份 chip === */
     #userChip{
       font-size:12px; color:#007aff; font-weight:500; white-space:nowrap;
@@ -122,6 +150,29 @@
   <div id="map"></div>
 
   <button id="panelToggle" class="toggle-btn" title="顯示/隱藏控制面板">☰</button>
+
+  <!-- 臨時查看橘色提示列（預設隱藏） -->
+  <div id="tempBanner" style="display:none">
+    <span>⚠ 臨時查看模式：關閉頁面後資料不會保留，也無法與他人共享。</span>
+    <button id="saveAsProjectBtn">儲存為專案</button>
+    <button id="dismissTempBtn" style="margin-left:auto;opacity:.6">✕</button>
+  </div>
+
+  <!-- 新手導覽覆蓋層（預設隱藏） -->
+  <div id="tourOverlay" style="display:none">
+    <div id="tourCard">
+      <div style="font-size:11px;color:#888;margin-bottom:8px" id="tourCounter">步驟 1 / 6</div>
+      <div style="font-size:17px;font-weight:700;margin-bottom:10px" id="tourTitle"></div>
+      <div style="font-size:13px;color:#444;line-height:1.65" id="tourBody"></div>
+      <div style="display:flex;gap:8px;justify-content:space-between;margin-top:18px;align-items:center">
+        <span style="font-size:12px;color:#aaa;cursor:pointer;text-decoration:underline" id="tourSkip">跳過導覽</span>
+        <div style="display:flex;gap:8px">
+          <button id="tourBack" style="padding:6px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;background:#fff">← 上一步</button>
+          <button id="tourNext" style="padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;background:#007aff;color:#fff">下一步 →</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="control">
     <div class="row">
@@ -135,6 +186,7 @@
       <span id="userChip" title="當前登入身份"></span>
       <a href="./audit.html" style="font-size:13px;color:#0b5ed7;text-decoration:none" title="檢視所有上傳/刪除/還原的稽核紀錄">🛡️ 稽核</a>
       <a href="./admin.html" id="adminLink" style="display:none;font-size:13px;color:#0b5ed7;text-decoration:none" title="帳號與系統管理">👤 管理</a>
+      <span id="tourHelpBtn" title="重新觀看新手導覽" style="cursor:pointer;font-size:14px;color:#888;padding:2px 6px;border:1px solid #ddd;border-radius:50%;line-height:1.4">?</span>
       <button id="logoutBtn" type="button">登出</button>
     </div>
     <div class="small">上傳/新增資料請使用下方「上傳」區塊；本區只負責從資料庫顯示。Target ID 留空 = 顯示整個專案；填入 = 僅顯示該 target。</div>
@@ -282,6 +334,211 @@
       localStorage.removeItem('ct_token');
       window.location.href = './login.html';
     }
+
+    // ── 臨時查看 vs 儲存為專案 ──────────────────────────────────
+    let _tempMode = false;
+    let _lastQueuedFiles = []; // 臨時模式上傳後保留備份供「儲存為專案」重用
+
+    function showTempBanner() {
+      _tempMode = true;
+      $('tempBanner').style.display = 'flex';
+    }
+    function hideTempBanner() {
+      _tempMode = false;
+      $('tempBanner').style.display = 'none';
+    }
+
+    $('dismissTempBtn').addEventListener('click', hideTempBanner);
+    $('saveAsProjectBtn').addEventListener('click', () => openUploadModeModal(_lastQueuedFiles, true));
+
+    function openUploadModeModal(files, skipToSave = false) {
+      if (!files || files.length === 0) {
+        showToast('請先選擇檔案', 'error', 1800);
+        return;
+      }
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+      if (skipToSave) {
+        // 直接顯示「儲存為專案」表單
+        appendSaveForm(overlay, files);
+      } else {
+        // 顯示選擇畫面
+        overlay.innerHTML = buildChoiceCard(overlay);
+      }
+      document.body.appendChild(overlay);
+
+      if (!skipToSave) {
+        overlay.querySelector('#_modeTemp').onclick = async () => {
+          overlay.remove();
+          const tempId = '__temp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+          _lastQueuedFiles = [...files];
+          await doActualUpload(tempId, files, true);
+        };
+        overlay.querySelector('#_modeSave').onclick = () => {
+          overlay.innerHTML = '';
+          appendSaveForm(overlay, files);
+        };
+      }
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    }
+
+    function buildChoiceCard(overlay) {
+      return `<div style="background:#fff;border-radius:14px;padding:24px 22px;width:min(96vw,520px);box-shadow:0 8px 32px rgba(0,0,0,.25);font:14px/1.5 system-ui,-apple-system,sans-serif;">
+        <div style="font-size:16px;font-weight:700;margin-bottom:16px;text-align:center">資料已選取，請選擇處理方式</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+          <div id="_modeTemp" style="border:2px solid #e65100;border-radius:10px;padding:16px;cursor:pointer;transition:.15s" onmouseover="this.style.background='#fff3e0'" onmouseout="this.style.background=''">
+            <div style="font-size:15px;font-weight:600;color:#e65100;margin-bottom:8px">⚡ 臨時查看</div>
+            <div style="font-size:12px;color:#555;line-height:1.7">
+              快速瀏覽資料<br/>
+              不佔用案件空間<br/>
+              關閉頁面後消失<br/>
+              <span style="color:#aaa">無法授權給他人</span>
+            </div>
+          </div>
+          <div id="_modeSave" style="border:2px solid #007aff;border-radius:10px;padding:16px;cursor:pointer;transition:.15s" onmouseover="this.style.background='#eef6ff'" onmouseout="this.style.background=''">
+            <div style="font-size:15px;font-weight:600;color:#007aff;margin-bottom:8px">💾 儲存為專案</div>
+            <div style="font-size:12px;color:#555;line-height:1.7">
+              永久保存於系統<br/>
+              可隨時重新查看<br/>
+              支援手機存取<br/>
+              可授權給同事
+            </div>
+          </div>
+        </div>
+        <div style="text-align:center;font-size:12px;color:#aaa;cursor:pointer" onclick="this.closest('div[style]').parentElement.remove()">取消</div>
+      </div>`;
+    }
+
+    function appendSaveForm(overlay, files) {
+      const html = `<div style="background:#fff;border-radius:14px;padding:24px 22px;width:min(96vw,420px);box-shadow:0 8px 32px rgba(0,0,0,.25);font:14px/1.5 system-ui,-apple-system,sans-serif;">
+        <div style="font-size:16px;font-weight:700;margin-bottom:16px">💾 儲存為專案</div>
+        <label style="display:block;margin-bottom:12px;font-size:13px;color:#555;font-weight:500">案件代號（Project ID）
+          <input id="_spProject" type="text" placeholder="例：2026_HL001" style="display:block;width:100%;padding:8px 10px;margin-top:4px;border:1px solid #ccc;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+        </label>
+        <label style="display:block;margin-bottom:12px;font-size:13px;color:#555;font-weight:500">歷程名稱（Target ID）
+          <input id="_spTarget" type="text" placeholder="例：楊云豪（留空=以檔名）" style="display:block;width:100%;padding:8px 10px;margin-top:4px;border:1px solid #ccc;border-radius:6px;font-size:14px;box-sizing:border-box"/>
+        </label>
+        <div id="_spMsg" style="font-size:12px;color:#d00;min-height:16px;margin-bottom:10px"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button onclick="this.closest('div[style]').parentElement.remove()" style="padding:8px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;background:#fff">取消</button>
+          <button id="_spConfirm" style="padding:8px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;background:#007aff;color:#fff">確認上傳</button>
+        </div>
+      </div>`;
+      overlay.innerHTML = html;
+      // Re-bind overlay click
+      overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+      overlay.querySelector('#_spConfirm').onclick = async () => {
+        const projId = overlay.querySelector('#_spProject').value.trim();
+        const tgtId  = overlay.querySelector('#_spTarget').value.trim();
+        const msgEl  = overlay.querySelector('#_spMsg');
+        if (!projId) { msgEl.textContent = '請填入案件代號'; return; }
+        overlay.remove();
+        hideTempBanner();
+        await doActualUpload(projId, files, false, tgtId);
+      };
+    }
+
+    async function doActualUpload(projectId, files, isTemp, baseTid = '') {
+      showToast('上傳中…', 'info', 1000);
+      try {
+        for (const file of files) {
+          const tid = baseTid || file.name.replace(/\.[^.]+$/, '');
+          await uploadOneFile(projectId, tid, file);
+        }
+        // 上傳後更新 projectId 輸入框以便 load() 正確顯示
+        $('projectId').value = projectId;
+        colorMap = loadColorMap();
+        showToast('上傳完成，重新載入…', 'success', 1400);
+        if (isTemp) showTempBanner();
+        await load();
+      } catch (e) {
+        console.error('upload failed:', e);
+        showToast('上傳失敗：' + (e.message || '請看 Console'), 'error', 3000);
+      }
+    }
+
+    // ── 新手導覽 ──────────────────────────────────────────────
+    const TOUR_DONE_KEY = 'ct_tour_done_v1';
+    let _tourStep = 0;
+    let _tourRingEl = null;
+
+    const TOUR_STEPS = [
+      {
+        title: '歡迎使用 CellTrail',
+        body: '這套系統用於分析基地台連線歷程，幫助您在地圖上視覺化通聯軌跡。<br/>以下是 5 個簡單步驟的快速導覽。',
+        target: null,
+      },
+      {
+        title: '① 填入案件代號',
+        body: '在左上角的「Project ID」欄位填入案件代號，然後點擊「<b>顯示資料（從資料庫）</b>」載入地圖。<br/><br/><em>↖ 左側控制面板</em>',
+        target: 'projectId',
+      },
+      {
+        title: '② 上傳通聯資料',
+        body: '將 CSV / Excel / PDF 檔案<b>拖曳到上傳區</b>，或點擊選擇。系統支援多數電信業者交付格式，自動解析。<br/><br/><em>↖ 請向下捲動到「上傳」區塊</em>',
+        target: 'dropzone',
+      },
+      {
+        title: '③ 選擇處理方式',
+        body: '上傳後系統會詢問：<br/><b>臨時查看</b>：快速瀏覽，關閉頁面後消失<br/><b>儲存為專案</b>：永久保存，可授權同事查看<br/><br/>建議辦案資料選「儲存為專案」。',
+        target: null,
+      },
+      {
+        title: '④ 資料組管理',
+        body: '上傳後「資料組」區塊會列出所有調查對象，可<b>顯示/隱藏</b>特定對象，或點擊「聚焦」定位到該對象的路徑。',
+        target: 'seriesPanel',
+      },
+      {
+        title: '⑤ 時間軸篩選',
+        body: '拖動底部時間條的左右端點，只顯示<b>特定時段</b>的通聯記錄。適合縮小比對範圍。<br/><br/>需要協助請電洽管理員：<b>07-7193020</b><br/>週一至週五 09:00–17:00',
+        target: 'timeRange',
+      },
+    ];
+
+    function clearTourRing() {
+      if (_tourRingEl) { _tourRingEl.classList.remove('tour-ring'); _tourRingEl = null; }
+    }
+
+    function renderTour() {
+      const step = TOUR_STEPS[_tourStep];
+      $('tourCounter').textContent = `步驟 ${_tourStep + 1} / ${TOUR_STEPS.length}`;
+      $('tourTitle').innerHTML = step.title;
+      $('tourBody').innerHTML = step.body;
+      $('tourBack').style.display = _tourStep === 0 ? 'none' : '';
+      $('tourNext').textContent = _tourStep === TOUR_STEPS.length - 1 ? '完成 ✓' : '下一步 →';
+
+      clearTourRing();
+      if (step.target) {
+        const el = $(step.target);
+        if (el) {
+          el.classList.add('tour-ring');
+          _tourRingEl = el;
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }
+    }
+
+    function startTour() {
+      _tourStep = 0;
+      $('tourOverlay').style.display = 'flex';
+      renderTour();
+    }
+
+    function endTour() {
+      clearTourRing();
+      $('tourOverlay').style.display = 'none';
+      localStorage.setItem(TOUR_DONE_KEY, '1');
+    }
+
+    $('tourNext').addEventListener('click', () => {
+      if (_tourStep < TOUR_STEPS.length - 1) { _tourStep++; renderTour(); }
+      else endTour();
+    });
+    $('tourBack').addEventListener('click', () => {
+      if (_tourStep > 0) { _tourStep--; renderTour(); }
+    });
+    $('tourSkip').addEventListener('click', endTour);
 
     // 啟動：驗證 token；無效 → 導向登入頁（帶 expired=1 hint）
     async function initAuth(){
@@ -785,23 +1042,14 @@
     }
 
     async function uploadQueued(){
-      const projectId = $('projectId').value.trim();
-      if(!projectId){ alert('請先輸入 Project ID'); return; }
-      const baseTid = $('tid').value.trim();
-      showToast('上傳中…','info',1000);
-      try{
-        for (const file of queuedFiles){
-          const tid = baseTid || file.name.replace(/\.[^.]+$/,'');
-          await uploadOneFile(projectId, tid, file);
-        }
-        queuedFiles = [];
-        refreshUploadList();
-        showToast('上傳完成，重新載入…','success',1400);
-        await load();
-      }catch(e){
-        console.error('upload failed:', e);
-        showToast('上傳失敗：' + (e.message || '請看 Console'),'error',3000);
-      }
+      if (queuedFiles.length === 0) { showToast('請先選擇檔案', 'error', 1800); return; }
+      // 開啟選擇 modal（臨時查看 vs 儲存為專案）
+      // modal 內部選擇後呼叫 doActualUpload()，上傳完成後 queuedFiles 不在此清空
+      // （doActualUpload 會自行更新 projectId 與地圖，queuedFiles 保留供「儲存為專案」重用）
+      const snapshot = [...queuedFiles];
+      queuedFiles = [];
+      refreshUploadList();
+      openUploadModeModal(snapshot);
     }
 
     // ── P2.5-B：方位角北方基準標註 modal ───────────────────────
@@ -1104,6 +1352,7 @@
       $('btnUpload').addEventListener('click', uploadQueued);
       $('logoutBtn').addEventListener('click', logout);
       $('membersBtn').addEventListener('click', () => openMembersModal($('projectId').value.trim()));
+      $('tourHelpBtn').addEventListener('click', startTour);
 
       $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
       $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });
@@ -1134,6 +1383,8 @@
 
       updateTogglePosition();
       bumpAndShowCounter();
+      // 首次登入自動啟動導覽
+      if (!localStorage.getItem(TOUR_DONE_KEY)) startTour();
       load(); // 初次載入
     }
 
