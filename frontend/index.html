@@ -215,15 +215,9 @@
 
     <!-- ── 使用者列 ── -->
     <div class="ctrl-userbar">
-      <span id="userChip" title="當前登入身份" style="font-size:12px;color:#007aff;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px"></span>
-      <span id="modeChip" style="display:none;font-size:12px;font-weight:600;padding:2px 8px;border-radius:10px;cursor:pointer" title="點擊切換使用模式"></span>
+      <span id="userChip" title="當前登入身份" style="font-size:12px;color:#007aff;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0"></span>
       <div class="ctrl-userbar-btns">
         <button id="membersBtn" type="button" class="ctrl-btn" title="管理此案件的共辦人員授權" style="display:none">授權共辦人員</button>
-        <button id="courtBtn" type="button" class="ctrl-btn" title="方位角北方基準標註狀態（法庭可防禦性）" style="position:relative">
-          ⚖ 法庭防禦
-          <span id="courtBadge" style="display:none;position:absolute;top:-5px;right:-6px;background:#dc3545;color:#fff;border-radius:9px;font-size:10px;font-weight:700;padding:1px 5px;min-width:16px;text-align:center;line-height:1.4"></span>
-        </button>
-        <a href="./audit.html" class="ctrl-btn-link" title="查看上傳／刪除／還原的稽核紀錄">🛡️ 稽核</a>
         <a href="./admin.html" id="adminLink" style="display:none" class="ctrl-btn-link" title="帳號與系統管理">管理後台</a>
         <span id="tourHelpBtn" title="重新觀看新手導覽" style="cursor:pointer;font-size:14px;color:#888;padding:2px 6px;border:1px solid #ddd;border-radius:50%;line-height:1.4">?</span>
         <button id="logoutBtn" type="button" class="ctrl-btn">登出</button>
@@ -239,9 +233,13 @@
                style="display:block;width:100%;margin-top:4px;padding:5px 7px;border:1px solid #ccc;border-radius:6px;font-size:13px" />
         <datalist id="projectList"></datalist>
       </label>
-      <div class="row" style="margin-top:8px">
+      <div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">
         <button id="loadBtn">顯示資料（從資料庫）</button>
-        <span id="status" class="small"></span>
+        <button id="courtBtn" type="button" class="ctrl-btn" title="方位角北方基準標註狀態（法庭可防禦性）" style="position:relative">
+          ⚖ 法庭防禦
+          <span id="courtBadge" style="display:none;position:absolute;top:-5px;right:-6px;background:#dc3545;color:#fff;border-radius:9px;font-size:10px;font-weight:700;padding:1px 5px;min-width:16px;text-align:center;line-height:1.4"></span>
+        </button>
+        <span id="status" class="small" style="flex:1;min-width:0"></span>
       </div>
     </div>
 
@@ -315,7 +313,7 @@
         <div id="dropzone" class="dropzone">拖放檔案到此或點擊選擇（可多檔：CSV / Excel / PDF）</div>
         <input type="file" id="upl" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.xltx,.xltm,.pdf" multiple hidden />
         <div class="row">
-          <input type="text" id="tid" placeholder="target_id（全檔共用；留空=以檔名）" />
+          <input type="text" id="tid" placeholder="篩選對象名稱（全檔共用；留空=以檔名）" />
           <button id="btnUpload">上傳</button>
         </div>
         <ul id="uploadList" class="small"></ul>
@@ -326,7 +324,7 @@
     <!-- ── Footer ── -->
     <div class="ctrl-section">
       <div class="small footer-line">
-        製作人：高市刑大冠鈞　｜　mail：<a href="mailto:e43691@kcg.gov.tw">e43691@kcg.gov.tw</a>
+        製作人：高市刑大冠鈞　｜　mail：<a href="mailto:e43691@kcg.gov.tw">e43691@kcg.gov.tw</a>　｜　<a href="./audit.html" style="color:#555">🛡️ 稽核紀錄</a>
         <br>
         <span id="counterText">使用次數統計載入中…</span>
       </div>
@@ -484,8 +482,8 @@
         el.style.display = 'none';
       }
     }
-    // mode chip 點擊 → 重新選擇模式
-    $('modeChip').addEventListener('click', () => {
+    // mode chip 點擊 → 重新選擇模式（element 已從 userbar 移除，保留邏輯備用）
+    $('modeChip')?.addEventListener('click', () => {
       if (window.__currentUser) showModeSelectionModal(window.__currentUser);
     });
 
@@ -849,7 +847,7 @@
         <label style="display:block;margin-bottom:12px;font-size:13px;color:#555;font-weight:500">案件代號（Project ID）
           <input id="_spProject" type="text" placeholder="例：2026_HL001" style="display:block;width:100%;padding:8px 10px;margin-top:4px;border:1px solid #ccc;border-radius:6px;font-size:14px;box-sizing:border-box"/>
         </label>
-        <label style="display:block;margin-bottom:12px;font-size:13px;color:#555;font-weight:500">歷程名稱（Target ID）
+        <label style="display:block;margin-bottom:12px;font-size:13px;color:#555;font-weight:500">篩選對象名稱
           <input id="_spTarget" type="text" placeholder="例：楊云豪（留空=以檔名）" style="display:block;width:100%;padding:8px 10px;margin-top:4px;border:1px solid #ccc;border-radius:6px;font-size:14px;box-sizing:border-box"/>
         </label>
         <div id="_spMsg" style="font-size:12px;color:#d00;min-height:16px;margin-bottom:10px"></div>
