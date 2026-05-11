@@ -117,6 +117,19 @@
     /* 面板底部資訊 */
     .footer-line{ color:#555; }
 
+    /* === 訪客上傳後提示列 === */
+    #guestDataBanner{
+      position:fixed; left:0; right:0; bottom:0; z-index:1050;
+      background:#1565c0; color:#fff;
+      padding:10px 16px; font-size:13px; align-items:center; gap:12px;
+      box-shadow:0 -2px 8px rgba(0,0,0,.2);
+    }
+    #guestDataBanner button{
+      padding:4px 12px; border:1px solid rgba(255,255,255,.5); border-radius:6px;
+      background:transparent; color:#fff; cursor:pointer; font-size:12px; white-space:nowrap;
+    }
+    #guestDataBanner button:hover{ background:rgba(255,255,255,.15); }
+
     /* === 臨時查看橘色提示列 === */
     #tempBanner{
       position:fixed; left:0; right:0; bottom:0; z-index:1050;
@@ -188,6 +201,13 @@
 
   <button id="panelToggle" class="toggle-btn" title="顯示/隱藏控制面板">☰</button>
 
+  <!-- 訪客上傳後提示列（預設隱藏；display 改為 flex 時才顯示） -->
+  <div id="guestDataBanner" style="display:none">
+    <span>💡 登入後可儲存此次分析，並與同事共享。</span>
+    <button id="guestLoginSaveBtn">立即登入並儲存</button>
+    <button id="dismissGuestBannerBtn" style="margin-left:auto;opacity:.6">✕</button>
+  </div>
+
   <!-- 臨時查看橘色提示列（預設隱藏） -->
   <div id="tempBanner" style="display:none">
     <span>⚠ 臨時查看模式：關閉頁面後資料不會保留，也無法與他人共享。</span>
@@ -216,7 +236,13 @@
     <!-- ── 使用者列 ── -->
     <div class="ctrl-userbar">
       <span id="userChip" title="當前登入身份" style="font-size:12px;color:#007aff;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0"></span>
-      <div class="ctrl-userbar-btns">
+      <!-- 訪客狀態按鈕（未登入時顯示） -->
+      <div id="guestBtns" style="display:none;gap:5px;align-items:center">
+        <a href="./login.html" class="ctrl-btn" style="color:#0b5ed7;border-color:#0b5ed7;text-decoration:none;border-width:1px;border-style:solid;border-radius:5px;padding:3px 8px;font-size:12px">登入</a>
+        <a href="./register.html" class="ctrl-btn" style="text-decoration:none;border:1px solid #ddd;border-radius:5px;padding:3px 8px;font-size:12px">申請帳號</a>
+      </div>
+      <!-- 登入使用者按鈕 -->
+      <div id="loggedInBtns" class="ctrl-userbar-btns" style="display:none">
         <button id="membersBtn" type="button" class="ctrl-btn" title="管理此案件的共辦人員授權" style="display:none">授權共辦人員</button>
         <a href="./admin.html" id="adminLink" style="display:none" class="ctrl-btn-link" title="帳號與系統管理">管理後台</a>
         <span id="tourHelpBtn" title="重新觀看新手導覽" style="cursor:pointer;font-size:14px;color:#888;padding:2px 6px;border:1px solid #ddd;border-radius:50%;line-height:1.4">?</span>
@@ -971,18 +997,20 @@
     });
     $('tourSkip').addEventListener('click', endTour);
 
-    // 啟動：驗證 token；無效 → 導向登入頁（帶 expired=1 hint）
+    // 啟動：驗證 token；有效 → initAfterLogin；無效/無 token → initGuest（訪客模式）
     async function initAuth(){
-      const hadToken = !!TOKEN;
-      const user = await verifyToken();
-      if (!user){
-        TOKEN = '';
-        localStorage.removeItem('ct_token');
-        // 若原本有 token 但驗證失敗，代表 token 過期
-        window.location.href = hadToken ? './login.html?expired=1' : './login.html';
-        return;
-      }
-      initAfterLogin(user);
+      try {
+        const res = await fetch(`${API_BASE}/auth/me`, { headers: authHeaders() });
+        if (res.ok) {
+          const user = await res.json();
+          initAfterLogin(user);
+          return;
+        }
+      } catch { /* 網路錯誤 → 訪客模式 */ }
+      // 401、403 或網路錯誤 → 清除失效 token，進入訪客模式
+      TOKEN = '';
+      localStorage.removeItem('ct_token');
+      initGuest();
     }
 
     // 更新右上角使用者 chip（同時初始化 mode chip）
@@ -993,6 +1021,9 @@
       const unit = user.unit ? `｜${user.unit}` : '';
       chip.innerHTML = `👤 <b>${escH(name)}</b>${unit ? `<span style="color:#aaa;font-weight:400"> ${escH(unit)}</span>` : ''}`;
       chip.title = `@${user.username}（${user.role}）`;
+      // 顯示登入後按鈕群組，隱藏訪客按鈕
+      $('loggedInBtns').style.display = 'flex';
+      $('guestBtns').style.display = 'none';
       if (user.role === 'admin') $('adminLink').style.display = '';
       window.__currentUser = user;
       updateModeChip();
@@ -1549,7 +1580,10 @@
       queuedFiles = [];
       refreshUploadList();
 
-      if (_sessionMode === 'temp') {
+      if (!TOKEN) {
+        // 訪客模式 → parse-only API，不寫 DB
+        await doGuestUpload(snapshot);
+      } else if (_sessionMode === 'temp') {
         await doTempUpload(snapshot);
       } else if (_sessionMode === 'project') {
         await doProjectUpload(snapshot);
@@ -1984,6 +2018,145 @@
       loadUserOptions();
     }
 
+    // ── 訪客模式初始化 ─────────────────────────────────────────────
+    function initGuest() {
+      $('guestBtns').style.display = 'flex';
+      // 綁上傳按鈕（訪客 → parse-only）
+      $('btnUpload').addEventListener('click', uploadQueued);
+      // 顯示設定控制（訪客也可切換）
+      $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
+      $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });
+      $('onlyStops').addEventListener('change', e=>{
+        ONLY_STOPS = e.target.checked;
+        if (ONLY_STOPS) { for (const s of seriesMap.values()) s.showTrack = false; }
+        render();
+      });
+      $('angleInput').addEventListener('input', e=>{
+        SECTOR_ANGLE_DEG=Number(e.target.value); $('angleVal').textContent=SECTOR_ANGLE_DEG+'°'; render();
+      });
+      $('minRadiusInput').addEventListener('change', e=>{
+        const v=Number(e.target.value); MIN_SECTOR_RADIUS=Number.isFinite(v)?Math.max(0,v):250; render();
+      });
+      // 面板切換 & 定位
+      $('panelToggle').addEventListener('click', ()=>{ document.querySelector('.control').classList.toggle('hidden'); updateTogglePosition(); });
+      $('recenterBtn').addEventListener('click', ()=>{ shouldFit=true; render(); });
+      window.addEventListener('resize', updateTogglePosition);
+      updateTogglePosition();
+      // 對象 radio
+      $('targetAll').addEventListener('change', ()=>{ $('targetIdRow').style.display='none'; });
+      $('targetOne').addEventListener('change', ()=>{ $('targetIdRow').style.display=''; populateTargetList(); $('targetId').focus(); });
+      // 訪客橫幅按鈕
+      $('guestLoginSaveBtn').addEventListener('click', saveGuestDataAndLogin);
+      $('dismissGuestBannerBtn').addEventListener('click', ()=>{ $('guestDataBanner').style.display='none'; });
+      bumpAndShowCounter();
+    }
+
+    // 訪客上傳 → parse-only API（無 DB 寫入）
+    async function doGuestUpload(files) {
+      showToast('解析中…', 'info', 1200);
+      for (const file of files) {
+        const tid = $('tid').value.trim() || file.name.replace(/\.[^.]+$/, '');
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('target_id', tid);
+        try {
+          const res = await fetch(`${API_BASE}/parse-only/`, { method:'POST', body: fd });
+          if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            if (res.status === 429) {
+              showToast(j.detail || '使用次數過多，請登入後繼續使用', 'error', 4500);
+            } else {
+              showToast(`解析失敗：${j.detail || 'HTTP ' + res.status}`, 'error', 3000);
+            }
+            continue;
+          }
+          const geo = await res.json();
+          _tempRecordsStore.set(tid, geo._records || []);
+          appendGeoJsonToSeries(geo);
+          showToast(`${escH(tid)}：解析 ${geo.plotted} 點（${geo.skipped} 筆無座標跳過）`, 'success', 2500);
+          $('guestDataBanner').style.display = 'flex';
+          populateTargetList();
+        } catch(e) {
+          showToast(`解析失敗：${e.message}`, 'error', 3000);
+          console.error('[parse-only]', e);
+        }
+      }
+    }
+
+    // 訪客點「立即登入並儲存」→ 將已解析的記錄存 sessionStorage，跳轉登入頁
+    function saveGuestDataAndLogin() {
+      if (_tempRecordsStore.size > 0) {
+        const store = {};
+        for (const [tid, records] of _tempRecordsStore.entries()) {
+          store[tid] = records;
+        }
+        try {
+          sessionStorage.setItem('ct_guest_store', JSON.stringify(store));
+        } catch(e) {
+          console.warn('[guest] sessionStorage write failed (data may not be restored after login):', e);
+        }
+      }
+      window.location.href = './login.html';
+    }
+
+    // 登入後從 sessionStorage 還原訪客資料
+    function restoreGuestData(rawJson) {
+      let store;
+      try { store = JSON.parse(rawJson); } catch { return; }
+      const tids = Object.keys(store);
+      if (!tids.length) return;
+      for (const [tid, records] of Object.entries(store)) {
+        _tempRecordsStore.set(tid, records);
+        const plotted = records.filter(r => r.lat != null && r.lng != null);
+        const features = plotted.map(r => ({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [r.lng, r.lat] },
+          properties: {
+            target_id:   r.target_id,   cell_addr:   r.cell_addr,
+            start_ts:    r.start_ts,    end_ts:      r.end_ts,
+            cell_id:     r.cell_id,     accuracy_m:  r.accuracy_m,
+            azimuth:     r.azimuth,     azimuth_ref: r.azimuth_ref || 'unknown',
+            sector_id:   r.sector_id,   sector_name: r.sector_name,
+            site_code:   r.site_code,
+          },
+        }));
+        appendGeoJsonToSeries({
+          type:'FeatureCollection', features,
+          total:records.length, plotted:features.length,
+          skipped:records.length-plotted.length,
+          _source:'guest-restore', _records:records,
+        });
+      }
+      showGuestDataRestoreModal(tids);
+    }
+
+    // 登入後詢問如何處理已還原的訪客資料
+    function showGuestDataRestoreModal(tids) {
+      const overlay = _makeOverlay();
+      overlay.setAttribute('data-overlay','1');
+      overlay.innerHTML = `
+        <div style="background:#fff;border-radius:14px;padding:26px 24px;width:min(96vw,400px);box-shadow:0 8px 32px rgba(0,0,0,.25);font:14px/1.55 system-ui,-apple-system,sans-serif;">
+          <div style="font-size:16px;font-weight:700;margin-bottom:10px">📂 偵測到未儲存的分析資料</div>
+          <div style="font-size:13px;color:#555;line-height:1.8;margin-bottom:20px">
+            您上次在訪客模式上傳的資料（<b>${tids.map(escH).join('、')}</b>）已暫存。<br>
+            請選擇處理方式：
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button id="_grSave" style="flex:1;padding:10px;border:none;border-radius:7px;cursor:pointer;font-size:13px;background:#1a56db;color:#fff;font-weight:600">💾 儲存為專案</button>
+            <button id="_grTemp" style="flex:1;padding:10px;border:1px solid #ccc;border-radius:7px;cursor:pointer;font-size:13px;background:#fff;color:#333">⚡ 繼續臨時使用</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('#_grSave').onclick = () => { overlay.remove(); openSaveToProjectModal(); };
+      overlay.querySelector('#_grTemp').onclick = () => {
+        overlay.remove();
+        _sessionMode = 'temp';
+        showTempBanner();
+        updateModeChip();
+        showToast('資料已載入，繼續以臨時模式使用', 'success', 2200);
+      };
+    }
+
     // 綁事件（登入成功後才生效的初始化）
     function initAfterLogin(user){
       updateUserChip(user);
@@ -2025,8 +2198,18 @@
       bumpAndShowCounter();
       // 首次登入自動啟動導覽
       if (!localStorage.getItem(TOUR_DONE_KEY)) startTour();
-      // 模式選擇（有 token 才詢問；匿名直接跳過）
-      if (TOKEN) showModeSelectionModal(user);
+
+      // 檢查是否有訪客模式暫存資料（訪客 → 登入 → 回地圖 的流程）
+      const _pendingGuest = sessionStorage.getItem('ct_guest_store');
+      if (_pendingGuest) {
+        sessionStorage.removeItem('ct_guest_store');
+        restoreGuestData(_pendingGuest);
+        // 跳過模式選擇 modal（還原 modal 本身即是模式選擇）
+      } else {
+        // 模式選擇（有 token 才詢問；匿名直接跳過）
+        if (TOKEN) showModeSelectionModal(user);
+      }
+
       loadProjectList(); // 初始載入案件清單
 
       // 從下拉選單選擇案件後自動載入

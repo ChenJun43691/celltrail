@@ -126,6 +126,7 @@ from app.api.members     import router as members_router      # noqa: E402
 from app.api.requests    import router as requests_router     # noqa: E402
 from app.api.cell_towers     import router as cell_towers_router      # noqa: E402
 from app.api.carrier_profile import router as carrier_profile_router  # noqa: E402
+from app.api.parse_only      import router as parse_only_router       # noqa: E402
 
 app.include_router(health_router,          prefix="/api/health", tags=["health"])
 app.include_router(auth_router,            prefix="/api",        tags=["auth"])
@@ -141,6 +142,7 @@ app.include_router(members_router,         prefix="/api",        tags=["members"
 app.include_router(requests_router,        prefix="/api",        tags=["account-requests"])
 app.include_router(cell_towers_router,     prefix="/api",        tags=["cell-towers"])
 app.include_router(carrier_profile_router, prefix="/api",        tags=["carrier-profile"])
+app.include_router(parse_only_router,      prefix="/api",        tags=["parse-only"])
 
 
 @app.get("/api")
