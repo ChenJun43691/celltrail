@@ -236,6 +236,53 @@
       <div id="towerImportResult" style="font-size:13px;min-height:20px"></div>
     </div>
 
+    <!-- 欄名對照表管理 -->
+    <div class="section">
+      <div class="section-title">
+        🗂️ 欄名對照表（carrier_profile）
+        <button class="secondary" id="refreshCpBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
+      </div>
+      <div id="cpMeta" style="font-size:12px;color:var(--sub);margin-bottom:10px">載入中…</div>
+
+      <!-- 搜尋 + 新增 -->
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+        <div class="form-group" style="margin:0;flex:1;min-width:160px">
+          <label>搜尋（原始欄名）</label>
+          <input id="cpSearch" type="text" placeholder="輸入關鍵字…" />
+        </div>
+        <div class="form-group" style="margin:0;flex:1;min-width:160px">
+          <label>新增原始欄名 <span style="color:var(--bad)">*</span></label>
+          <input id="cpRawKey" type="text" placeholder="例：起訖基地台編號" autocomplete="off" />
+        </div>
+        <div class="form-group" style="margin:0;flex:1;min-width:160px">
+          <label>對應到 canonical 欄名 <span style="color:var(--bad)">*</span></label>
+          <input id="cpCanonKey" type="text" placeholder="例：cell_id" autocomplete="off" />
+        </div>
+        <button id="cpAddBtn">新增 / 覆蓋</button>
+        <span class="msg" id="cpMsg" style="margin:0"></span>
+      </div>
+
+      <!-- 對照表 -->
+      <div style="max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">
+        <table style="margin:0">
+          <thead>
+            <tr>
+              <th>原始欄名（raw_key）</th>
+              <th>Canonical 欄名</th>
+              <th style="width:80px">來源</th>
+              <th style="width:60px">操作</th>
+            </tr>
+          </thead>
+          <tbody id="cpTbody">
+            <tr><td class="empty" colspan="4">載入中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:var(--sub);margin-top:6px">
+        「DB 自訂」可刪除（刪後自動退回 code 預設值）；「code 預設」僅顯示，如需覆蓋請在上方表單填寫相同 raw_key。
+      </div>
+    </div>
+
     <!-- 稽核日誌（最新 50 筆） -->
     <div class="section">
       <div class="section-title">
@@ -642,11 +689,118 @@
       }
     });
 
+    // ── 欄名對照表 ──
+    let _cpData = { db_mapping: {}, active_count: 0, source: 'code_fallback', profile: null };
+    let _cpCodeKeys = new Set();
+
+    async function loadCarrierProfile() {
+      const metaEl = document.getElementById('cpMeta');
+      metaEl.textContent = '載入中…';
+      try {
+        const r = await fetch(`${API}/admin/carrier-profile`, { headers: authHeaders() });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        _cpData = await r.json();
+
+        // Code 預設 keys = active map keys not in db_mapping
+        const dbKeys = new Set(Object.keys(_cpData.db_mapping));
+        // We don't have the code map directly; mark them by exclusion
+        _cpCodeKeys = dbKeys; // will refine display logic below
+
+        const p = _cpData.profile;
+        if (p) {
+          const updAt = p.updated_at ? new Date(p.updated_at).toLocaleString('zh-TW') : '—';
+          metaEl.innerHTML =
+            `Profile ID: <b>${p.id}</b>　業者: <b>${escH(p.carrier_name)}</b>　` +
+            `Variant: <b>${escH(p.variant_label)}</b>　更新: ${updAt}　` +
+            `合併生效條目: <b>${_cpData.active_count}</b>　DB 自訂: <b>${dbKeys.size}</b>`;
+        } else {
+          metaEl.innerHTML = `<span style="color:var(--warn)">未找到 DB default profile，使用 code fallback。合併條目: <b>${_cpData.active_count}</b></span>`;
+        }
+        renderCpTable();
+      } catch (e) {
+        metaEl.textContent = `載入失敗：${e.message}`;
+      }
+    }
+
+    function renderCpTable() {
+      const tbody = document.getElementById('cpTbody');
+      const q = document.getElementById('cpSearch').value.trim().toLowerCase();
+      const dbMap = _cpData.db_mapping || {};
+      const entries = Object.entries(dbMap)
+        .filter(([k]) => !q || k.toLowerCase().includes(q))
+        .sort(([a], [b]) => a.localeCompare(b, 'zh-Hant'));
+
+      if (entries.length === 0) {
+        tbody.innerHTML = `<tr><td class="empty" colspan="4">${q ? '無符合結果' : '（DB 無自訂條目，全部使用 code 預設）'}</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = entries.map(([raw, canon]) => `
+        <tr>
+          <td><code style="font-size:12px">${escH(raw)}</code></td>
+          <td><code style="font-size:12px;color:var(--primary)">${escH(canon)}</code></td>
+          <td><span class="badge badge-ok" style="font-size:10px">DB 自訂</span></td>
+          <td>
+            <button class="sm danger" onclick="deleteCpEntry(${JSON.stringify(raw)})">刪除</button>
+          </td>
+        </tr>`).join('');
+    }
+
+    async function deleteCpEntry(rawKey) {
+      if (!confirm(`確定刪除「${rawKey}」的 DB 自訂對照？\n（系統將退回 code 預設值）`)) return;
+      const msgEl = document.getElementById('cpMsg');
+      msgEl.textContent = ''; msgEl.className = 'msg';
+      try {
+        const r = await fetch(`${API}/admin/carrier-profile/entry`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ raw_key: rawKey }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+        msgEl.textContent = `已刪除「${rawKey}」`; msgEl.className = 'msg ok';
+        loadCarrierProfile();
+      } catch (e) {
+        msgEl.textContent = `刪除失敗：${e.message}`;
+      }
+    }
+
+    document.getElementById('cpSearch').addEventListener('input', renderCpTable);
+    document.getElementById('refreshCpBtn').addEventListener('click', loadCarrierProfile);
+
+    document.getElementById('cpAddBtn').addEventListener('click', async () => {
+      const rawKey  = document.getElementById('cpRawKey').value.trim();
+      const canonKey = document.getElementById('cpCanonKey').value.trim();
+      const msgEl   = document.getElementById('cpMsg');
+      msgEl.textContent = ''; msgEl.className = 'msg';
+      if (!rawKey)   { msgEl.textContent = '請填入原始欄名'; return; }
+      if (!canonKey) { msgEl.textContent = '請填入 canonical 欄名'; return; }
+      document.getElementById('cpAddBtn').disabled = true;
+      msgEl.textContent = '儲存中…';
+      try {
+        const r = await fetch(`${API}/admin/carrier-profile/entry`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          body: JSON.stringify({ raw_key: rawKey, canon_key: canonKey }),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+        msgEl.textContent = `已儲存「${rawKey}」→「${canonKey}」`; msgEl.className = 'msg ok';
+        document.getElementById('cpRawKey').value = '';
+        document.getElementById('cpCanonKey').value = '';
+        loadCarrierProfile();
+      } catch (e) {
+        msgEl.textContent = `儲存失敗：${e.message}`;
+      } finally {
+        document.getElementById('cpAddBtn').disabled = false;
+      }
+    });
+
     // 初始載入
     loadRequests();
     loadUsers();
     loadAudit();
     loadTowerStats();
+    loadCarrierProfile();
   </script>
 </body>
 </html>

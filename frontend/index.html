@@ -604,6 +604,7 @@
       shouldFit = true;
       refreshSeriesPanel();
       await render();
+      populateTargetList();
     }
 
     // 不清除現有 series，直接追加新 series 的 features
@@ -1823,7 +1824,11 @@
       n++; localStorage.setItem(key, String(n));
       const el=$('counterText');
       if (el) el.textContent = `本機使用次數：${n}`;
-      fetch(`${API_BASE}/stats/hit`, {method:'POST'}).then(r=>r.json()).then(j=>{
+      fetch(`${API_BASE}/stats/hit`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:'{}'
+      }).then(r=>r.json()).then(j=>{
         if (j && typeof j.total === 'number' && el){
           el.textContent += `；全站累計：${j.total}`;
         }
