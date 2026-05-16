@@ -11,11 +11,14 @@ Rate-limit：同一 IP 每小時最多 20 次。
 
 回傳格式與 /upload/parse-temp 完全相同，前端可共用同一 appendGeoJsonToSeries() 邏輯。
 """
+import json
+import time
 import traceback
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 
-from app.services.ingest import parse_file_only
+from app.services.ingest import parse_file_only, ParseDiagnosisError
 from app.services.limiter import limiter
 
 router = APIRouter()
@@ -30,6 +33,7 @@ async def parse_only(
     request: Request,
     file: UploadFile = File(...),
     target_id: str = Form(""),
+    mapping: str = Form("", description="使用者手動欄位對應 JSON：{raw_column_name: system_field}"),
 ):
     """
     訪客免登入解析端點。
@@ -39,7 +43,10 @@ async def parse_only(
     - Rate-limited：同一 IP 每小時 20 次；超過回傳 429
     """
     filename = file.filename or "upload"
+    t0 = time.perf_counter()
     content = await file.read()
+    t_read = time.perf_counter() - t0
+    print(f"[parse-only][timing] file_read={t_read*1000:.0f}ms size={len(content)}B file={filename}")
 
     if not target_id:
         target_id = filename.rsplit(".", 1)[0]
@@ -50,8 +57,33 @@ async def parse_only(
         f"target={target_id} size={len(content)}B"
     )
 
+    # 解析使用者 mapping（若有）
+    user_mapping = None
+    if mapping:
+        try:
+            user_mapping = json.loads(mapping)
+            if not isinstance(user_mapping, dict):
+                raise ValueError("mapping 必須是 JSON 物件")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"mapping JSON 格式錯誤：{e}")
+
     try:
-        records = parse_file_only(target_id, filename, content)
+        t1 = time.perf_counter()
+        records = parse_file_only(target_id, filename, content, mapping=user_mapping)
+        t_parse = time.perf_counter() - t1
+        print(f"[parse-only][timing] parse_total={t_parse*1000:.0f}ms records={len(records)} file={filename}")
+    except ParseDiagnosisError as e:
+        # 智慧診斷：回 422 + diagnosis 結構，前端展示「無法解析」UI
+        return JSONResponse(
+            status_code=422,
+            content={
+                "ok": False,
+                "error": "format_unknown",
+                "detail": str(e),
+                "diagnosis": e.diagnosis,
+                "filename": filename,
+            },
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

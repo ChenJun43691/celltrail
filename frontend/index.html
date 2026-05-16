@@ -10,140 +10,423 @@
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
         crossorigin=""/>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.4.1/dist/MarkerCluster.Default.css">
 
   <style>
-    html, body { height: 100%; margin: 0; }
-    #map { position: fixed; inset: 0; }
+    /* ── 基礎重置 ── */
+    html, body { height:100%; margin:0; padding:0; overflow:hidden;
+      font:14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial; }
+    *, *::before, *::after { box-sizing:border-box; }
+    input, select, textarea, button { font:inherit; }
+    input[type="text"], input[type="number"], input[type="email"], input[type="password"],
+    select, textarea { width:100%; box-sizing:border-box; }
+    .small{ font-size:12px;color:#666 }
+    .link{ color:#06c; text-decoration:underline; cursor:pointer }
+    .danger{ color:#d00 }
+    .link-active{ color:#1a7a3f; font-weight:600 }
 
-    .control{
-      position:absolute;top:10px;left:10px;z-index:1000;background:#fff;
-      padding:10px 12px;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.2);
-      font:14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial;max-width:420px
+    /* ── 頂部 bar（z-index 拉到 2000 確保任何 Leaflet 內部 control 都不會蓋）── */
+    #topBar{
+      position:fixed; top:0; left:0; right:0; height:56px; z-index:2000;
+      background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.1);
+      display:flex; align-items:center; gap:10px; padding:0 12px;
+      pointer-events:auto;
     }
-    .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-    .row > *{margin:2px 0}
-    .control input[type="text"]{width:200px;padding:4px 6px}
-    .control input[type="number"]{width:90px}
-    .small{font-size:12px;color:#666}
-    .legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle}
+    /* Leaflet zoom 控制與 topBar 重疊時下移到 topBar 下方 */
+    .leaflet-top.leaflet-right{ top:8px !important; }
+    #menuToggle{
+      width:40px; height:40px; flex:none;
+      border:1px solid #ddd; background:#fff; border-radius:8px; cursor:pointer; font-size:20px;
+      display:flex; align-items:center; justify-content:center; padding:0;
+    }
+    #menuToggle:hover{ background:#f5f5f5; }
+    #topUploadBar{ flex:1; min-width:0; position:relative; }
+    #dropzone{
+      padding:9px 14px; border:2px dashed #aaa; border-radius:8px; text-align:center;
+      cursor:pointer; background:#fafafa; font-size:13px; color:#666; transition:.2s;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    #dropzone.dragover{ border-color:#007aff; background:#eef6ff; color:#0b5ed7 }
+    #dropzone.ready{ border-color:#0b5ed7; background:#e9f2ff; color:#0b5ed7 }
+    #dropzone.uploading{
+      border-color:#1976d2; background:#e3f2fd; color:#1565c0; cursor:wait;
+    }
+    #dropzone.success{
+      border-color:#2e7d32; background:#e8f5e9; color:#1b5e20; cursor:default;
+    }
+    #dropzone.error{
+      border-color:#c62828; background:#ffebee; color:#b71c1c; cursor:default;
+    }
+    /* spinner */
+    .upload-spinner{
+      display:inline-block; width:14px; height:14px; margin-right:6px; vertical-align:-2px;
+      border:2px solid #90caf9; border-top-color:#1565c0; border-radius:50%;
+      animation:ct-spin .8s linear infinite;
+    }
+    @keyframes ct-spin { to { transform:rotate(360deg); } }
+    /* progress bar */
+    #uploadProgressBar{
+      position:absolute; left:0; bottom:-3px; height:2px; width:0;
+      background:linear-gradient(90deg, #1565c0, #42a5f5);
+      border-radius:1px; transition:width .25s ease;
+      box-shadow:0 0 6px rgba(21,101,192,.5);
+      display:none;
+    }
+    #btnUpload{
+      height:40px; padding:0 18px; background:#007aff; color:#fff;
+      border:none; border-radius:8px; cursor:pointer; font-size:14px; font-weight:600; flex:none;
+    }
+    #btnUpload:hover{ background:#0066d4; }
+    #btnUpload:disabled{ background:#ccc; cursor:not-allowed; }
+    #uploadList{
+      position:absolute; top:50px; left:52px; right:0; max-width:420px;
+      margin:0; padding:0; list-style:none; z-index:1100;
+      pointer-events:none;
+    }
+    #uploadList li{
+      background:#e9f2ff; border:1px solid #cfe2ff; color:#0b5ed7;
+      padding:5px 10px; border-radius:6px; font-size:12px; margin-bottom:4px;
+      box-shadow:0 1px 4px rgba(0,0,0,.08);
+    }
 
-    .bar{
-      position:fixed;left:50%;transform:translateX(-50%);bottom:12px;z-index:1000;background:#fff;
-      padding:8px 12px;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.2);font:13px -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial;
-      display:flex;align-items:center;gap:10px
+    /* ── 地圖 ── */
+    #map{ position:fixed; top:56px; left:0; right:0; bottom:0; }
+
+    /* ── 側滑選單 backdrop ── */
+    #menuBackdrop{
+      position:fixed; top:56px; left:0; right:0; bottom:0; z-index:1900;
+      background:rgba(0,0,0,0); pointer-events:none; transition:background .25s;
     }
+    #menuBackdrop.open{ background:rgba(0,0,0,.35); pointer-events:auto; }
+
+    /* ── 側滑選單（z-index 1950 < topBar 2000，可在 topBar 下方滑動）── */
+    #sideMenu{
+      position:fixed; top:56px; left:0; bottom:0; width:280px; z-index:1950;
+      background:#fff; box-shadow:2px 0 12px rgba(0,0,0,.1);
+      transform:translateX(-100%); transition:transform .25s ease;
+      display:flex; flex-direction:column; overflow-y:auto;
+    }
+    #sideMenu.open{ transform:translateX(0); }
+    .menu-section{ padding:14px 18px; border-bottom:1px solid #eee; }
+    .menu-section-title{
+      font-size:11px; font-weight:700; color:#888; letter-spacing:.08em;
+      margin-bottom:10px; text-transform:uppercase;
+    }
+    .menu-section input[type="text"],
+    .menu-section input[type="number"]{
+      padding:7px 10px; border:1px solid #ccc; border-radius:6px; font-size:13px;
+    }
+    .menu-section input[type="range"]{ width:100%; }
+    .menu-section label{ display:block; font-size:13px; margin:6px 0; cursor:pointer; }
+    .menu-section label input[type="checkbox"],
+    .menu-section label input[type="radio"]{ margin-right:6px; vertical-align:middle; }
+
+    /* 使用者區 */
+    #userSection{ background:#f8f9fa; padding:18px; }
+    #userChip{
+      font-size:14px; color:#1565c0; font-weight:600; margin-bottom:10px;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    #userChip:empty::before{ content:'👤 訪客模式'; color:#666; font-weight:400; }
+    #guestBtns{ display:flex; gap:8px; }
+    #guestBtns a{
+      flex:1; text-align:center; padding:8px 0; border-radius:6px;
+      text-decoration:none; font-size:13px; font-weight:500;
+    }
+    #guestBtns a.primary{ background:#0b5ed7; color:#fff; }
+    #guestBtns a.secondary{ border:1px solid #0b5ed7; color:#0b5ed7; }
+
+    /* 案件區 */
+    #projectId::placeholder{ color:#bbb; }
+
+    /* 資料組 */
+    .series-line{
+      display:flex; align-items:center; gap:6px; margin:4px 0; padding:4px 0;
+      flex-wrap:wrap; font-size:12px;
+    }
+    .swatch{
+      width:12px; height:12px; border-radius:2px; display:inline-block;
+      border:1px solid rgba(0,0,0,.2); flex:none;
+    }
+    .series-title{
+      min-width:0; max-width:120px; white-space:nowrap; overflow:hidden;
+      text-overflow:ellipsis; font-weight:500;
+    }
+    .series-tools{ display:flex; gap:5px; align-items:center; flex-wrap:wrap; font-size:11px; }
+    .series-tools label{ display:inline-flex; align-items:center; gap:3px; margin:0; }
+    .quick-row{ font-size:11px; color:#666; margin-bottom:6px; }
+    .quick-row .link{ font-size:11px; }
     .idx-badge{
-      background:#222;color:#fff;border-radius:999px;padding:2px 6px;font-size:12px;line-height:1;box-shadow:0 1px 4px rgba(0,0,0,.25)
-    }
-    .series-line{display:flex;align-items:center;gap:8px;margin:4px 0}
-    .swatch{width:12px;height:12px;border-radius:2px;display:inline-block;border:1px solid rgba(0,0,0,.2)}
-    .series-title{min-width:110px;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .series-tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-    .link { color:#06c; text-decoration:underline; cursor:pointer }
-    .danger { color:#d00 }
-    .link-active { color:#1a7a3f; font-weight:600 }
-    .time-label {
-      background:rgba(255,255,255,.82); border:1px solid rgba(0,0,0,.18);
-      border-radius:3px; padding:1px 4px; line-height:1.3; white-space:nowrap;
-      pointer-events:none; box-shadow:0 1px 3px rgba(0,0,0,.15);
+      background:#222; color:#fff; border-radius:999px; padding:2px 6px;
+      font-size:12px; line-height:1; box-shadow:0 1px 4px rgba(0,0,0,.25);
     }
 
-    /* === 桌面/平板：左上角面板 === */
-    @media (min-width: 769px){
-      .control.hidden{ display:none; }
+    /* 自訂標記 */
+    .custom-icon-row{
+      display:grid; grid-template-columns:repeat(8,1fr); gap:4px; margin:8px 0;
+    }
+    .custom-icon-pick{
+      text-align:center; cursor:pointer; padding:6px 0; border:1px solid #ddd; border-radius:6px;
+      font-size:18px; transition:.15s; user-select:none; line-height:1;
+    }
+    .custom-icon-pick:hover{ background:#f0f4ff; border-color:#90caf9; }
+    .custom-icon-pick.selected{ background:#1565c0; border-color:#1565c0; box-shadow:0 0 0 2px rgba(21,101,192,.25); }
+    .custom-marker-actions{ display:flex; gap:6px; margin-top:8px; }
+    .custom-marker-actions button{
+      flex:1; padding:8px; border:1px solid #1565c0; border-radius:6px;
+      background:#fff; color:#1565c0; cursor:pointer; font-size:13px;
+    }
+    .custom-marker-actions button.primary{ background:#1565c0; color:#fff; }
+    .custom-marker-actions button:hover{ filter:brightness(.95); }
+    #customMarkerList{ margin-top:10px; }
+    .custom-marker-item{
+      display:flex; align-items:center; gap:6px; padding:6px 8px;
+      background:#f8f9fa; border-radius:6px; margin-top:6px; font-size:12px;
+    }
+    .custom-marker-item .icon{ font-size:18px; flex:none; }
+    .custom-marker-item .addr{
+      flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+      white-space:nowrap; color:#444;
+    }
+    .custom-marker-item .addr b{ color:#1565c0; }
+    .custom-marker-item button{
+      padding:3px 8px; font-size:11px; color:#c00; background:#fff;
+      border:1px solid #fcc; border-radius:4px; cursor:pointer; flex:none;
+    }
+    .custom-marker-item button:hover{ background:#fff5f5; }
+
+    /* 地圖上的自訂標記圖示 */
+    .custom-marker-icon{
+      display:flex; flex-direction:column; align-items:center; pointer-events:auto;
+    }
+    .custom-marker-icon .pin{
+      font-size:30px; line-height:1; filter:drop-shadow(0 1px 2px rgba(0,0,0,.45));
+    }
+    .custom-marker-icon .label{
+      background:#fff; border:1.5px solid #1565c0; border-radius:4px;
+      padding:1px 6px; font-size:11px; color:#1565c0; margin-top:2px;
+      white-space:nowrap; font-weight:600; box-shadow:0 1px 3px rgba(0,0,0,.15);
     }
 
-    .toggle-btn{
-      position:fixed; top:10px; left:10px; z-index:1100; background:#fff; border:1px solid rgba(0,0,0,.15);
-      border-radius:8px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,.2); font-size:18px; line-height:1;
+    /* 進階設定（details/summary） */
+    details.menu-section summary{
+      list-style:none; cursor:pointer; padding:0;
+      font-size:11px; font-weight:700; color:#888; letter-spacing:.08em;
+      text-transform:uppercase;
+    }
+    details.menu-section summary::-webkit-details-marker{ display:none; }
+    details.menu-section summary::before{ content:'▶ '; font-size:9px; transition:transform .15s; display:inline-block; }
+    details.menu-section[open] summary::before{ transform:rotate(90deg); }
+    details.menu-section > *:not(summary){ margin-top:10px; }
+
+    /* 底部按鈕區 */
+    .menu-footer{ padding:14px 18px; margin-top:auto; }
+    .menu-footer button,
+    .menu-footer a{
+      display:block; width:100%; padding:10px 14px; margin-bottom:6px;
+      border:1px solid #ddd; border-radius:7px; background:#fff;
+      cursor:pointer; font-size:13px; text-align:left; text-decoration:none;
+      color:#333; box-sizing:border-box;
+    }
+    .menu-footer button:hover, .menu-footer a:hover{ background:#f5f5f5; }
+    #logoutBtn{ color:#d32f2f; }
+
+    /* ── 右下浮動按鈕 ── */
+    #floatingActions{
+      position:fixed; bottom:90px; right:16px; z-index:1050;
+      display:flex; flex-direction:column; gap:8px;
+    }
+    #floatingActions button{
+      width:46px; height:46px; border-radius:50%; padding:0;
+      background:#fff; border:1px solid #ddd; cursor:pointer;
+      box-shadow:0 2px 8px rgba(0,0,0,.18); font-size:18px;
+      display:flex; align-items:center; justify-content:center; position:relative;
+    }
+    #floatingActions button:hover{ background:#f5f5f5; }
+    #floatingActions button.active{
+      background:#0b5ed7; color:#fff; border-color:#0b5ed7;
+    }
+    #courtBadge{
+      position:absolute; top:-4px; right:-4px; background:#dc3545; color:#fff;
+      border-radius:9px; font-size:10px; padding:1px 5px; min-width:18px;
+      display:none; line-height:1.4; font-weight:700;
+    }
+    #courtBadge.visible{ display:block; }
+
+    /* ── 測量結果框（不超出畫面、座標清楚、距離突出）── */
+    #measurePanel{
+      position:fixed; right:74px; bottom:90px; z-index:1080;
+      background:#fff; border-radius:10px; padding:14px 16px;
+      box-shadow:0 4px 16px rgba(0,0,0,.25);
+      font-size:13px; width:290px;
+      max-width:calc(100vw - 90px);
+      max-height:calc(100vh - 120px);
+      overflow-y:auto;
+      box-sizing:border-box;
+    }
+    .measure-title{ font-weight:700; margin-bottom:10px; color:#1565c0; font-size:14px; }
+    #measureContent{ line-height:1.55; color:#333; }
+    #measureContent .coord-row{
+      display:flex; gap:6px; margin:6px 0; align-items:flex-start;
+    }
+    #measureContent .coord-label{
+      flex:none; color:#666; font-weight:600; min-width:46px;
+    }
+    #measureContent .coord-value{
+      flex:1; min-width:0; font-family:'SF Mono','Monaco',Consolas,monospace;
+      font-size:12px; word-break:break-all; color:#222;
+    }
+    #measureContent .dist-row{
+      margin-top:10px; padding-top:10px; border-top:1px dashed #e0e0e0;
+      text-align:center;
+    }
+    #measureContent .dist-big{
+      display:inline-block; font-size:22px; font-weight:700; color:#d32f2f;
+      background:#fff5f5; padding:6px 16px; border-radius:8px;
+      border:1.5px solid #ffcdd2;
+    }
+    #measureContent .hint{ color:#888; font-size:12px; text-align:center; padding:4px 0; }
+    #measureCancel{
+      margin-top:12px; width:100%; padding:8px;
+      border:1px solid #ddd; border-radius:6px; background:#fff; cursor:pointer; font-size:13px;
+    }
+    #measureCancel:hover{ background:#f5f5f5; }
+    @media (max-width:768px){
+      #measurePanel{ right:58px; bottom:74px; width:240px; max-width:calc(100vw - 70px); padding:10px 12px; }
+      #measureContent .dist-big{ font-size:18px; padding:5px 12px; }
+    }
+    body.measure-mode .leaflet-container{ cursor:crosshair !important; }
+
+    /* 測量點 / 線標 */
+    .measure-dot{
+      background:#d32f2f; color:#fff; width:24px; height:24px; border-radius:50%;
+      display:flex; align-items:center; justify-content:center;
+      font-weight:700; font-size:13px; box-shadow:0 2px 6px rgba(0,0,0,.3);
+    }
+    .measure-label{
+      background:#fff; border:1.5px solid #d32f2f; border-radius:6px;
+      padding:3px 8px; font-size:13px; font-weight:600; color:#d32f2f;
+      box-shadow:0 2px 6px rgba(0,0,0,.15); white-space:nowrap;
     }
 
-    /* === 手機：底部抽屜 === */
-    @media (max-width: 768px){
-      .control{
-        top: auto !important;
-        left: 0 !important;
-        right: 0 !important;
-        bottom: 0 !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        max-height: 65vh;
-        overflow-y: auto;
-        border-radius: 16px 16px 0 0 !important;
-        padding: 14px 16px 24px;
-        box-shadow: 0 -4px 20px rgba(0,0,0,.15);
-        transition: transform .25s ease;
-        transform: translateY(0);
-      }
-      .control.hidden{
-        transform: translateY(100%);
-        /* 保留 display:block 讓轉場有效；透過 transform 隱藏 */
-        display: block !important;
-        pointer-events: none;
-      }
-      .toggle-btn{
-        top: 12px !important;
-        left: 50% !important;
-        transform: translateX(-50%);
-        right: auto !important;
-      }
-      .row{ gap:6px; }
-      .control input[type="text"]{ width:100%; }
-      /* 底部時間條移上來避免被面板遮住 */
-      .bar{ bottom: 68vh; }
+    /* ── 時間軸：bottom 由 _updateTimeBarPosition() 依 banner 顯示狀態動態調整，0.3s 平滑過渡 ── */
+    #timeBar{
+      position:fixed; left:50%; transform:translateX(-50%); bottom:14px; z-index:1050;
+      background:#fff; padding:8px 14px; border-radius:10px;
+      box-shadow:0 2px 12px rgba(0,0,0,.18);
+      font-size:13px; display:flex; align-items:center; gap:10px;
+      transition: bottom 0.3s ease;
+    }
+    /* banner 動態 fade-out，配合時間軸下移 */
+    #guestDataBanner, #tempBanner{ transition: opacity 0.3s ease, transform 0.3s ease; }
+    #guestDataBanner.hiding, #tempBanner.hiding{ opacity:0; transform:translateY(20px); }
+    #timeRange{ width:300px; max-width:55vw; }
+
+    /* ── Cluster 圖示：六角形深藍底 + 白邊框 + 右上⊕，明顯區別於一般圓點 ── */
+    .ct-cluster{
+      width:40px; height:40px; position:relative; cursor:pointer;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,.45));
+    }
+    /* 外層白色（當作 2px 邊框） */
+    .ct-cluster .hex-bg{
+      position:absolute; inset:0;
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+      background:#fff;
+    }
+    /* 內層深藍（內縮 2px 就是邊框寬度） */
+    .ct-cluster .hex{
+      position:absolute; inset:2px;
+      clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+      background:#1a3a5c;
+      display:flex; align-items:center; justify-content:center;
+      color:#fff; font-weight:700; font-size:14px; line-height:1;
+    }
+    /* 右上角 ⊕ 標示「可展開」 */
+    .ct-cluster .badge{
+      position:absolute; top:-3px; right:-3px;
+      width:18px; height:18px; border-radius:50%;
+      background:#ff9500; color:#fff; font-size:13px; font-weight:700;
+      display:flex; align-items:center; justify-content:center; line-height:1;
+      box-shadow:0 1px 3px rgba(0,0,0,.4); border:1.5px solid #fff;
+    }
+    /* 抑制 markercluster 預設背景 */
+    .leaflet-marker-icon.marker-cluster{ background:transparent; }
+    .leaflet-marker-icon.marker-cluster div{ background:transparent; margin:0; }
+
+    /* 順序數字（zoom>=13 + 該位置首次出現的點顯示） */
+    .seq-num{
+      color:#fff; border-radius:50%; width:22px; height:22px;
+      display:flex; align-items:center; justify-content:center;
+      font-size:11px; font-weight:700; line-height:1;
+      border:2px solid rgba(255,255,255,.9); box-shadow:0 1px 3px rgba(0,0,0,.4);
+    }
+    /* 純色小圓點（zoom<13 或同位置非首次的點，散開後也保持一致樣式） */
+    .seq-dot{
+      width:14px; height:14px; border-radius:50%;
+      border:2px solid rgba(255,255,255,.9); box-shadow:0 1px 3px rgba(0,0,0,.35);
+      margin:4px;
     }
 
-    .toast{ position:fixed; left:50%; transform:translateX(-50%); bottom:84px; z-index:1100; background:#333; color:#fff; padding:8px 12px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.25); opacity:.95; }
+    /* 一般狀態的時間標籤（hover / zoom>=15 permanent；不會重疊難讀） */
+    .leaflet-tooltip.time-label-tooltip{
+      background:rgba(255,255,255,.94); border:1px solid #ccc; color:#222;
+      border-radius:4px; padding:3px 7px; font-size:11px; line-height:1.4;
+      white-space:nowrap; box-shadow:0 1px 3px rgba(0,0,0,.2); font-weight:500;
+    }
+
+    /* 散開時每個點右側的時間標籤（覆蓋 leaflet tooltip 預設樣式） */
+    .leaflet-tooltip.spider-time-label{
+      background:#fff; border:1.5px solid #1565c0; color:#0d47a1;
+      border-radius:5px; padding:3px 8px; font-size:12px; font-weight:600;
+      line-height:1.3; white-space:nowrap; box-shadow:0 2px 6px rgba(0,0,0,.2);
+    }
+    .leaflet-tooltip.spider-time-label::before{
+      border-right-color:#1565c0;
+    }
+
+    /* 時間標籤 */
+    .time-label{
+      background:rgba(255,255,255,.92); border:1px solid rgba(0,0,0,.22);
+      border-radius:4px; padding:2px 5px; line-height:1.35; white-space:nowrap;
+      pointer-events:none; box-shadow:0 1px 4px rgba(0,0,0,.2);
+      color:#222; font-weight:500;
+    }
+
+    /* ── Toast ── */
+    .toast{
+      position:fixed; left:50%; transform:translateX(-50%); bottom:84px; z-index:1100;
+      background:#333; color:#fff; padding:8px 14px; border-radius:8px;
+      box-shadow:0 2px 8px rgba(0,0,0,.25); opacity:.95; font-size:13px;
+    }
     .toast.success{ background:#2e7d32; }
     .toast.error{ background:#d32f2f; }
     .toast.info{ background:#333; }
-    @media (max-width: 768px){ .toast{ bottom: 70vh; } }
 
-    /* 上傳區（更直觀） */
-    .dropzone{ padding:12px; border:2px dashed #aaa; border-radius:8px; text-align:center; cursor:pointer; background:#fafafa; transition:.15s ease }
-    .dropzone.dragover{ border-color:#007aff; background:#eef6ff }
-    .dropzone.ready{ border-color:#0b5ed7; background:#e9f2ff }
-    #uploadList{ margin:6px 0 0 0; padding-left:0; list-style:none }
-    #uploadList li{
-      margin:6px 0; background:#e9f2ff; border:1px solid #cfe2ff; color:#0b5ed7;
-      padding:6px 10px; border-radius:8px; font-size:13px;
-    }
-    #btnUpload:disabled{ opacity:.5; cursor:not-allowed }
-
-    /* 雙把手時間條 */
-    #timeRange{ width:300px; max-width:58vw }
-    @media (max-width:768px){ #timeRange{ width:70vw } }
-
-    /* 面板底部資訊 */
-    .footer-line{ color:#555; }
-
-    /* === 訪客上傳後提示列 === */
-    #guestDataBanner{
-      position:fixed; left:0; right:0; bottom:0; z-index:1050;
-      background:#1565c0; color:#fff;
-      padding:10px 16px; font-size:13px; align-items:center; gap:12px;
+    /* ── 訪客／臨時 banner：貼地（bottom:0），時間軸在它上方 ── */
+    #guestDataBanner, #tempBanner{
+      position:fixed; left:0; right:0; bottom:0; z-index:1060;
+      color:#fff; padding:10px 16px; font-size:13px; gap:12px;
       box-shadow:0 -2px 8px rgba(0,0,0,.2);
+      align-items:center;
+      min-height:44px;            /* 改 min-height：窄螢幕內容換行可長高，時間軸用 offsetHeight 量測避開 */
+      box-sizing:border-box;
+      flex-wrap:wrap;             /* 窄螢幕時按鈕可換到第二行，不溢出 */
     }
-    #guestDataBanner button{
+    #guestDataBanner{ background:#1565c0; }
+    #tempBanner{ background:#e65100; }
+    /* banner 內主提示文字：可壓縮、可換行，不把按鈕擠出畫面 */
+    #guestDataBanner > span, #tempBanner > span{
+      flex:1 1 160px; min-width:0;
+    }
+    #guestDataBanner button, #tempBanner button{
       padding:4px 12px; border:1px solid rgba(255,255,255,.5); border-radius:6px;
       background:transparent; color:#fff; cursor:pointer; font-size:12px; white-space:nowrap;
+      flex:none;
     }
-    #guestDataBanner button:hover{ background:rgba(255,255,255,.15); }
+    #guestDataBanner button:hover, #tempBanner button:hover{ background:rgba(255,255,255,.15); }
 
-    /* === 臨時查看橘色提示列 === */
-    #tempBanner{
-      position:fixed; left:0; right:0; bottom:0; z-index:1050;
-      background:#e65100; color:#fff;
-      padding:10px 16px; font-size:13px; display:flex; align-items:center; gap:12px;
-      box-shadow:0 -2px 8px rgba(0,0,0,.2);
-    }
-    #tempBanner button{
-      padding:4px 12px; border:1px solid rgba(255,255,255,.5); border-radius:6px;
-      background:transparent; color:#fff; cursor:pointer; font-size:12px; white-space:nowrap;
-    }
-    #tempBanner button:hover{ background:rgba(255,255,255,.15); }
-
-    /* === 新手導覽 === */
+    /* ── 新手導覽 ── */
     #tourOverlay{
       position:fixed; inset:0; background:rgba(0,0,0,.72); z-index:9500;
       display:flex; align-items:center; justify-content:center;
@@ -151,71 +434,196 @@
     #tourCard{
       background:#fff; border-radius:14px; padding:26px 24px; max-width:380px; width:90vw;
       box-shadow:0 12px 40px rgba(0,0,0,.3); font:14px/1.5 system-ui,-apple-system,sans-serif;
-      position:relative;
     }
     .tour-ring{
       box-shadow: 0 0 0 4px #ff9500, 0 0 0 8px rgba(255,149,0,.3) !important;
       border-radius:8px; position:relative; z-index:9501;
     }
 
-    /* === 使用者身份 chip === */
-    #userChip{
-      font-size:12px; color:#007aff; font-weight:500; white-space:nowrap;
-      max-width:160px; overflow:hidden; text-overflow:ellipsis;
+    /* ── RWD ── */
+    @media (max-width:768px){
+      #topBar{ height:52px; padding:0 8px; gap:6px; }
+      #menuToggle{ width:36px; height:36px; font-size:18px; }
+      #dropzone{ padding:6px 10px; font-size:11px; }
+      #btnUpload{ height:36px; padding:0 12px; font-size:12px; }
+      #map{ top:52px; }
+      #menuBackdrop, #sideMenu{ top:52px; }
+      #sideMenu{ width:90vw; max-width:340px; }
+      #uploadList{ left:12px; right:12px; max-width:none; top:54px; }
+      #floatingActions{ bottom:74px; right:10px; }
+      #floatingActions button{ width:42px; height:42px; }
+      #measurePanel{ right:58px; bottom:74px; min-width:220px; max-width:75vw; font-size:12px; }
+      /* A：時間軸不溢出 — 限寬 + label 與 slider 各佔一行 */
+      #timeBar{
+        bottom:10px; padding:6px 10px;
+        max-width:calc(100vw - 16px);
+        flex-wrap:wrap; justify-content:center;
+      }
+      #timeLabel{ width:100%; text-align:center; font-size:11px; }
+      #timeRange{ width:82vw; }
+      .toast{ bottom:74px; }
+      /* B：banner 窄螢幕可換行長高（高度交給 offsetHeight 量測） */
+      #guestDataBanner, #tempBanner{ bottom:0; padding:8px 12px; font-size:12px; min-height:40px; }
     }
-    #projectId::placeholder{ color:#bbb; }
-
-    /* ── ctrl 區塊系統 ── */
-    .ctrl-section {
-      padding: 10px 0;
-      border-top: 1px solid #eee;
-    }
-    .ctrl-section-title {
-      font-size: 10px; font-weight: 700; color: #aaa;
-      letter-spacing: .1em; text-transform: uppercase; margin-bottom: 8px;
-    }
-
-    /* ── 使用者列 ── */
-    .ctrl-userbar {
-      display: flex; align-items: center; gap: 8px;
-      flex-wrap: wrap; padding-bottom: 10px;
-    }
-    #userChip { flex: 1; min-width: 0; }
-    .ctrl-userbar-btns {
-      display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
-    }
-    .ctrl-btn {
-      font-size: 12px; padding: 3px 8px; border: 1px solid #ddd;
-      border-radius: 5px; background: #f8f8f8; cursor: pointer;
-      color: #333; white-space: nowrap; line-height: 1.4;
-    }
-    .ctrl-btn:hover { background: #ebebeb; }
-    .ctrl-btn-link {
-      font-size: 12px; color: #0b5ed7; text-decoration: none; white-space: nowrap;
-    }
-    .ctrl-btn-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
+  <!-- 頂部 bar -->
+  <div id="topBar">
+    <button id="menuToggle" type="button" title="開啟選單">☰</button>
+    <div id="topUploadBar">
+      <div id="dropzone">📁 拖放或點擊選擇檔案（CSV / Excel / PDF，可多檔）</div>
+      <div id="uploadProgressBar"></div>
+      <input type="file" id="upl" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.xltx,.xltm,.pdf" multiple hidden />
+      <ul id="uploadList"></ul>
+    </div>
+    <button id="btnUpload" type="button">上傳</button>
+  </div>
+
+  <!-- 地圖 -->
   <div id="map"></div>
 
-  <button id="panelToggle" class="toggle-btn" title="顯示/隱藏控制面板">☰</button>
+  <!-- 側滑選單 backdrop -->
+  <div id="menuBackdrop"></div>
 
-  <!-- 訪客上傳後提示列（預設隱藏；display 改為 flex 時才顯示） -->
+  <!-- 側滑選單 -->
+  <aside id="sideMenu" aria-label="主選單">
+
+    <!-- 使用者區 -->
+    <div id="userSection">
+      <div id="userChip" title="當前登入身份"></div>
+      <!-- 訪客狀態按鈕 -->
+      <div id="guestBtns" style="display:none">
+        <a href="./login.html" class="primary">登入</a>
+        <a href="./register.html" class="secondary">申請帳號</a>
+      </div>
+    </div>
+
+    <!-- 案件 -->
+    <div class="menu-section" id="caseSection">
+      <div class="menu-section-title">案件</div>
+      <input id="projectId" type="text" list="projectList"
+             placeholder="輸入案件名稱按 Enter 載入…" autocomplete="off" />
+      <datalist id="projectList"></datalist>
+      <div id="status" class="small" style="margin-top:6px"></div>
+    </div>
+
+    <!-- 顯示對象 -->
+    <div class="menu-section">
+      <div class="menu-section-title">顯示對象</div>
+      <label><input type="radio" name="targetMode" id="targetAll" value="all" checked /> 全部對象</label>
+      <label><input type="radio" name="targetMode" id="targetOne" value="one" /> 指定對象</label>
+      <div id="targetIdRow" style="display:none;margin-top:6px">
+        <input id="targetId" type="text" list="targetList"
+               placeholder="輸入或選擇對象名稱" autocomplete="off" />
+        <datalist id="targetList"></datalist>
+      </div>
+    </div>
+
+    <!-- 顯示設定 -->
+    <div class="menu-section">
+      <div class="menu-section-title">顯示設定</div>
+      <label><input type="checkbox" id="showSector" checked /> 方位角扇形</label>
+      <label><input type="checkbox" id="onlyStops" /> 顯示停留時間及地點</label>
+      <div id="totalDistLabel" class="small" style="margin-top:4px"></div>
+    </div>
+
+    <!-- 資料組 -->
+    <div class="menu-section">
+      <div class="menu-section-title">資料組（最多 5 檔）</div>
+      <div class="quick-row">
+        <span class="link" id="allShow">全部顯示</span> /
+        <span class="link" id="allHide">全部隱藏</span> /
+        <span class="link" id="allRouteOn">全部路徑</span> /
+        <span class="link" id="allRouteOff">關閉路徑</span>
+      </div>
+      <div id="seriesPanel"></div>
+    </div>
+
+    <!-- 進階設定 -->
+    <details class="menu-section" id="advancedSection">
+      <summary>⚙️ 進階設定</summary>
+      <label>扇形角度
+        <input type="range" id="angleInput" min="20" max="120" step="5" value="60" />
+        <span id="angleVal" class="small">60°</span>
+      </label>
+      <label>扇形最小半徑（m）
+        <input type="number" id="minRadiusInput" min="50" step="50" value="250" />
+      </label>
+    </details>
+
+    <!-- 自訂標記 -->
+    <details class="menu-section" id="customMarkerSection">
+      <summary>📍 自訂標記</summary>
+      <label>地址
+        <input type="text" id="customAddr" placeholder="例：高雄市苓雅區四維三路2號" autocomplete="off" />
+      </label>
+      <div style="margin-top:8px;font-size:11px;color:#888">圖示（點選一個）：</div>
+      <div class="custom-icon-row">
+        <span class="custom-icon-pick selected" data-icon="🏠" title="住家">🏠</span>
+        <span class="custom-icon-pick" data-icon="🏭" title="工廠/倉庫">🏭</span>
+        <span class="custom-icon-pick" data-icon="🚗" title="車輛/停車場">🚗</span>
+        <span class="custom-icon-pick" data-icon="💊" title="毒品相關">💊</span>
+        <span class="custom-icon-pick" data-icon="🔫" title="槍械相關">🔫</span>
+        <span class="custom-icon-pick" data-icon="💰" title="金錢/交易">💰</span>
+        <span class="custom-icon-pick" data-icon="👩" title="人物">👩</span>
+        <span class="custom-icon-pick" data-icon="🍷" title="酒吧/夜店">🍷</span>
+      </div>
+      <label>標籤文字（可留空）
+        <input type="text" id="customLabel" placeholder="如：查獲地點" autocomplete="off" />
+      </label>
+      <div class="custom-marker-actions">
+        <button type="button" id="customLocateBtn">🔍 定位</button>
+        <button type="button" id="customAddBtn" class="primary">＋ 新增標記</button>
+      </div>
+      <div id="customMarkerList"></div>
+    </details>
+
+    <!-- 底部按鈕區 -->
+    <div class="menu-footer">
+      <!-- 登入使用者按鈕 -->
+      <div id="loggedInBtns" style="display:none">
+        <button id="membersBtn" type="button" title="管理此案件的共辦人員授權" style="display:none">👥 授權共辦人員</button>
+        <a href="./admin.html" id="adminLink" style="display:none" title="帳號與系統管理">🏛️ 管理後台</a>
+        <button id="logoutBtn" type="button">🚪 登出</button>
+      </div>
+      <button id="tourHelpBtn" type="button" title="重新觀看新手導覽">❓ 使用說明</button>
+    </div>
+  </aside>
+
+  <!-- 右下浮動按鈕 -->
+  <div id="floatingActions">
+    <button id="recenterBtn" type="button" title="定位到資料">📍</button>
+    <button id="courtBtn" type="button" title="證據完整性" style="display:none">
+      🛡️
+      <span id="courtBadge"></span>
+    </button>
+    <button id="measureBtn" type="button" title="測量距離">📏</button>
+    <button id="timeLabelBtn" type="button" title="顯示/隱藏基地台連線時間">🕐</button>
+  </div>
+
+  <!-- 測量距離結果框 -->
+  <div id="measurePanel" style="display:none">
+    <div class="measure-title">📏 兩點距離測量</div>
+    <div id="measureContent">請點選第一個點</div>
+    <button id="measureCancel" type="button">取消測量</button>
+  </div>
+
+  <!-- 訪客 banner -->
   <div id="guestDataBanner" style="display:none">
     <span>💡 登入後可儲存此次分析，並與同事共享。</span>
-    <button id="guestLoginSaveBtn">立即登入並儲存</button>
-    <button id="dismissGuestBannerBtn" style="margin-left:auto;opacity:.6">✕</button>
+    <button id="guestLoginSaveBtn" type="button">立即登入並儲存</button>
+    <button id="dismissGuestBannerBtn" type="button" style="margin-left:auto;opacity:.6">✕</button>
   </div>
 
-  <!-- 臨時查看橘色提示列（預設隱藏） -->
+  <!-- 臨時 banner -->
   <div id="tempBanner" style="display:none">
     <span>⚠ 臨時查看模式：關閉頁面後資料不會保留，也無法與他人共享。</span>
-    <button id="saveAsProjectBtn">儲存為專案</button>
-    <button id="dismissTempBtn" style="margin-left:auto;opacity:.6">✕</button>
+    <button id="saveAsProjectBtn" type="button">儲存為專案</button>
+    <button id="dismissTempBtn" type="button" style="margin-left:auto;opacity:.6">✕</button>
   </div>
 
-  <!-- 新手導覽覆蓋層（預設隱藏） -->
+  <!-- 新手導覽 -->
   <div id="tourOverlay" style="display:none">
     <div id="tourCard">
       <div style="font-size:11px;color:#888;margin-bottom:8px" id="tourCounter">步驟 1 / 6</div>
@@ -224,142 +632,15 @@
       <div style="display:flex;gap:8px;justify-content:space-between;margin-top:18px;align-items:center">
         <span style="font-size:12px;color:#aaa;cursor:pointer;text-decoration:underline" id="tourSkip">跳過導覽</span>
         <div style="display:flex;gap:8px">
-          <button id="tourBack" style="padding:6px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;background:#fff">← 上一步</button>
-          <button id="tourNext" style="padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;background:#007aff;color:#fff">下一步 →</button>
+          <button id="tourBack" type="button" style="padding:6px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;background:#fff">← 上一步</button>
+          <button id="tourNext" type="button" style="padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;background:#007aff;color:#fff">下一步 →</button>
         </div>
       </div>
     </div>
   </div>
 
-  <div class="control">
-
-    <!-- ── 使用者列 ── -->
-    <div class="ctrl-userbar">
-      <span id="userChip" title="當前登入身份" style="font-size:12px;color:#007aff;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0"></span>
-      <!-- 訪客狀態按鈕（未登入時顯示） -->
-      <div id="guestBtns" style="display:none;gap:5px;align-items:center">
-        <a href="./login.html" class="ctrl-btn" style="color:#0b5ed7;border-color:#0b5ed7;text-decoration:none;border-width:1px;border-style:solid;border-radius:5px;padding:3px 8px;font-size:12px">登入</a>
-        <a href="./register.html" class="ctrl-btn" style="text-decoration:none;border:1px solid #ddd;border-radius:5px;padding:3px 8px;font-size:12px">申請帳號</a>
-      </div>
-      <!-- 登入使用者按鈕 -->
-      <div id="loggedInBtns" class="ctrl-userbar-btns" style="display:none">
-        <button id="membersBtn" type="button" class="ctrl-btn" title="管理此案件的共辦人員授權" style="display:none">授權共辦人員</button>
-        <a href="./admin.html" id="adminLink" style="display:none" class="ctrl-btn-link" title="帳號與系統管理">管理後台</a>
-        <span id="tourHelpBtn" title="重新觀看新手導覽" style="cursor:pointer;font-size:14px;color:#888;padding:2px 6px;border:1px solid #ddd;border-radius:50%;line-height:1.4">?</span>
-        <button id="logoutBtn" type="button" class="ctrl-btn">登出</button>
-      </div>
-    </div>
-
-    <!-- ── 區塊一：案件 ── -->
-    <div class="ctrl-section">
-      <div class="ctrl-section-title">案件</div>
-      <label style="display:block;font-size:12px;color:#555;font-weight:500;margin-bottom:4px">案件名稱或編號
-        <input id="projectId" type="text" list="projectList"
-               placeholder="A某涉嫌槍砲案" autocomplete="off"
-               style="display:block;width:100%;margin-top:4px;padding:5px 7px;border:1px solid #ccc;border-radius:6px;font-size:13px" />
-        <datalist id="projectList"></datalist>
-      </label>
-      <div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">
-        <button id="loadBtn">顯示資料（從資料庫）</button>
-        <button id="courtBtn" type="button" class="ctrl-btn" title="方位角北方基準標註狀態（法庭可防禦性）" style="position:relative">
-          ⚖ 法庭防禦
-          <span id="courtBadge" style="display:none;position:absolute;top:-5px;right:-6px;background:#dc3545;color:#fff;border-radius:9px;font-size:10px;font-weight:700;padding:1px 5px;min-width:16px;text-align:center;line-height:1.4"></span>
-        </button>
-        <span id="status" class="small" style="flex:1;min-width:0"></span>
-      </div>
-    </div>
-
-    <!-- ── 區塊二：顯示對象 ── -->
-    <div class="ctrl-section">
-      <div class="ctrl-section-title">顯示對象</div>
-      <div class="row" style="gap:14px">
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
-          <input type="radio" name="targetMode" id="targetAll" value="all" checked />全部對象
-        </label>
-        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
-          <input type="radio" name="targetMode" id="targetOne" value="one" />指定對象
-        </label>
-      </div>
-      <div id="targetIdRow" style="display:none;margin-top:6px">
-        <input id="targetId" type="text" list="targetList"
-               placeholder="輸入或選擇對象名稱" autocomplete="off"
-               style="width:100%;padding:5px 7px;border:1px solid #ccc;border-radius:6px;font-size:13px" />
-        <datalist id="targetList"></datalist>
-      </div>
-    </div>
-
-    <!-- ── 區塊三：顯示設定 ── -->
-    <div class="ctrl-section">
-      <div class="ctrl-section-title">顯示設定</div>
-      <div class="row">
-        <label><input type="checkbox" id="showAcc" checked /> 精度圓</label>
-        <label><input type="checkbox" id="showSector" checked /> 扇形</label>
-        <span class="small" id="totalDistLabel"></span>
-      </div>
-      <div class="row" style="margin-top:4px">
-        <label>扇形角度
-          <input type="range" id="angleInput" min="20" max="120" step="5" value="60" />
-          <span id="angleVal" class="small">60°</span>
-        </label>
-        <label>扇形最小半徑（m）
-          <input type="number" id="minRadiusInput" min="50" step="50" value="250" />
-        </label>
-      </div>
-      <div class="row" style="margin-top:6px">
-        <label><input type="checkbox" id="onlyStops" /> 僅顯示停留時間及地點</label>
-      </div>
-      <div class="legend small" style="margin-top:6px">
-        每檔固定色：
-        <span class="swatch" style="background:#ff3b30"></span>紅、
-        <span class="swatch" style="background:#ff9500"></span>橙、
-        <span class="swatch" style="background:#34c759"></span>綠、
-        <span class="swatch" style="background:#007aff"></span>藍、
-        <span class="swatch" style="background:#af52de"></span>紫
-      </div>
-    </div>
-
-    <!-- ── 資料組 ── -->
-    <div class="ctrl-section">
-      <div class="row" style="justify-content:space-between;width:100%">
-        <b>資料組（最多 5 檔）</b>
-        <span class="small">
-          <span class="link" id="allShow">全部顯示</span> /
-          <span class="link" id="allHide">全部隱藏</span> /
-          <span class="link" id="allRouteOn">全部路徑</span> /
-          <span class="link" id="allRouteOff">關閉路徑</span> /
-          <span class="link" id="recenterBtn">定位到資料</span>
-        </span>
-      </div>
-      <div id="seriesPanel"></div>
-    </div>
-
-    <!-- ── 上傳區 ── -->
-    <div class="ctrl-section">
-      <div id="uploader" class="row" style="flex-direction:column;align-items:stretch;gap:8px;width:100%">
-        <div id="dropzone" class="dropzone">拖放檔案到此或點擊選擇（可多檔：CSV / Excel / PDF）</div>
-        <input type="file" id="upl" accept=".csv,.txt,.tsv,.xlsx,.xls,.xlsm,.xltx,.xltm,.pdf" multiple hidden />
-        <div class="row">
-          <input type="text" id="tid" placeholder="篩選對象名稱（全檔共用；留空=以檔名）" />
-          <button id="btnUpload">上傳</button>
-        </div>
-        <ul id="uploadList" class="small"></ul>
-      </div>
-      <div class="small" style="margin-top:6px">支援 CSV / Excel / PDF。後端以 <b>時間</b>＋<b>地址</b> 為主、cell_id 為輔。未填 target_id 時，以上傳檔名（去副檔名）作為 target_id。</div>
-    </div>
-
-    <!-- ── Footer ── -->
-    <div class="ctrl-section">
-      <div class="small footer-line">
-        製作人：高市刑大冠鈞　｜　mail：<a href="mailto:e43691@kcg.gov.tw">e43691@kcg.gov.tw</a>　｜　<a href="./audit.html" style="color:#555">🛡️ 稽核紀錄</a>
-        <br>
-        <span id="counterText">使用次數統計載入中…</span>
-      </div>
-    </div>
-
-  </div>
-
-  <!-- 底部時間範圍 -->
-  <div class="bar">
+  <!-- 底部時間軸 -->
+  <div id="timeBar">
     <span id="timeLabel">時間軸：全部</span>
     <div id="timeRange"></div>
   </div>
@@ -368,10 +649,52 @@
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
           crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
+  <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
 
   <script>
+    // ── 全域錯誤捕捉：任何未捕捉的錯誤都不該讓整個 UI 崩潰 ──
+    // 設計用意：若某段 JS 拋錯，瀏覽器會停止後續同步腳本執行。此處攔截後
+    // 至少把核心 UI（topBar/sideMenu/timeBar/floatingActions）強制設回可見，
+    // 避免使用者看到「只剩地圖」。
+    function _fixEl(el, displayVal) {
+      // 把元素被意外改掉的隱藏性樣式逐一還原
+      if (!el) return;
+      const s = el.style;
+      if (s.display === 'none')        s.display = displayVal;
+      if (s.visibility === 'hidden')   s.visibility = 'visible';
+      if (s.opacity === '0')           s.opacity = '';
+      // 整個 DOM 被 detach（極端情況）：偵測到就提示，無法自動還原
+      if (!el.isConnected) {
+        console.error('[CellTrail] 核心 UI 元素已從 DOM 移除：', el.id);
+      }
+    }
+    function _ensureUIVisible() {
+      try {
+        _fixEl(document.getElementById('topBar'),          'flex');
+        _fixEl(document.getElementById('timeBar'),         'flex');
+        _fixEl(document.getElementById('floatingActions'), 'flex');
+        _fixEl(document.getElementById('sideMenu'),        'flex'); // 開合靠 transform，不該 display:none
+        _fixEl(document.getElementById('map'),             'block');
+      } catch(_) { /* 連這裡都壞就放棄，不再往上拋 */ }
+    }
+
+    window.addEventListener('error', function(e) {
+      console.error('[CellTrail 全域錯誤]', e.message, e.filename + ':' + e.lineno, e.error);
+      _ensureUIVisible();
+    });
+    window.addEventListener('unhandledrejection', function(e) {
+      console.error('[CellTrail Promise 錯誤]', e.reason);
+      _ensureUIVisible();
+    });
+
+    // Watchdog：每 5 秒巡檢一次核心 UI，作為未知成因的最後防線。
+    // 成本極低（5 次 getElementById + 字串比對），不會影響效能。
+    setInterval(_ensureUIVisible, 5000);
+
     // === 基本設定 ===
-    const TILE_URL  = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+    // 底圖：內政部國土測繪中心「臺灣通用電子地圖」WMTS（無需 API 金鑰）
+    // URL 中座標順序為 {z}/{y}/{x}（與 OSM 的 {z}/{x}/{y} 相反），這是 NLSC WMTS 規格
+    const TILE_URL  = 'https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}';
 
     // API base：本機開發時自動切到 localhost:8000；
     // 亦可在 <script> 中事先設定 window.__CELLTRAIL_API__ = 'https://xxx' 覆寫
@@ -393,11 +716,15 @@
 
     let SECTOR_ANGLE_DEG = 60;
     let MIN_SECTOR_RADIUS = 250;
-    let SHOW_ACC = true, SHOW_SECTOR = true;
+    let SHOW_SECTOR = true;
     let ONLY_STOPS = false;
+    let _measureMode = false;
+    let _measureA = null, _measureB = null;
+    let _measureLayers = null;
 
-    const map = L.map('map', { preferCanvas:true }).setView([23.7,121], 7);
-    L.tileLayer(TILE_URL, { maxZoom:15, attribution:'© NLSC 國土測繪中心', crossOrigin:true }).addTo(map);
+    // 預設街道級縮放（高雄市區）；資料載入後 fitBounds 會自動覆蓋
+    const map = L.map('map', { preferCanvas:true }).setView([22.6273, 120.3014], 12);
+    L.tileLayer(TILE_URL, { maxZoom:18, attribution:'© 內政部國土測繪中心', crossOrigin:true }).addTo(map);
     map.zoomControl.setPosition('topright');
 
     map.createPane('paneRoute').style.zIndex  = 420;
@@ -407,8 +734,20 @@
     map.createPane('paneStops').style.zIndex  = 460;
     map.createPane('paneLabels').style.zIndex = 470;
 
-    // zoom 變化時，重繪所有已開啟時間標籤的 series（字體大小隨 zoom 調整）
+    // zoom 變化：跨過 13（順序數字）或 15（時間標籤 permanent）邊界時 re-render
+    let _lastSeqZoom = null;
     map.on('zoomend', () => {
+      const z = map.getZoom();
+      const seqOn  = z >= 13;
+      const tlPerm = z >= 15;
+      const wasSeq  = (_lastSeqZoom != null) && _lastSeqZoom >= 13;
+      const wasPerm = (_lastSeqZoom != null) && _lastSeqZoom >= 15;
+      if (_lastSeqZoom === null || wasSeq !== seqOn || wasPerm !== tlPerm) {
+        _lastSeqZoom = z;
+        if (seriesMap.size > 0) render();
+        return;
+      }
+      _lastSeqZoom = z;
       for (const s of seriesMap.values()){
         if (s.showTimeLabels) renderTimeLabels(s);
       }
@@ -417,6 +756,13 @@
     const $ = id => document.getElementById(id);
     const fmt = v => v==null ? '' : String(v);
     const toDate = s => s ? new Date(s) : null;
+    // 嚴格解析 azimuth：null/undefined/空字串 → null（不畫扇形）；其他轉 Number
+    // 必要：Number(null) === 0 會被誤判為「方位角 0°」畫出指向正北的扇形
+    const _parseAz = v => {
+      if (v == null || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
     const safeIdFor = id => 'dist_' + String(id).replace(/[^\w\-:.]/g, '_');
 
     // --- Auth: Token & headers ---
@@ -455,12 +801,52 @@
     // 衍生：是否在臨時模式（向後相容 showTempBanner/hideTempBanner）
     function isTemporary() { return _sessionMode === 'temp'; }
     let _tempMode = false; // kept for legacy references
+
+    // 依 banner 顯示狀態動態調整時間軸 bottom（banner 貼底時讓時間軸上移到 banner 之上）
+    // 用 offsetHeight 實際量測 banner 高度：窄螢幕內容換行長高時仍能正確避開、不重疊
+    function _updateTimeBarPosition(){
+      try {
+        const tb = $('timeBar');
+        if (!tb) return;
+        const isMobile   = window.innerWidth <= 768;
+        const baseBottom = isMobile ? 10 : 14;
+        const gap        = 8;
+        const guestEl = $('guestDataBanner');
+        const tempEl  = $('tempBanner');
+        let bannerH = 0;
+        if (guestEl && guestEl.style.display === 'flex') bannerH = guestEl.offsetHeight;
+        else if (tempEl && tempEl.style.display === 'flex') bannerH = tempEl.offsetHeight;
+        tb.style.bottom = (bannerH > 0 ? baseBottom + bannerH + gap : baseBottom) + 'px';
+      } catch(e) {
+        console.error('[_updateTimeBarPosition 錯誤]', e);
+      }
+    }
+    window.addEventListener('resize', _updateTimeBarPosition);
+
     function showTempBanner() {
       _tempMode = true;
-      $('tempBanner').style.display = 'flex';
+      const el = $('tempBanner');
+      el.classList.remove('hiding');
+      el.style.display = 'flex';
+      _updateTimeBarPosition();
     }
     function hideTempBanner() {
-      $('tempBanner').style.display = 'none';
+      const el = $('tempBanner');
+      el.classList.add('hiding');
+      // 等動畫結束再 display:none
+      setTimeout(() => { el.style.display = 'none'; el.classList.remove('hiding'); _updateTimeBarPosition(); }, 300);
+      // 同步觸發時間軸下移（與 banner fade-out 同時進行）
+      _updateTimeBarPositionWithBanner(false);
+    }
+    // 在 banner 還可見但即將隱藏期間，先把時間軸 bottom 改回 base，產生「同時下移」視覺
+    function _updateTimeBarPositionWithBanner(visible){
+      const tb = $('timeBar');
+      if (!tb) return;
+      const isMobile = window.innerWidth <= 768;
+      const baseBottom = isMobile ? 10 : 14;
+      const bannerH    = isMobile ? 40 : 44;
+      const gap        = 8;
+      tb.style.bottom = (visible ? baseBottom + bannerH + gap : baseBottom) + 'px';
     }
 
     $('dismissTempBtn').addEventListener('click', hideTempBanner);
@@ -473,7 +859,7 @@
       // 臨時模式或未登入：不顯示
       if (_sessionMode === 'temp' || !TOKEN) { dl.innerHTML = ''; return; }
       try {
-        const res = await fetch(`${API_BASE}/api/projects/`, { headers: authHeaders() });
+        const res = await fetch(`${API_BASE}/projects/`, { headers: authHeaders() });
         if (!res.ok) return;
         const items = await res.json();
         dl.innerHTML = items.map(p => {
@@ -600,28 +986,39 @@
 
     // ── 臨時模式：upload → parse-temp → appendGeoJsonToSeries ──
     async function doTempUpload(files) {
-      showToast('臨時解析中…', 'info', 1200);
+      let totalPlotted = 0, anyFail = null;
       for (const file of files) {
         const tid = file.name.replace(/\.[^.]+$/, '');
         const fd = new FormData();
         fd.append('file', file);
         fd.append('target_id', tid);
+        setUploadState('uploading', file.name);
         try {
           const res = await fetch(
-            (API_BASE || 'http://localhost:8000') + '/api/upload/parse-temp',
+            `${API_BASE}/upload/parse-temp`,
             { method:'POST', headers: { ...authHeaders() }, body: fd }
           );
+          if (res.status === 422) {
+            const j = await res.json().catch(() => ({}));
+            setUploadState('error', '無法解析此檔案，請查看診斷結果');
+            showDiagnosisModal({
+              filename: file.name,
+              file,
+              headers: (j.diagnosis || {}).available_columns || [],
+              diagnosis: j.diagnosis || {},
+            });
+            continue;
+          }
           if (!res.ok) {
             const j = await res.json().catch(() => ({}));
             throw new Error(j.detail || 'HTTP ' + res.status);
           }
           const geo = await res.json();
-          // 存原始 records 供儲存為專案使用
           _tempRecordsStore.set(tid, geo._records || []);
           appendGeoJsonToSeries(geo);
-          showToast(`${tid}：解析 ${geo.plotted} 點（${geo.skipped} 筆無座標跳過）`, 'success', 2200);
+          totalPlotted += geo.plotted || 0;
         } catch(e) {
-          showToast(`${tid} 解析失敗：${e.message}`, 'error', 3000);
+          anyFail = e.message;
           console.error('[parse-temp]', e);
         }
       }
@@ -629,6 +1026,8 @@
       refreshSeriesPanel();
       await render();
       populateTargetList();
+      if (anyFail) setUploadState('error', `解析失敗：${anyFail}`);
+      else setUploadState('success', `解析完成，已載入 ${totalPlotted} 筆資料`);
     }
 
     // 不清除現有 series，直接追加新 series 的 features
@@ -640,25 +1039,16 @@
         const id = String(p.target_id || 'unknown');
         const start = toDate(p.start_ts), end = toDate(p.end_ts);
         const acc = Number(p.accuracy_m || 0);
-        if (!seriesMap.has(id)) {
-          const color = getSeriesColor(id);
-          seriesMap.set(id, {
-            color, visible:true, showTrack:true, showRoute:false, showTimeLabels:false,
-            records: [],
-            layers: {
-              points: L.layerGroup().addTo(map),
-              over:   L.layerGroup().addTo(map),
-              stops:  L.layerGroup().addTo(map),
-              track:  L.polyline([], { pane:'paneTrack', color, weight:3, opacity:.9 }).addTo(map),
-              route:  L.polyline([], { pane:'paneRoute', color, weight:3, dashArray:'6 6', opacity:.9 }).addTo(map),
-              timelabels: L.layerGroup().addTo(map)
-            },
-            lastRouteKey:'', abort:null, distM:0
-          });
+        if (!seriesMap.has(id)) seriesMap.set(id, _createSeries(id));
+        seriesMap.get(id).records.push({ lat, lng, acc, az:_parseAz(p.azimuth), props:p, start, end });
+        // 累積 tMin/tMax 讓時間軸可以初始化（訪客模式也走這條）
+        if (start) {
+          if (!tMin || start < tMin) tMin = start;
+          if (!tMax || start > tMax) tMax = start;
         }
-        seriesMap.get(id).records.push({ lat, lng, acc, az:Number(p.azimuth), props:p, start, end });
       });
       for (const s of seriesMap.values()) s.records.sort((a,b) => (a.start||0) - (b.start||0));
+      _initTimeSlider();
     }
 
     // ── 專案模式：upload → 正常 API ──
@@ -700,15 +1090,16 @@
         overlay.querySelector('#_atOk').onclick = async () => {
           const tid = overlay.querySelector('#_atTid').value.trim() || defaultTid;
           overlay.remove();
-          showToast(`上傳 ${file.name}…`, 'info', 1200);
+          setUploadState('uploading', file.name);
           try {
             await uploadOneFile(projId, tid, file);
             $('projectId').value = projId;
             colorMap = loadColorMap();
-            showToast('上傳完成，重新載入…', 'success', 1400);
             await load();
+            const count = [...seriesMap.values()].reduce((a,s)=>a+s.records.length,0);
+            setUploadState('success', `解析完成，已載入 ${count} 筆資料`);
           } catch(e) {
-            showToast('上傳失敗：' + (e.message || '請看 Console'), 'error', 3000);
+            setUploadState('error', `解析失敗：${e.message || '請看 Console'}`);
           }
           resolve();
         };
@@ -801,10 +1192,11 @@
       };
     }
 
-    // 工具：建立半透明 overlay
+    // 工具：建立半透明 overlay（統一加 data-overlay 供 Esc 回收清理）
     function _makeOverlay() {
       const el = document.createElement('div');
       el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+      el.setAttribute('data-overlay','1');
       return el;
     }
 
@@ -897,21 +1289,21 @@
     }
 
     async function doActualUpload(projectId, files, isTemp, baseTid = '') {
-      showToast('上傳中…', 'info', 1000);
       try {
         for (const file of files) {
           const tid = baseTid || file.name.replace(/\.[^.]+$/, '');
+          setUploadState('uploading', file.name);
           await uploadOneFile(projectId, tid, file);
         }
-        // 上傳後更新 projectId 輸入框以便 load() 正確顯示
         $('projectId').value = projectId;
         colorMap = loadColorMap();
-        showToast('上傳完成，重新載入…', 'success', 1400);
         if (isTemp) showTempBanner();
         await load();
+        const count = [...seriesMap.values()].reduce((a,s)=>a+s.records.length,0);
+        setUploadState('success', `解析完成，已載入 ${count} 筆資料`);
       } catch (e) {
         console.error('upload failed:', e);
-        showToast('上傳失敗：' + (e.message || '請看 Console'), 'error', 3000);
+        setUploadState('error', `解析失敗：${e.message || '請看 Console'}`);
       }
     }
 
@@ -927,29 +1319,39 @@
         target: null,
       },
       {
-        title: '① 上傳通聯資料',
-        body: '將 CSV / Excel / PDF 檔案<b>拖曳到左側下方的上傳區塊</b>，或點擊選擇。<br/>系統支援多數電信業者交付格式，自動解析。<br/><br/><em>↖ 請向下捲動到「上傳」區塊</em>',
+        title: '① 上傳有標記時間及基地台位置之資料',
+        body: '請上傳含有<b>時間戳記</b>與<b>基地台位置</b>資訊的 CSV / Excel / PDF 檔案，<br/>拖放到頂部上傳列或點擊選擇，<br/>系統自動解析多數電信業者格式。',
         target: 'dropzone',
       },
       {
         title: '② 地圖顯示結果',
-        body: '上傳後資料會立即顯示在地圖上。<br/>每個點代表一筆基地台通聯記錄，<br/><b>點擊</b>可查看詳細資訊。',
+        body: '上傳後資料立即顯示在地圖上，<br/>每個點代表一筆基地台通聯記錄。<br/><b>點擊</b>可查看詳細資訊。',
         target: null,
       },
       {
         title: '③ 選擇處理方式',
-        body: '上傳後系統會詢問：<br/><b>臨時查看</b>：快速瀏覽，關閉頁面後消失<br/><b>儲存為專案</b>：永久保存，可授權同事查看<br/><br/>建議辦案資料選「儲存為專案」。',
+        body: '<b>臨時查看</b>：快速瀏覽，關閉後消失<br/><b>儲存為專案</b>：永久保存，可授權同事查看<br/><br/>建議辦案資料選「儲存為專案」。',
         target: null,
       },
       {
-        title: '④ 資料組管理',
-        body: '上傳後「資料組」區塊會列出所有調查對象，<br/>可<b>顯示/隱藏</b>特定對象，<br/>或點擊「聚焦」定位到該對象的路徑。<br/><br/><em>↖ 左側「資料組」區塊</em>',
-        target: 'seriesPanel',
+        title: '④ 側滑選單',
+        body: '點擊左上角 <b>☰</b> 開啟選單，<br/>可篩選對象、調整顯示設定、管理案件。',
+        target: 'menuToggle',
       },
       {
-        title: '⑤ 時間軸篩選',
-        body: '拖動底部時間條的左右端點，<br/>只顯示<b>特定時段</b>的通聯記錄，<br/>適合縮小比對範圍。<br/><br/>需要協助請電洽管理員：<b>07-7193020</b><br/>週一至週五 09:00–17:00',
-        target: 'timeRange',
+        title: '⑤ 自訂標記',
+        body: '點擊左側選單的<b>「📍 自訂標記」</b>，<br/>輸入地址定位後選擇圖示<br/>（住家、工廠、車輛、毒品、槍械、金錢、人物、酒吧），<br/>可在地圖上標記案件相關地點。',
+        target: 'customMarkerSection',
+      },
+      {
+        title: '⑥ 進階設定',
+        body: '點擊<b>「⚙️ 進階設定」</b>可調整方位角扇形的<br/>開口角度和最小半徑，<br/>適合需要精確分析涵蓋範圍的情境。',
+        target: 'advancedSection',
+      },
+      {
+        title: '⑦ 時間軸篩選',
+        body: '拖動底部時間條篩選特定時段的通聯記錄。<br/><br/>需要協助請電洽管理員：<b>07-7193020</b><br/>週一至週五 09:00–17:00',
+        target: 'timeBar',
       },
     ];
 
@@ -969,6 +1371,10 @@
       if (step.target) {
         const el = $(step.target);
         if (el) {
+          // 若 target 在側滑選單內，先開選單
+          if ($('sideMenu').contains(el)) toggleSideMenu(true);
+          // 若 target 是 <details>，展開
+          if (el.tagName === 'DETAILS') el.open = true;
           el.classList.add('tour-ring');
           _tourRingEl = el;
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1035,6 +1441,7 @@
       if (!btn) return;
       const visible = _sessionMode === 'project' && !!$('projectId')?.value?.trim();
       btn.style.display = visible ? '' : 'none';
+      refreshCourtBadge();
     }
 
     function populateTargetList() {
@@ -1063,7 +1470,12 @@
     function renderTimeLabels(s){
       s.layers.timelabels.clearLayers();
       if (!s.showTimeLabels || !s.visible) return;
-      // 以 lat/lng 四捨五入至小數第 5 位作為 key，合併同位置紀錄
+      // 分級顯示：避免在縮太遠時所有標籤糊在一起難讀
+      const z = map.getZoom();
+      if (z < 13) return;                      // < 13：不顯示
+      const showLatest = z >= 15;              // >= 15：兩行；13-14：只顯示最早
+
+      // 合併同位置紀錄（lat/lng 取 5 位）
       const byLoc = new Map();
       for (const r of s.records){
         if (!Number.isFinite(r.lat) || !Number.isFinite(r.lng)) continue;
@@ -1076,14 +1488,18 @@
         if (!times.length) continue;
         times.sort((a,b) => a - b);
         const earliest = fmtISO(times[0]);
-        const latest   = fmtISO(times[times.length-1]);
-        const inner = (earliest === latest)
-          ? earliest
-          : `${earliest}<br>${latest}`;
+        const latest   = times.length > 1 ? fmtISO(times[times.length-1]) : null;
+        const inner = (showLatest && latest && latest !== earliest)
+          ? `${earliest}<br>${latest}`
+          : earliest;
+        // 自動偏移（用座標 hash 分散，減少完全重疊）
+        const h = Math.abs(Math.round(lat * 1e5) + Math.round(lng * 1e5));
+        const offX = (h % 5) * 5 - 6;          // -6 ~ 14
+        const offY = (Math.floor(h / 5) % 5) * 4 - 8; // -8 ~ 8
         const icon = L.divIcon({
           className:'',
           html:`<div class="time-label" style="font-size:${fs}px">${inner}</div>`,
-          iconSize:[1,1], iconAnchor:[-7,7]
+          iconSize:[1,1], iconAnchor:[-(7+offX), 7+offY]
         });
         s.layers.timelabels.addLayer(L.marker([lat,lng],{ icon, interactive:false, pane:'paneLabels' }));
       }
@@ -1112,29 +1528,14 @@
       __toastTimer = setTimeout(()=>{ try{ el.remove(); }catch{} }, timeout);
     }
 
-    function updateTogglePosition(){
-      const panel = document.querySelector('.control');
-      const btn = $('panelToggle');
-      if (!panel || !btn) return;
-      const isMobile = window.innerWidth <= 768;
-      if (isMobile) {
-        // 手機：toggle 固定置中頂部，CSS 負責位置
-        btn.style.left = '';
-        btn.style.right = '';
-        return;
-      }
-      // 桌面/平板：toggle 緊貼面板右側
-      if (panel.classList.contains('hidden')) {
-        btn.style.left = '10px';
-      } else {
-        const rect = panel.getBoundingClientRect();
-        const vw = window.innerWidth || document.documentElement.clientWidth || 0;
-        let left = (rect.right ? rect.right + 10 : 10);
-        if (left > vw - 56) left = vw - 56;
-        if (left < 10) left = 10;
-        btn.style.left = Math.round(left) + 'px';
-      }
-      btn.style.right = 'auto';
+    // ── 側滑選單開合 ──
+    function toggleSideMenu(forceState){
+      const menu = $('sideMenu');
+      const backdrop = $('menuBackdrop');
+      if (!menu || !backdrop) return;
+      const willOpen = forceState != null ? forceState : !menu.classList.contains('open');
+      menu.classList.toggle('open', willOpen);
+      backdrop.classList.toggle('open', willOpen);
     }
 
     // --- 色盤 per project ---
@@ -1180,8 +1581,136 @@
     }
 
     function rmLayer(lyr){ try{ if(lyr && map.hasLayer(lyr)) map.removeLayer(lyr); }catch{} }
-    function disposeSeries(s){ if(!s||!s.layers) return; rmLayer(s.layers.points); rmLayer(s.layers.over); rmLayer(s.layers.stops); rmLayer(s.layers.track); rmLayer(s.layers.route); rmLayer(s.layers.timelabels); }
+    function disposeSeries(s){
+      if(!s||!s.layers) return;
+      rmLayer(s.layers.cluster); rmLayer(s.layers.points); rmLayer(s.layers.over);
+      rmLayer(s.layers.stops); rmLayer(s.layers.track); rmLayer(s.layers.route);
+      rmLayer(s.layers.timelabels);
+    }
     function disposeAllSeries(){ for(const s of seriesMap.values()) disposeSeries(s); seriesMap.clear(); }
+
+    // 建立 series：含 markercluster
+    // 設計重點（修四項 cluster bug）：
+    //   1. 圖示六角形深藍 + 右上⊕，與一般圓點明顯區別
+    //   2. 自訂點擊行為：不縮放、原地散開（spiderfy）、再點同一叢集則收合
+    //   3. 不設 disableClusteringAtZoom：所有 zoom 由 cluster 管理 → 不會「放大後消失」
+    //   4. spiderfyDistanceMultiplier 2.5 + 自動偵測 ≥8 點切螺旋（markercluster 內建邏輯）
+    function _createSeries(id){
+      const color = getSeriesColor(id);
+      const cluster = L.markerClusterGroup({
+        showCoverageOnHover: false,
+        spiderfyOnMaxZoom: false,          // 不在 maxZoom 自動 spiderfy → 改由點擊觸發
+        zoomToBoundsOnClick: false,        // 不縮放
+        spiderfyDistanceMultiplier: 2.5,   // 散開距離放大
+        // disableClusteringAtZoom 不設：避免 zoom 邊界產生 marker 消失問題
+        maxClusterRadius: 50,
+        // 大量 marker 分批渲染，避免主執行緒被 6000+ marker 凍住
+        chunkedLoading: true,
+        chunkInterval: 100,                // 每批處理最多 100ms 就讓出主執行緒
+        chunkDelay: 30,                    // 批次間 30ms 讓 UI 反應（render frame）
+        animateAddingMarkers: false,       // 大量 marker 時關動畫節省 CPU
+        iconCreateFunction: (c) => {
+          const count = c.getChildCount();
+          return L.divIcon({
+            className: 'marker-cluster',
+            html: `<div class="ct-cluster" data-count="${count}">
+              <div class="hex-bg"></div>
+              <div class="hex">${count}</div>
+              <div class="badge">⊕</div>
+            </div>`,
+            iconSize: [40, 40],
+          });
+        },
+      });
+      cluster.addTo(map);
+
+      // ── 自訂 cluster 行為 ─────────────────────────────────────
+      // (a) hover tooltip：「此處有 N 筆通聯，點擊展開」
+      cluster.on('clustermouseover', e => {
+        const count = e.layer.getChildCount();
+        e.layer.bindTooltip(`此處有 ${count} 筆通聯，點擊展開`, {
+          direction: 'top', offset: [0, -18], opacity: 0.95,
+        }).openTooltip();
+      });
+      cluster.on('clustermouseout', e => {
+        try { e.layer.closeTooltip(); e.layer.unbindTooltip(); } catch{}
+      });
+      // (b) 點擊：toggle spiderfy；再點同一個 cluster 收合
+      cluster.on('clusterclick', e => {
+        L.DomEvent.stop(e.originalEvent || e);
+        const layer = e.layer;
+        if (cluster._ctLastSpiderfied === layer) {
+          try { layer.unspiderfy(); } catch{}
+          cluster._ctLastSpiderfied = null;
+        } else {
+          if (cluster._ctLastSpiderfied) {
+            try { cluster._ctLastSpiderfied.unspiderfy(); } catch{}
+          }
+          try { layer.spiderfy(); } catch{}
+          cluster._ctLastSpiderfied = layer;
+        }
+      });
+      // (c) 散開時：每個 marker 強制顯示自己的順序數字 + 右側時間標籤（即使 zoom<13）
+      cluster.on('spiderfied', e => {
+       try {
+        (e.markers || []).forEach(m => {
+          const seq = m.options.sequenceNumber;
+          const col = m.options.seriesColor || color;
+          const ts  = m.options.startTs;
+          if (seq == null) return;
+          m.setIcon(L.divIcon({
+            className: 'sequence-marker',
+            iconSize: [28, 28], iconAnchor: [14, 14],
+            html: `<div style="background:${col};color:#fff;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid #fff;box-shadow:0 2px 5px rgba(0,0,0,.4);line-height:1">${seq}</div>`,
+          }));
+          // 右側固定顯示「#順序」+「完整時間」
+          if (ts) {
+            try { m.unbindTooltip(); } catch{}
+            m.bindTooltip(
+              `<b>#${seq}</b><br>${fmtISO(ts)}`,
+              {
+                permanent: true, direction: 'right', offset: [10, 0],
+                className: 'spider-time-label', opacity: 0.95, interactive: false,
+              }
+            ).openTooltip();
+          }
+        });
+       } catch(err) { console.error('[spiderfied 錯誤]', err); }
+      });
+      // (d) 收合時：還原 icon + 還原為原本的 time-label tooltip（依當前 zoom 切 hover/permanent）
+      cluster.on('unspiderfied', e => {
+       try {
+        const z = map.getZoom();
+        const permanent = z >= 15;
+        (e.markers || []).forEach(m => {
+          if (m.options.originalIcon) m.setIcon(m.options.originalIcon);
+          try { m.unbindTooltip(); } catch{}
+          if (m.options.timeLabelHTML) {
+            m.bindTooltip(m.options.timeLabelHTML, {
+              permanent, direction: 'top', offset: [0, -8],
+              className: 'time-label-tooltip', opacity: 0.95,
+            });
+          }
+        });
+        cluster._ctLastSpiderfied = null;
+       } catch(err) { console.error('[unspiderfied 錯誤]', err); }
+      });
+
+      return {
+        color, visible:true, showTrack:true, showRoute:false, showTimeLabels:false,
+        records: [],
+        layers: {
+          cluster,
+          points: L.layerGroup().addTo(map),        // 舊邏輯保留（目前空）
+          over:   L.layerGroup().addTo(map),
+          stops:  L.layerGroup().addTo(map),
+          track:  L.polyline([], { pane:'paneTrack', color, weight:3, opacity:.9 }).addTo(map),
+          route:  L.polyline([], { pane:'paneRoute', color, weight:3, dashArray:'6 6', opacity:.9 }).addTo(map),
+          timelabels: L.layerGroup().addTo(map),
+        },
+        lastRouteKey:'', abort:null, distM:0,
+      };
+    }
 
     // 載入與時間篩
     let tMin=null, tMax=null;
@@ -1199,23 +1728,8 @@
         const id = String(p.target_id||'unknown');
         const start=toDate(p.start_ts), end=toDate(p.end_ts);
         const acc=Number(p.accuracy_m||0);
-        if(!seriesMap.has(id)){
-          const color = getSeriesColor(id);
-          seriesMap.set(id,{
-            color, visible:true, showTrack:true, showRoute:false, showTimeLabels:false,
-            records:[],
-            layers:{
-              points:L.layerGroup().addTo(map),
-              over:L.layerGroup().addTo(map),
-              stops:L.layerGroup().addTo(map),
-              track:L.polyline([], { pane:'paneTrack', color, weight:3, opacity:.9 }).addTo(map),
-              route:L.polyline([], { pane:'paneRoute', color, weight:3, dashArray:'6 6', opacity:.9 }).addTo(map),
-              timelabels:L.layerGroup().addTo(map)
-            },
-            lastRouteKey:'', abort:null, distM:0
-          });
-        }
-        seriesMap.get(id).records.push({ lat, lng, acc, az:Number(p.azimuth), props:p, start, end });
+        if(!seriesMap.has(id)) seriesMap.set(id, _createSeries(id));
+        seriesMap.get(id).records.push({ lat, lng, acc, az:_parseAz(p.azimuth), props:p, start, end });
 
         if(start){
           if(!tMin || start<tMin) tMin=start;
@@ -1227,7 +1741,21 @@
         s.records.sort((a,b)=> (a.start||0)-(b.start||0));
       }
 
+      _initTimeSlider();
+      shouldFit = true;
+    }
+
+    // 短日期格式（時間軸標籤用）
+    function _fmtShortDt(dt){
+      if (!dt) return '';
+      const pad = n => String(n).padStart(2,'0');
+      return `${dt.getFullYear()}/${pad(dt.getMonth()+1)}/${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+    }
+
+    // 時間軸 noUiSlider 初始化／更新（parseAndGroup + appendGeoJsonToSeries 都呼叫）
+    function _initTimeSlider(){
       const rangeEl = $('timeRange');
+      if (!rangeEl) return;
       if (tMin && tMax && tMax > tMin){
         if (!rangeEl.noUiSlider){
           noUiSlider.create(rangeEl, {
@@ -1235,28 +1763,31 @@
             connect: true,
             range: { min: 0, max: 100 },
             step: 1,
-            behaviour: 'drag'
+            behaviour: 'drag',
           });
           const debouncedRender = (fn => { let t=null; return ()=>{ clearTimeout(t); t=setTimeout(fn,220); }; })(render);
           rangeEl.noUiSlider.on('update', (values)=>{
-            rangePct = values.map(v => Number(v));
-            const r = currentRange();
-            $('timeLabel').textContent = r
-              ? `時間軸：${tMin.toISOString()} → ${r[1].toISOString()}`
-              : '時間軸：全部';
-            debouncedRender();
+            try {
+              rangePct = values.map(v => Number(v));
+              const r = currentRange();
+              $('timeLabel').textContent = r
+                ? `🕐 ${_fmtShortDt(r[0])} → ${_fmtShortDt(r[1])}`
+                : `🕐 ${_fmtShortDt(tMin)} → ${_fmtShortDt(tMax)}`;
+              debouncedRender();
+            } catch(e) {
+              console.error('[時間軸 update 錯誤]', e);
+              _ensureUIVisible();
+            }
           });
-          rangeEl.noUiSlider.on('change', ()=> render());
-        }else{
-          rangeEl.noUiSlider.set([0, 100]);
+          rangeEl.noUiSlider.on('change', ()=> { try { render(); } catch(e){ console.error('[時間軸 change 錯誤]', e); } });
         }
-        $('timeLabel').textContent = `時間軸：${tMin.toISOString()} → ${tMax.toISOString()}（全部）`;
-      }else{
-        if (rangeEl.noUiSlider) rangeEl.noUiSlider.set([0, 100]);
-        $('timeLabel').textContent = '時間軸：無';
+        $('timeLabel').textContent = `🕐 ${_fmtShortDt(tMin)} → ${_fmtShortDt(tMax)}（全部）`;
+      } else {
+        if (rangeEl.noUiSlider) {
+          try { rangeEl.noUiSlider.destroy(); } catch{}
+        }
+        $('timeLabel').textContent = '時間軸：尚無資料';
       }
-
-      shouldFit = true;
     }
 
     function currentRange(){
@@ -1328,7 +1859,7 @@
             <span class="small">·</span>
             <span class="small link" data-k="focus" data-id="${id}">聚焦</span>
             <span class="small">·</span>
-            <span class="small link" data-k="azref" data-id="${id}" title="標註方位角北方基準（法庭可防禦性）">方位角</span>
+            <span class="small link" data-k="azref" data-id="${id}" title="標註方位角北方基準（證據完整性）">方位角</span>
             <span class="small">·</span>
             <span class="small link danger" data-k="del" data-id="${id}">刪除</span>
           </span>
@@ -1388,12 +1919,16 @@
     }
 
     async function render(){
+     try {
       const range = currentRange();
+      const z = map.getZoom();
+      const showSeq = z >= 13;            // zoom >= 13 顯示順序數字
+      const timeLabelPermanent = z >= 15; // zoom >= 15 時間標籤永久顯示，否則 hover
       let boundsPts = [];
       let total = 0;
 
       for (const [id, s] of seriesMap){
-        s.layers.points.clearLayers();
+        s.layers.cluster.clearLayers();
         s.layers.over.clearLayers();
         s.layers.stops.clearLayers();
         s.layers.track.setLatLngs([]);
@@ -1403,16 +1938,17 @@
         const ensureOff= (lyr) => { if (map.hasLayer(lyr)) map.removeLayer(lyr); };
 
         if (!s.visible){
-          ensureOff(s.layers.points); ensureOff(s.layers.over);
-          ensureOff(s.layers.stops);  ensureOff(s.layers.track);
-          ensureOff(s.layers.route);  ensureOff(s.layers.timelabels);
+          ensureOff(s.layers.cluster); ensureOff(s.layers.over);
+          ensureOff(s.layers.stops);   ensureOff(s.layers.track);
+          ensureOff(s.layers.route);   ensureOff(s.layers.timelabels);
           continue;
         } else {
-          ensureOn(s.layers.points); ensureOn(s.layers.over);
-          ensureOn(s.layers.stops);  ensureOn(s.layers.track);
-          ensureOn(s.layers.route);  ensureOn(s.layers.timelabels);
+          ensureOn(s.layers.cluster); ensureOn(s.layers.over);
+          ensureOn(s.layers.stops);   ensureOn(s.layers.track);
+          ensureOn(s.layers.route);   ensureOn(s.layers.timelabels);
         }
 
+        // 時間軸範圍篩選 + 排序
         const recs = s.records
           .filter(r => {
             if (!range) return true;
@@ -1422,42 +1958,99 @@
           })
           .sort((a, b) => (a.start || 0) - (b.start || 0));
 
+        // 路線斷點修復：嚴格過濾無效座標（NaN / 0,0 / 非有限數）
         const trackPts = recs
           .map(r => [r.lat, r.lng])
-          .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng));
+          .filter(([lat, lng]) =>
+            Number.isFinite(lat) && Number.isFinite(lng) &&
+            !(lat === 0 && lng === 0)
+          );
 
+        // 同位置只給「最早出現的順序號碼」（避免同點疊多個編號）
+        const locMinIdx = new Map();
+        recs.forEach((r, i) => {
+          if (!Number.isFinite(r.lat) || !Number.isFinite(r.lng)) return;
+          const key = r.lat.toFixed(5) + ',' + r.lng.toFixed(5);
+          if (!locMinIdx.has(key)) locMinIdx.set(key, i + 1);
+        });
+
+        // 收集 marker 後一次 addLayers，讓 markercluster 走 chunkedLoading 路徑
+        const markersToAdd = [];
         let idx = 0;
         for(const r of recs){
+          idx++;
+          if (!Number.isFinite(r.lat) || !Number.isFinite(r.lng)) continue;
+          if (r.lat === 0 && r.lng === 0) continue;
+
+          const p = r.props || {};
+          const locKey = r.lat.toFixed(5) + ',' + r.lng.toFixed(5);
+          const isFirstAtLoc = (locMinIdx.get(locKey) === idx);
+
+          // 點：永遠用 divIcon
+          //   - zoom>=13 且該位置首次出現：顯示順序數字
+          //   - 其他情況：純色小圓點 divIcon
+          //   - spiderfied 散開時：監聽器會強制換成「自己的順序數字」icon（即使 zoom<13 也顯示）
+          const minSeq = locMinIdx.get(locKey);
+          const collapsedIcon = (showSeq && isFirstAtLoc)
+            ? L.divIcon({ className:'', iconSize:[22,22], iconAnchor:[11,11],
+                html:`<div class="seq-num" style="background:${s.color}">${minSeq}</div>` })
+            : L.divIcon({ className:'', iconSize:[22,22], iconAnchor:[11,11],
+                html:`<div class="seq-dot" style="background:${s.color}"></div>` });
+
+          const dot = L.marker([r.lat, r.lng], {
+            icon: collapsedIcon,
+            sequenceNumber: idx,           // 本筆在 series 內的時間順序（1 最早 N 最晚）
+            seriesColor:    s.color,
+            originalIcon:   collapsedIcon, // 收合時還原
+            startTs:        r.start,       // 散開時顯示的時間
+          });
+          dot.bindPopup(`
+            <div style="min-width:260px">
+              <b>${fmt(p.target_id)}</b>${isFirstAtLoc ? `　#${locMinIdx.get(locKey)}` : ''}<br/>
+              ${fmt(p.cell_addr)}<br/>
+              ${fmt(p.start_ts)} → ${fmt(p.end_ts)}<br/>
+              cell_id: ${fmt(p.cell_id) || '—'}${(p.azimuth != null) ? `　azimuth: ${p.azimuth}°` : ''}<br/>
+              ${(p.azimuth != null) ? `北方基準: ${p.azimuth_ref === 'magnetic' ? '磁北' : p.azimuth_ref === 'true' ? '真北' : '<span style="color:#c00;font-weight:bold">未標註 ⚠ 證據風險</span>'}<br/>` : ''}${(p.sector_name || p.sector_id || p.site_code) ? `sector: ${fmt(p.sector_name)}（${fmt(p.sector_id)}）　site: ${fmt(p.site_code)}<br/>` : ''}精度≈ ${fmt(p.accuracy_m)} m
+            </div>`);
+          // 時間標籤：僅在勾選「顯示停留時間及地點」(ONLY_STOPS) 時才綁定
+          //   勾選後 → zoom>=15 永久顯示、否則 hover；首次出現位置同時顯示順序號碼
+          if (r.start && ONLY_STOPS) {
+            const tooltipHtml = isFirstAtLoc
+              ? `<b>#${idx}</b><br/>${fmtISO(r.start)}`
+              : fmtISO(r.start);
+            dot.bindTooltip(tooltipHtml, {
+              permanent: timeLabelPermanent,
+              direction: 'top',
+              offset: [0, -8],
+              className: 'time-label-tooltip',
+              opacity: 0.95,
+            });
+            dot.options.timeLabelHTML = tooltipHtml;  // spiderfy 還原時需要
+          }
+          markersToAdd.push(dot);
+
+          // 只有當 azimuth 是有效數值時才畫扇形（r.az 為 null 表原始資料無方位角）
+          if (SHOW_SECTOR && r.az !== null && Number.isFinite(r.az)){
+            const rr = Math.max(MIN_SECTOR_RADIUS, r.acc||0);
+            s.layers.over.addLayer(sector(r.lat, r.lng, r.az, rr, SECTOR_ANGLE_DEG, 36));
+          }
+
+          // 額外疊加停留時間及地點標籤
           if (ONLY_STOPS){
-            idx++;
-            s.layers.stops.addLayer(L.circleMarker([r.lat,r.lng],{ pane:'paneStops', radius:6, color:s.color, weight:2, fillOpacity:.9 }));
-            const badge=L.marker([r.lat,r.lng],{
+            const badge = L.marker([r.lat,r.lng], {
               pane:'paneStops',
-              icon:L.divIcon({className:'',html:`<span class="idx-badge">${idx}</span>`,iconSize:[1,1],iconAnchor:[-6,14]})
+              icon: L.divIcon({ className:'', html:`<span class="idx-badge">${idx}</span>`, iconSize:[1,1], iconAnchor:[-6,14] }),
             });
             s.layers.stops.addLayer(badge);
-            const label=`${fmtROC(r.start)}｜${fmt(r.props.cell_addr)||'停留點'}`;
-            const tip=L.tooltip({permanent:true,direction:'right',offset:[8,0],opacity:.95}).setContent(label).setLatLng([r.lat,r.lng]);
+            const label = `${fmtROC(r.start)}｜${fmt(r.props.cell_addr)||'停留點'}`;
+            const tip = L.tooltip({ permanent:true, direction:'right', offset:[8,0], opacity:.95 }).setContent(label).setLatLng([r.lat,r.lng]);
             s.layers.stops.addLayer(tip);
-          }else{
-            const p=r.props||{};
-            const dot=L.circleMarker([r.lat,r.lng],{ pane:'panePoints', radius:5, color:s.color, fillColor:s.color, weight:1, fillOpacity:.9 });
-            dot.bindPopup(`
-              <div style="min-width:260px">
-                <b>${fmt(p.target_id)}</b><br/>
-                ${fmt(p.cell_addr)}<br/>
-                ${fmt(p.start_ts)} → ${fmt(p.end_ts)}<br/>
-                cell_id: ${fmt(p.cell_id) || '—'}${(p.azimuth != null) ? `　azimuth: ${p.azimuth}°` : ''}<br/>
-                ${(p.azimuth != null) ? `北方基準: ${p.azimuth_ref === 'magnetic' ? '磁北' : p.azimuth_ref === 'true' ? '真北' : '<span style="color:#c00;font-weight:bold">未標註 ⚠ 法庭風險</span>'}<br/>` : ''}${(p.sector_name || p.sector_id || p.site_code) ? `sector: ${fmt(p.sector_name)}（${fmt(p.sector_id)}）　site: ${fmt(p.site_code)}<br/>` : ''}精度≈ ${fmt(p.accuracy_m)} m
-              </div>`);
-            s.layers.points.addLayer(dot);
-
-            if (SHOW_ACC && r.acc>0) s.layers.over.addLayer(L.circle([r.lat,r.lng],{ pane:'paneOver', radius:r.acc, color:s.color, weight:1, fillOpacity:.05 }));
-            if (SHOW_SECTOR && !Number.isNaN(r.az)){
-              const rr=Math.max(MIN_SECTOR_RADIUS, r.acc||0);
-              s.layers.over.addLayer(sector(r.lat,r.lng,r.az, rr, SECTOR_ANGLE_DEG,36));
-            }
           }
+        }
+
+        // 一次 addLayers 走 chunkedLoading 路徑（大量 marker 分批渲染、UI 不凍結）
+        if (markersToAdd.length) {
+          s.layers.cluster.addLayers(markersToAdd);
         }
 
         boundsPts = boundsPts.concat(trackPts);
@@ -1469,9 +2062,9 @@
         if (s.showTrack) total += s.distM;
 
         if (s.showRoute && trackPts.length >= 2){
-          const key = trackPts.map(p=>p.join(',')).join(';');
+          const key = trackPts.map(p => p.join(',')).join(';');
           if (key !== s.lastRouteKey){ s.lastRouteKey = key; drawRouteInto(trackPts, s); }
-        }else{
+        } else {
           s.lastRouteKey = '';
           s.layers.route.setLatLngs([]);
         }
@@ -1483,6 +2076,10 @@
         map.fitBounds(L.latLngBounds(boundsPts), { padding:[40,40] });
         shouldFit = false;
       }
+     } catch(e) {
+       console.error('[render 錯誤]', e);
+       _ensureUIVisible();
+     }
     }
 
     async function load(){
@@ -1521,6 +2118,8 @@
       const ul = $('uploadList');
       ul.innerHTML = queuedFiles.map(f => `<li>${f.name}（${human(f.size)}）</li>`).join('');
       const btn = $('btnUpload'); if (btn) btn.disabled = queuedFiles.length === 0;
+      // 上傳中／顯示結果中不覆蓋狀態
+      if (dz.classList.contains('uploading') || dz.classList.contains('success') || dz.classList.contains('error')) return;
       dz.classList.toggle('ready', queuedFiles.length>0);
     }
     function queueFiles(files){
@@ -1580,42 +2179,49 @@
       queuedFiles = [];
       refreshUploadList();
 
-      if (!TOKEN) {
-        // 訪客模式 → parse-only API，不寫 DB
-        await doGuestUpload(snapshot);
-      } else if (_sessionMode === 'temp') {
-        await doTempUpload(snapshot);
-      } else if (_sessionMode === 'project') {
-        await doProjectUpload(snapshot);
-      } else {
-        // 未選擇模式（fallback：維持舊的 per-upload 選擇 modal）
-        openUploadModeModal(snapshot);
+      try {
+        if (!TOKEN) {
+          // 訪客模式 → parse-only API，不寫 DB
+          await doGuestUpload(snapshot);
+        } else if (_sessionMode === 'temp') {
+          await doTempUpload(snapshot);
+        } else if (_sessionMode === 'project') {
+          await doProjectUpload(snapshot);
+        } else {
+          // 未選擇模式（fallback：維持舊的 per-upload 選擇 modal）
+          openUploadModeModal(snapshot);
+        }
+      } catch(e) {
+        console.error('[uploadQueued 錯誤]', e);
+        setUploadState('error', `上傳處理失敗：${e.message || '請看 Console'}`);
+        _ensureUIVisible();
       }
     }
 
-    // ── P2.5-C：法庭防禦性 dashboard ───────────────────────────
+    // ── P2.5-C：證據完整性 dashboard（浮動按鈕僅 project 模式顯示） ──
     async function refreshCourtBadge() {
       const badge = $('courtBadge');
-      if (!badge) return;
+      const btn   = $('courtBtn');
+      if (!badge || !btn) return;
       const projectId = $('projectId')?.value?.trim();
-      if (!projectId || _sessionMode === 'temp' || !TOKEN) {
-        badge.style.display = 'none'; return;
-      }
+      const visible = TOKEN && _sessionMode === 'project' && !!projectId;
+      btn.style.display = visible ? '' : 'none';
+      if (!visible) { badge.classList.remove('visible'); return; }
       try {
         const res = await fetch(
           `${API_BASE}/projects/${encodeURIComponent(projectId)}/azimuth-ref-summary`,
           { headers: authHeaders() }
         );
-        if (!res.ok) { badge.style.display = 'none'; return; }
+        if (!res.ok) { badge.classList.remove('visible'); return; }
         const j = await res.json();
         const nUnknown = (j.targets || []).filter(t => (t.by_ref?.unknown || 0) > 0).length;
         if (nUnknown > 0) {
           badge.textContent = nUnknown;
-          badge.style.display = '';
+          badge.classList.add('visible');
         } else {
-          badge.style.display = 'none';
+          badge.classList.remove('visible');
         }
-      } catch { badge.style.display = 'none'; }
+      } catch { badge.classList.remove('visible'); }
     }
 
     async function openCourtDefenseModal() {
@@ -1627,7 +2233,7 @@
       overlay.innerHTML = `
         <div style="background:#fff;border-radius:10px;padding:24px;width:min(96vw,700px);max-height:88vh;overflow-y:auto;box-shadow:0 8px 36px rgba(0,0,0,.32);font:14px/1.5 system-ui,-apple-system,sans-serif;">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
-            <span style="font-size:17px;font-weight:700">⚖ 法庭防禦性狀態</span>
+            <span style="font-size:17px;font-weight:700">🛡️ 證據完整性狀態</span>
             <span style="font-size:13px;color:#555;background:#f0f0f0;padding:2px 8px;border-radius:4px">${escH(projectId)}</span>
             <button onclick="this.closest('[data-overlay]').remove()" style="margin-left:auto;padding:5px 12px;border:1px solid #ccc;border-radius:6px;cursor:pointer;background:#fff;font-size:12px">關閉</button>
           </div>
@@ -1849,22 +2455,186 @@
       }
     }
 
-    // 使用人數／次數
+    // 使用次數統計（無 UI 元素時靜默呼叫後端，純做埋點）
     function bumpAndShowCounter(){
-      const key='ct_local_visits_v1';
-      let n = Number(localStorage.getItem(key)||0);
-      n++; localStorage.setItem(key, String(n));
-      const el=$('counterText');
-      if (el) el.textContent = `本機使用次數：${n}`;
       fetch(`${API_BASE}/stats/hit`, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:'{}'
-      }).then(r=>r.json()).then(j=>{
-        if (j && typeof j.total === 'number' && el){
-          el.textContent += `；全站累計：${j.total}`;
-        }
       }).catch(()=>{});
+    }
+
+    // ── 上傳狀態 UI（dropzone + 進度條）─────────────────────────
+    let _progressTimer = null;
+    let _resetStateTimer = null;
+    const _DZ_IDLE = '📁 拖放或點擊選擇檔案（CSV / Excel / PDF，可多檔）';
+
+    function _clearStateTimers(){
+      if (_progressTimer) { clearInterval(_progressTimer); _progressTimer = null; }
+      if (_resetStateTimer) { clearTimeout(_resetStateTimer); _resetStateTimer = null; }
+    }
+    function _startProgress(){
+      const bar = $('uploadProgressBar');
+      let pct = 0;
+      bar.style.display = 'block';
+      bar.style.width = '0%';
+      // 模擬：0 → 90% 慢速漸進
+      _progressTimer = setInterval(() => {
+        pct = Math.min(pct + (90 - pct) * 0.06, 90);
+        bar.style.width = pct.toFixed(1) + '%';
+      }, 180);
+    }
+    function _finishProgress(){
+      if (_progressTimer) { clearInterval(_progressTimer); _progressTimer = null; }
+      const bar = $('uploadProgressBar');
+      bar.style.width = '100%';
+      setTimeout(() => {
+        bar.style.display = 'none';
+        bar.style.width = '0%';
+      }, 400);
+    }
+    function setUploadState(state, msg){
+      const dz = $('dropzone');
+      const btn = $('btnUpload');
+      _clearStateTimers();
+      dz.classList.remove('uploading','success','error','ready','dragover');
+      if (state === 'uploading'){
+        dz.classList.add('uploading');
+        dz.innerHTML = `<span class="upload-spinner"></span>正在解析 ${escH(msg || '')}…`;
+        btn.disabled = true;
+        _startProgress();
+      } else if (state === 'success'){
+        dz.classList.add('success');
+        dz.innerHTML = `✅ ${escH(msg || '解析完成')}`;
+        _finishProgress();
+        _resetStateTimer = setTimeout(() => setUploadState('idle'), 2000);
+      } else if (state === 'error'){
+        dz.classList.add('error');
+        dz.innerHTML = `❌ ${escH(msg || '解析失敗')}`;
+        if (_progressTimer) { clearInterval(_progressTimer); _progressTimer = null; }
+        $('uploadProgressBar').style.display = 'none';
+        $('uploadProgressBar').style.width = '0%';
+        _resetStateTimer = setTimeout(() => setUploadState('idle'), 5000);
+      } else {
+        // idle：回到預設或 ready
+        dz.innerHTML = _DZ_IDLE;
+        btn.disabled = queuedFiles.length === 0;
+        if (queuedFiles.length > 0) dz.classList.add('ready');
+        $('uploadProgressBar').style.display = 'none';
+        $('uploadProgressBar').style.width = '0%';
+      }
+    }
+
+    // ── 測量兩點距離（Haversine） ─────────────────────────────────
+    function _fmtDist(m){
+      if (m < 1000) return `${Math.round(m)} 公尺`;
+      return `${(m / 1000).toFixed(2)} 公里`;
+    }
+    function _fmtCoord(latlng){
+      return `${latlng.lat.toFixed(6)}, ${latlng.lng.toFixed(6)}`;
+    }
+    function _measureReset(){
+      _measureA = _measureB = null;
+      if (_measureLayers) {
+        for (const lyr of _measureLayers) { try { map.removeLayer(lyr); } catch{} }
+      }
+      _measureLayers = [];
+    }
+    function _renderMeasurePanel(){
+      const panel = $('measurePanel');
+      const content = $('measureContent');
+      panel.style.display = '';
+      if (!_measureA) {
+        content.innerHTML = '<div class="hint">請點選第一個點 (A)</div>';
+        return;
+      }
+      if (!_measureB) {
+        content.innerHTML = `
+          <div class="coord-row">
+            <span class="coord-label">📍 A 點</span>
+            <span class="coord-value">${_fmtCoord(_measureA)}</span>
+          </div>
+          <div class="hint">請繼續點選第二個點 (B)</div>`;
+        return;
+      }
+      const d = distM([_measureA.lat,_measureA.lng], [_measureB.lat,_measureB.lng]);
+      content.innerHTML = `
+        <div class="coord-row">
+          <span class="coord-label">📍 A 點</span>
+          <span class="coord-value">${_fmtCoord(_measureA)}</span>
+        </div>
+        <div class="coord-row">
+          <span class="coord-label">📍 B 點</span>
+          <span class="coord-value">${_fmtCoord(_measureB)}</span>
+        </div>
+        <div class="dist-row">
+          <div style="font-size:12px;color:#666;margin-bottom:4px">直線距離</div>
+          <span class="dist-big">${_fmtDist(d)}</span>
+        </div>`;
+    }
+    function _drawMeasureMarker(latlng, label){
+      const icon = L.divIcon({
+        className:'',
+        html:`<div class="measure-dot">${label}</div>`,
+        iconSize:[24,24], iconAnchor:[12,12]
+      });
+      const m = L.marker(latlng, { icon, interactive:false }).addTo(map);
+      _measureLayers.push(m);
+      return m;
+    }
+    function _drawMeasureLine(){
+      if (!_measureA || !_measureB) return;
+      const line = L.polyline([_measureA, _measureB], {
+        color:'#d32f2f', weight:3, dashArray:'8 6', opacity:.85
+      }).addTo(map);
+      _measureLayers.push(line);
+      const d = distM([_measureA.lat,_measureA.lng],[_measureB.lat,_measureB.lng]);
+      const mid = L.latLng((_measureA.lat+_measureB.lat)/2, (_measureA.lng+_measureB.lng)/2);
+      const tag = L.marker(mid, {
+        interactive:false,
+        icon: L.divIcon({
+          className:'',
+          html:`<div class="measure-label">${_fmtDist(d)}</div>`,
+          iconSize:[1,1], iconAnchor:[40,12]
+        })
+      }).addTo(map);
+      _measureLayers.push(tag);
+    }
+    function _onMeasureClick(e){
+      if (!_measureMode) return;
+      if (!_measureA){
+        _measureA = e.latlng;
+        _drawMeasureMarker(_measureA, 'A');
+        _renderMeasurePanel();
+      } else if (!_measureB){
+        _measureB = e.latlng;
+        _drawMeasureMarker(_measureB, 'B');
+        _drawMeasureLine();
+        _renderMeasurePanel();
+      } else {
+        // 已有 A/B，再點清空重來
+        _measureReset();
+        _measureA = e.latlng;
+        _drawMeasureMarker(_measureA, 'A');
+        _renderMeasurePanel();
+      }
+    }
+    function toggleMeasureMode(forceState){
+      const willOn = forceState != null ? forceState : !_measureMode;
+      _measureMode = willOn;
+      document.body.classList.toggle('measure-mode', willOn);
+      $('measureBtn').classList.toggle('active', willOn);
+      if (willOn){
+        _measureReset();
+        _renderMeasurePanel();
+        map.on('click', _onMeasureClick);
+        // 關閉左側選單避免遮擋
+        toggleSideMenu(false);
+      } else {
+        $('measurePanel').style.display = 'none';
+        _measureReset();
+        map.off('click', _onMeasureClick);
+      }
     }
 
     // ── 成員管理 modal ──────────────────────────────────────────
@@ -1878,32 +2648,39 @@
       const card = document.createElement('div');
       card.style.cssText = 'background:#fff;padding:20px 22px;border-radius:10px;width:min(96vw,560px);max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25);font:13px/1.5 system-ui,-apple-system,sans-serif;';
       card.innerHTML = `
-        <div style="font-size:15px;font-weight:700;margin-bottom:4px">成員管理：${escH(projectId)}</div>
+        <div style="font-size:15px;font-weight:700;margin-bottom:4px">授權共辦人員：${escH(projectId)}</div>
         <div id="__membersBody" style="margin-top:10px"><i>載入中…</i></div>
         <hr style="margin:14px 0;border:none;border-top:1px solid #eee"/>
         <div style="font-size:13px;font-weight:600;margin-bottom:10px">新增成員</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-          <div>
-            <div style="font-size:11px;color:#666;margin-bottom:3px">帳號</div>
-            <select id="__grantUser" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;min-width:160px">
-              <option value="">（載入帳號清單…）</option>
-            </select>
+
+        <div style="font-size:12px;color:#555;margin-bottom:4px">輸入對方帳號：</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input id="__grantUsername" type="text" placeholder="例：cidcheng"
+            style="flex:1;padding:7px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px" autocomplete="off"/>
+          <button id="__searchBtn" style="padding:7px 16px;background:#007aff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">搜尋</button>
+        </div>
+        <div id="__searchMsg" style="font-size:12px;color:#c00;min-height:16px;margin-top:6px"></div>
+
+        <div id="__searchResult" style="display:none;background:#f0f7ff;border:1px solid #b8d4f1;border-radius:8px;padding:12px 14px;margin-top:8px">
+          <div style="font-size:13px;color:#555;margin-bottom:4px">搜尋結果：</div>
+          <div id="__searchResultBody" style="font-size:14px;font-weight:600;margin-bottom:10px"></div>
+          <div style="font-size:12px;color:#555;margin-bottom:4px">權限：</div>
+          <label style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;cursor:pointer;font-size:13px">
+            <input type="radio" name="__grantPerm" value="viewer"/> 觀看
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:13px">
+            <input type="radio" name="__grantPerm" value="collaborator" checked/> 協作
+          </label>
+          <div style="font-size:11px;color:#888;margin-top:8px">到期（可留空）：
+            <input id="__grantExpiry" type="datetime-local" style="padding:4px 6px;border:1px solid #ccc;border-radius:4px;font-size:12px"/>
           </div>
-          <div>
-            <div style="font-size:11px;color:#666;margin-bottom:3px">權限</div>
-            <select id="__grantPerm" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px">
-              <option value="viewer">viewer（唯讀）</option>
-              <option value="collaborator" selected>collaborator（上傳）</option>
-              <option value="owner">owner（管理）</option>
-            </select>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+            <button id="__grantCancel" style="padding:6px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px;background:#fff">取消</button>
+            <button id="__grantBtn" style="padding:6px 16px;background:#007aff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">確認授權</button>
           </div>
-          <div>
-            <div style="font-size:11px;color:#666;margin-bottom:3px">到期（可留空）</div>
-            <input id="__grantExpiry" type="datetime-local" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px"/>
-          </div>
-          <button id="__grantBtn" style="padding:6px 14px;background:#007aff;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">授權</button>
         </div>
         <div id="__grantMsg" style="min-height:16px;font-size:12px;color:#d00;margin-top:6px"></div>
+
         <div style="display:flex;justify-content:flex-end;margin-top:14px">
           <button id="__membersClose" style="padding:6px 16px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px">關閉</button>
         </div>`;
@@ -1971,33 +2748,63 @@
         }
       }
 
-      // 載入帳號清單供選擇
-      async function loadUserOptions(){
-        const sel = card.querySelector('#__grantUser');
+      // 搜尋 / 授權狀態
+      let _foundUser = null;  // { id, username, real_name, unit }
+
+      function resetSearch(){
+        _foundUser = null;
+        card.querySelector('#__searchResult').style.display = 'none';
+        card.querySelector('#__searchResultBody').innerHTML = '';
+        card.querySelector('#__searchMsg').textContent = '';
+        card.querySelector('#__grantMsg').textContent = '';
+      }
+
+      async function doSearchUser(){
+        const uname = card.querySelector('#__grantUsername').value.trim();
+        const msgEl = card.querySelector('#__searchMsg');
+        const resultBox = card.querySelector('#__searchResult');
+        const resultBody = card.querySelector('#__searchResultBody');
+        msgEl.textContent = '';
+        resultBox.style.display = 'none';
+        _foundUser = null;
+        if (!uname){ msgEl.textContent = '請輸入帳號'; return; }
         try{
-          const res = await fetch(`${API_BASE}/users`, { headers: authHeaders() });
-          if (!res.ok) throw 0;
-          const j = await res.json();
-          sel.innerHTML = (j.items||[]).map(u =>
-            `<option value="${u.id}">${escH(u.username)}${u.real_name?' ('+escH(u.real_name)+')':''}</option>`
-          ).join('');
-        }catch{
-          sel.innerHTML = '<option value="">（無法載入帳號清單，請手動輸入 user_id）</option>';
-          // 改為 number input 備援
-          sel.outerHTML = '<input id="__grantUser" type="number" min="1" placeholder="user_id" style="padding:5px 8px;border:1px solid #ccc;border-radius:6px;font-size:13px;width:80px"/>';
+          const res = await fetch(
+            `${API_BASE}/users/search?username=${encodeURIComponent(uname)}`,
+            { headers: authHeaders() }
+          );
+          if (res.status === 404){ msgEl.textContent = '找不到此帳號'; return; }
+          if (res.status === 403){ msgEl.textContent = '您沒有權限搜尋帳號'; return; }
+          if (!res.ok){ const j=await res.json().catch(()=>({})); throw new Error(j.detail||`HTTP ${res.status}`); }
+          const u = await res.json();
+          if (!u.is_active){
+            msgEl.textContent = '此帳號已停用';
+            return;
+          }
+          _foundUser = u;
+          resultBody.innerHTML = `👤 ${escH(u.real_name || u.username)}${u.unit ? `<span style="color:#888;font-weight:400">｜${escH(u.unit)}</span>` : ''}`;
+          resultBox.style.display = '';
+        }catch(e){
+          msgEl.textContent = '搜尋失敗：' + e.message;
         }
       }
 
+      card.querySelector('#__searchBtn').onclick = doSearchUser;
+      card.querySelector('#__grantUsername').addEventListener('keydown', e => {
+        if (e.key === 'Enter'){ e.preventDefault(); doSearchUser(); }
+      });
+      card.querySelector('#__grantCancel').onclick = resetSearch;
+
       card.querySelector('#__grantBtn').onclick = async () => {
-        const uidEl = card.querySelector('#__grantUser');
-        const uid = Number(uidEl.value);
-        const perm = card.querySelector('#__grantPerm').value;
-        const expiry = card.querySelector('#__grantExpiry').value;
         const msgEl = card.querySelector('#__grantMsg');
-        if (!uid){ msgEl.textContent = '請選擇帳號'; return; }
+        if (!_foundUser){ msgEl.textContent = '請先搜尋並確認對象'; return; }
+        const permEl = card.querySelector('input[name="__grantPerm"]:checked');
+        if (!permEl){ msgEl.textContent = '請選擇權限'; return; }
+        const perm = permEl.value;
+        const expiry = card.querySelector('#__grantExpiry').value;
         msgEl.textContent = '授權中…';
         try{
-          const body = { user_id: uid, permission: perm };
+          const body = { user_id: _foundUser.id, permission: perm };
           if (expiry) body.expires_at = new Date(expiry).toISOString();
           const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/members`, {
             method: 'POST',
@@ -2007,7 +2814,9 @@
           const j = await res.json();
           if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
           msgEl.textContent = '';
-          showToast(`已授權 ${j.username} 為 ${j.permission}`,'success',1800);
+          showToast(`已授權 ${_foundUser.real_name || _foundUser.username} 為 ${perm === 'viewer' ? '觀看' : '協作'}`,'success',2000);
+          card.querySelector('#__grantUsername').value = '';
+          resetSearch();
           loadMembers();
         }catch(e){
           msgEl.textContent = '失敗：' + e.message;
@@ -2015,20 +2824,263 @@
       };
 
       loadMembers();
-      loadUserOptions();
+    }
+
+    // ── 智慧錯誤診斷 / 手動對應 / 回報格式 ────────────────────────
+    // 解析失敗時後端回 422 + diagnosis，這三個 modal 串成 fallback 流程。
+
+    let _lastDiagInfo = null;  // { filename, file (Blob), headers, diagnosis }
+
+    /**
+     * 顯示「無法解析」診斷 modal（第一層）
+     * info: { filename, file, headers, diagnosis }
+     */
+    function showDiagnosisModal(info) {
+      _lastDiagInfo = info;
+      const d = info.diagnosis || {};
+      const headers = d.available_columns || info.headers || [];
+
+      const checkLine = (ok, label, name) =>
+        `<div style="display:flex;gap:8px;padding:3px 0;align-items:center">
+          <span style="font-size:16px">${ok ? '✅' : '❌'}</span>
+          <span>${escH(label)}${ok && name ? `：<b style="color:#1565c0">${escH(name)}</b>` : ''}</span>
+        </div>`;
+
+      const overlay = _makeOverlay();
+      const card = document.createElement('div');
+      card.style.cssText = 'background:#fff;padding:24px;border-radius:12px;width:min(96vw,520px);max-height:88vh;overflow-y:auto;box-shadow:0 8px 36px rgba(0,0,0,.28);font:14px/1.55 system-ui,-apple-system,sans-serif;';
+      card.innerHTML = `
+        <div style="font-size:18px;font-weight:700;color:#c62828;margin-bottom:6px">❌ 無法解析此檔案</div>
+        <div style="font-size:13px;color:#666;margin-bottom:16px">檔名：<code>${escH(info.filename || '')}</code></div>
+
+        <div style="font-size:13px;font-weight:700;color:#444;margin-bottom:8px">診斷結果：</div>
+        <div style="background:#fafafa;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:13px">
+          ${checkLine(d.found_time_col,    '時間欄位',     d.found_time_col_name)}
+          ${checkLine(d.found_cell_id_col, '基地台 ID 欄位', d.found_cell_id_col_name)}
+          ${checkLine(d.found_addr_col,    '地址欄位',     d.found_addr_col_name)}
+        </div>
+
+        <div style="font-size:13px;color:#555;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:10px 12px;margin-bottom:18px;line-height:1.7">
+          <b>可能原因：</b><br/>
+          此電信業者格式目前不在支援清單內，<br/>
+          或欄位名稱與已知格式不符。
+        </div>
+
+        <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+          <button id="__diagCancel" style="padding:8px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;background:#fff;font-size:13px">取消</button>
+          <button id="__diagReport" style="padding:8px 14px;border:1px solid #1565c0;color:#1565c0;border-radius:6px;cursor:pointer;background:#fff;font-size:13px">📧 回報此格式</button>
+          <button id="__diagManual" style="padding:8px 16px;border:none;border-radius:6px;cursor:pointer;background:#1565c0;color:#fff;font-size:13px;font-weight:600">🔧 手動對應欄位</button>
+        </div>`;
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      const dispose = () => { try { overlay.remove(); } catch{} };
+      card.querySelector('#__diagCancel').onclick = dispose;
+      overlay.addEventListener('click', e => { if (e.target === overlay) dispose(); });
+      card.querySelector('#__diagReport').onclick = () => { dispose(); showFormatReportModal(info); };
+      card.querySelector('#__diagManual').onclick = () => { dispose(); showManualMappingModal(info); };
+    }
+
+    /**
+     * 手動欄位對應 modal（第二層）：使用者把檔案欄對應到系統欄位後重新上傳。
+     */
+    function showManualMappingModal(info) {
+      const headers = (info.diagnosis && info.diagnosis.available_columns) || info.headers || [];
+      if (!headers.length) {
+        showToast('找不到欄位清單，無法手動對應', 'error', 2200);
+        return;
+      }
+      const sysOptions = [
+        ['ignore',  '忽略'],
+        ['time',    '時間戳記（必填）'],
+        ['cell_id', '基地台 ID'],
+        ['addr',    '地址'],
+        ['lat',     '緯度'],
+        ['lng',     '經度'],
+      ];
+
+      // 預設依名稱字串猜：含「時間」→ time、含「基地台/cell」→ cell_id、含「地址」→ addr
+      const guess = (name) => {
+        const s = String(name);
+        if (/時間|date|time/i.test(s)) return 'time';
+        if (/基地台|站|cell|細胞/i.test(s)) return 'cell_id';
+        if (/地址|address/i.test(s)) return 'addr';
+        if (/緯度|lat/i.test(s)) return 'lat';
+        if (/經度|lng|lon/i.test(s)) return 'lng';
+        return 'ignore';
+      };
+
+      const rows = headers.map((h, i) => {
+        const g = guess(h);
+        const opts = sysOptions.map(([v, l]) =>
+          `<option value="${v}"${v === g ? ' selected' : ''}>${escH(l)}</option>`).join('');
+        return `<tr>
+          <td style="padding:6px 8px;font-size:13px;border-bottom:1px solid #eee">${escH(h || '(空欄位 ' + (i+1) + ')')}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #eee">→</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #eee">
+            <select data-raw="${escH(h)}" class="__mmSel" style="padding:5px 8px;border:1px solid #ccc;border-radius:5px;font-size:13px;width:100%">${opts}</select>
+          </td>
+        </tr>`;
+      }).join('');
+
+      const overlay = _makeOverlay();
+      const card = document.createElement('div');
+      card.style.cssText = 'background:#fff;padding:24px;border-radius:12px;width:min(96vw,560px);max-height:88vh;overflow-y:auto;box-shadow:0 8px 36px rgba(0,0,0,.28);font:14px/1.55 system-ui,-apple-system,sans-serif;';
+      card.innerHTML = `
+        <div style="font-size:17px;font-weight:700;margin-bottom:4px">🔧 手動對應欄位</div>
+        <div style="font-size:12px;color:#666;margin-bottom:14px">把你的檔案欄位對應到系統欄位。<b>時間</b>必選；<b>基地台 ID</b> 與 <b>地址</b> 至少一個必選（用於 geocode 取座標）。</div>
+        <div style="max-height:50vh;overflow-y:auto;border:1px solid #eee;border-radius:6px">
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead><tr style="background:#f5f7fa;color:#555;font-size:11px">
+              <th style="padding:6px 8px;text-align:left">你的檔案欄位</th>
+              <th></th>
+              <th style="padding:6px 8px;text-align:left">對應到系統欄位</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div id="__mmErr" style="color:#c00;font-size:12px;min-height:16px;margin-top:8px"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
+          <button id="__mmCancel" style="padding:8px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;background:#fff;font-size:13px">取消</button>
+          <button id="__mmOk" style="padding:8px 18px;border:none;border-radius:6px;cursor:pointer;background:#1565c0;color:#fff;font-size:13px;font-weight:600">確認匯入</button>
+        </div>`;
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      const dispose = () => { try { overlay.remove(); } catch{} };
+      card.querySelector('#__mmCancel').onclick = dispose;
+      overlay.addEventListener('click', e => { if (e.target === overlay) dispose(); });
+
+      card.querySelector('#__mmOk').onclick = async () => {
+        const sels = card.querySelectorAll('.__mmSel');
+        const mapping = {};
+        let timeOk = false, cellOk = false, addrOk = false;
+        sels.forEach(s => {
+          mapping[s.dataset.raw] = s.value;
+          if (s.value === 'time') timeOk = true;
+          if (s.value === 'cell_id') cellOk = true;
+          if (s.value === 'addr') addrOk = true;
+        });
+        if (!timeOk) { card.querySelector('#__mmErr').textContent = '請至少對應一個「時間戳記」欄位'; return; }
+        if (!cellOk && !addrOk) { card.querySelector('#__mmErr').textContent = '請至少對應一個「基地台 ID」或「地址」欄位'; return; }
+        dispose();
+        await retryUploadWithMapping(info, mapping);
+      };
+    }
+
+    /**
+     * 帶 mapping 重新上傳（用 info.file Blob，端點同前次）
+     */
+    async function retryUploadWithMapping(info, mapping) {
+      if (!info.file) { showToast('找不到原始檔案，請重新選擇', 'error', 2200); return; }
+      setUploadState('uploading', info.filename);
+      const fd = new FormData();
+      fd.append('file', info.file, info.filename);
+      fd.append('target_id', info.filename.replace(/\.[^.]+$/, ''));
+      fd.append('mapping', JSON.stringify(mapping));
+
+      try {
+        const url = TOKEN
+          ? `${API_BASE}/upload/parse-temp`
+          : `${API_BASE}/parse-only/`;
+        const headers = TOKEN ? { ...authHeaders() } : {};
+        const res = await fetch(url, { method:'POST', headers, body: fd });
+        if (res.status === 422) {
+          const j = await res.json().catch(() => ({}));
+          setUploadState('error', '即使手動對應仍無法解析');
+          showDiagnosisModal({ ...info, headers: (j.diagnosis||{}).available_columns || info.headers, diagnosis: j.diagnosis });
+          return;
+        }
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(j.detail || `HTTP ${res.status}`);
+        }
+        const geo = await res.json();
+        _tempRecordsStore.set(info.filename.replace(/\.[^.]+$/, ''), geo._records || []);
+        appendGeoJsonToSeries(geo);
+        if (!TOKEN) { const gb=$('guestDataBanner'); gb.classList.remove('hiding'); gb.style.display='flex'; _updateTimeBarPosition(); }
+        shouldFit = true;
+        refreshSeriesPanel();
+        await render();
+        populateTargetList();
+        setUploadState('success', `解析完成，已載入 ${geo.plotted || 0} 筆資料（手動對應）`);
+      } catch (e) {
+        setUploadState('error', `解析失敗：${e.message}`);
+      }
+    }
+
+    /**
+     * 回報格式 modal（第三層）：使用者回報給管理員，管理員可加新方言。
+     */
+    function showFormatReportModal(info) {
+      const headers = (info.diagnosis && info.diagnosis.available_columns) || info.headers || [];
+
+      const overlay = _makeOverlay();
+      const card = document.createElement('div');
+      card.style.cssText = 'background:#fff;padding:24px;border-radius:12px;width:min(96vw,480px);max-height:88vh;overflow-y:auto;box-shadow:0 8px 36px rgba(0,0,0,.28);font:14px/1.55 system-ui,-apple-system,sans-serif;';
+      card.innerHTML = `
+        <div style="font-size:17px;font-weight:700;margin-bottom:14px">📧 回報格式給管理員</div>
+        <div style="font-size:13px;color:#444;line-height:1.7;margin-bottom:6px">系統將回報以下資訊：</div>
+        <ul style="font-size:12px;color:#555;background:#f8f9fa;border-radius:6px;padding:10px 14px 10px 26px;margin-bottom:14px;line-height:1.7">
+          <li>檔案名稱：<code>${escH(info.filename || '')}</code></li>
+          <li>欄位清單（${headers.length} 個）：<br/><span style="color:#888;word-break:break-all">${headers.map(escH).join('、') || '<i style="color:#bbb">無</i>'}</span></li>
+          <li>解析診斷結果</li>
+        </ul>
+        <label style="display:block;font-size:13px;color:#555;margin-bottom:4px">備註（選填）：</label>
+        <textarea id="__frNote" rows="3" maxlength="2000" placeholder="例：中華電信 2026 年新版格式，請新增支援"
+          style="display:block;width:100%;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:13px;font-family:inherit;resize:vertical;box-sizing:border-box;margin-bottom:8px"></textarea>
+        <div id="__frMsg" style="color:#c00;font-size:12px;min-height:16px;margin-bottom:6px"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button id="__frCancel" style="padding:8px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;background:#fff;font-size:13px">取消</button>
+          <button id="__frOk" style="padding:8px 18px;border:none;border-radius:6px;cursor:pointer;background:#1565c0;color:#fff;font-size:13px;font-weight:600">送出回報</button>
+        </div>`;
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      const dispose = () => { try { overlay.remove(); } catch{} };
+      card.querySelector('#__frCancel').onclick = dispose;
+      overlay.addEventListener('click', e => { if (e.target === overlay) dispose(); });
+
+      card.querySelector('#__frOk').onclick = async () => {
+        const note = card.querySelector('#__frNote').value.trim();
+        const msgEl = card.querySelector('#__frMsg');
+        msgEl.textContent = '送出中…';
+        try {
+          const res = await fetch(`${API_BASE}/format-reports/`, {
+            method:'POST',
+            headers:{ 'Content-Type':'application/json', ...authHeaders() },
+            body: JSON.stringify({
+              filename: info.filename || '',
+              headers,
+              diagnosis: info.diagnosis || {},
+              note: note || null,
+            }),
+          });
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+          dispose();
+          showToast('✅ 已送出回報，管理員會盡快處理', 'success', 3000);
+        } catch (e) {
+          msgEl.textContent = '送出失敗：' + e.message;
+        }
+      };
     }
 
     // ── 訪客模式初始化 ─────────────────────────────────────────────
     function initGuest() {
       $('guestBtns').style.display = 'flex';
+      $('loggedInBtns').style.display = 'none';
+      // 訪客模式案件區隱藏（無儲存的案件）
+      $('caseSection').style.display = 'none';
+      // 訪客身份顯示為空（CSS :empty::before 顯示「👤 訪客模式」）
+      $('userChip').innerHTML = '';
+      $('userChip').title = '訪客模式';
       // 綁上傳按鈕（訪客 → parse-only）
       $('btnUpload').addEventListener('click', uploadQueued);
       // 顯示設定控制（訪客也可切換）
-      $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
       $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });
       $('onlyStops').addEventListener('change', e=>{
         ONLY_STOPS = e.target.checked;
-        if (ONLY_STOPS) { for (const s of seriesMap.values()) s.showTrack = false; }
         render();
       });
       $('angleInput').addEventListener('input', e=>{
@@ -2037,49 +3089,241 @@
       $('minRadiusInput').addEventListener('change', e=>{
         const v=Number(e.target.value); MIN_SECTOR_RADIUS=Number.isFinite(v)?Math.max(0,v):250; render();
       });
-      // 面板切換 & 定位
-      $('panelToggle').addEventListener('click', ()=>{ document.querySelector('.control').classList.toggle('hidden'); updateTogglePosition(); });
-      $('recenterBtn').addEventListener('click', ()=>{ shouldFit=true; render(); });
-      window.addEventListener('resize', updateTogglePosition);
-      updateTogglePosition();
+      // 側滑選單 + 浮動按鈕
+      bindCommonUI();
       // 對象 radio
       $('targetAll').addEventListener('change', ()=>{ $('targetIdRow').style.display='none'; });
       $('targetOne').addEventListener('change', ()=>{ $('targetIdRow').style.display=''; populateTargetList(); $('targetId').focus(); });
       // 訪客橫幅按鈕
       $('guestLoginSaveBtn').addEventListener('click', saveGuestDataAndLogin);
-      $('dismissGuestBannerBtn').addEventListener('click', ()=>{ $('guestDataBanner').style.display='none'; });
+      $('dismissGuestBannerBtn').addEventListener('click', ()=>{
+        const el = $('guestDataBanner');
+        el.classList.add('hiding');
+        _updateTimeBarPositionWithBanner(false);
+        setTimeout(() => { el.style.display='none'; el.classList.remove('hiding'); _updateTimeBarPosition(); }, 300);
+      });
       bumpAndShowCounter();
+      // 首次進入（含訪客）自動啟動新手導覽
+      if (!localStorage.getItem(TOUR_DONE_KEY)) startTour();
+    }
+
+    // ── 通用 UI 綁定（側滑選單、浮動按鈕、測量距離等，登入/訪客共用） ──
+    function bindCommonUI() {
+      $('menuToggle').addEventListener('click', ()=> toggleSideMenu());
+      $('menuBackdrop').addEventListener('click', ()=> toggleSideMenu(false));
+      $('recenterBtn').addEventListener('click', ()=>{ shouldFit=true; render(); });
+      $('measureBtn').addEventListener('click', toggleMeasureMode);
+      $('measureCancel').addEventListener('click', ()=> toggleMeasureMode(false));
+      $('timeLabelBtn').addEventListener('click', toggleAllTimeLabels);
+      $('tourHelpBtn').addEventListener('click', startTour);
+      bindCustomMarkerUI();
+      // Esc 鍵：退出測量 + 回收所有遺留 modal overlay（避免 top bar / side menu 被卡住的 modal 蓋住）
+      document.addEventListener('keydown', e=>{
+        if (e.key !== 'Escape') return;
+        if (_measureMode) toggleMeasureMode(false);
+        document.querySelectorAll('[data-overlay]').forEach(el => {
+          try { el.remove(); } catch{}
+        });
+      });
+    }
+
+    // ── 全域切換「顯示基地台連線時間」 ──
+    function toggleAllTimeLabels() {
+      if (seriesMap.size === 0) {
+        showToast('尚無資料可顯示時間', 'info', 1500);
+        return;
+      }
+      // 規則：只要還有任何一個 series 沒開，就「全開」；否則「全關」
+      const anyOff = [...seriesMap.values()].some(s => !s.showTimeLabels);
+      const target = anyOff;
+      for (const s of seriesMap.values()) s.showTimeLabels = target;
+      $('timeLabelBtn').classList.toggle('active', target);
+      for (const s of seriesMap.values()) renderTimeLabels(s);
+      refreshSeriesPanel(); // 同步 series-line 內個別 link 文字
+    }
+
+    // ── 自訂標記（前端記憶體，重整即消失） ───────────────────────
+    let _customMarkers = [];        // { id, addr, lat, lng, icon, label, marker }
+    let _selectedIcon = '🏠';
+
+    async function _geocodeAddr(addr) {
+      const url = `${API_BASE}/geocode?address=${encodeURIComponent(addr)}`;
+      const res = await fetch(url, { headers: authHeaders() });
+      if (!res.ok) {
+        const j = await res.json().catch(()=>({}));
+        throw new Error(j.detail || `HTTP ${res.status}`);
+      }
+      const j = await res.json();
+      if (j.lat == null || j.lng == null) throw new Error('無法解析此地址');
+      return j; // { lat, lng, formatted_address, ... }
+    }
+
+    async function locateCustomAddr() {
+      const addr = $('customAddr').value.trim();
+      if (!addr) { showToast('請輸入地址', 'error', 1800); return; }
+      const btn = $('customLocateBtn');
+      const orig = btn.textContent;
+      btn.disabled = true; btn.textContent = '定位中…';
+      try {
+        const r = await _geocodeAddr(addr);
+        map.setView([r.lat, r.lng], 16);
+        showToast(`📍 已定位：${r.formatted_address || addr}`, 'success', 2200);
+      } catch(e) {
+        showToast(`定位失敗：${e.message}`, 'error', 3000);
+      } finally {
+        btn.disabled = false; btn.textContent = orig;
+      }
+    }
+
+    async function addCustomMarker() {
+      const addr = $('customAddr').value.trim();
+      if (!addr) { showToast('請輸入地址', 'error', 1800); return; }
+      const btn = $('customAddBtn');
+      const orig = btn.textContent;
+      btn.disabled = true; btn.textContent = '新增中…';
+      try {
+        const r = await _geocodeAddr(addr);
+        const label = $('customLabel').value.trim();
+        const id = 'cm_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+        const icon = _selectedIcon;
+        const formatted = r.formatted_address || addr;
+        const html = `<div class="custom-marker-icon">
+          <div class="pin">${icon}</div>
+          ${label ? `<div class="label">${escH(label)}</div>` : ''}
+        </div>`;
+        const divIcon = L.divIcon({
+          className:'', html,
+          iconSize:[60, label ? 56 : 40],
+          iconAnchor:[30, label ? 50 : 36],
+        });
+        const marker = L.marker([r.lat, r.lng], { icon: divIcon }).addTo(map);
+        marker.bindPopup(`
+          <div style="min-width:220px;font:13px/1.5 system-ui,-apple-system,sans-serif">
+            <div style="font-size:15px;font-weight:700;margin-bottom:4px">${icon} ${escH(label || '自訂標記')}</div>
+            <div style="color:#555;font-size:12px;margin-bottom:8px">地址：${escH(formatted)}</div>
+            <div style="color:#888;font-size:11px;margin-bottom:8px">座標：${r.lat.toFixed(6)}, ${r.lng.toFixed(6)}</div>
+            <button data-cm-del="${id}" style="padding:5px 12px;background:#c62828;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px">✕ 刪除標記</button>
+          </div>
+        `);
+        // popup 開啟時綁刪除
+        marker.on('popupopen', e => {
+          const btn = e.popup.getElement().querySelector(`button[data-cm-del="${id}"]`);
+          if (btn) btn.addEventListener('click', () => removeCustomMarker(id));
+        });
+        _customMarkers.push({ id, addr: formatted, lat:r.lat, lng:r.lng, icon, label, marker });
+        renderCustomMarkerList();
+        $('customAddr').value = '';
+        $('customLabel').value = '';
+        map.setView([r.lat, r.lng], 16);
+        showToast(`已新增：${icon}${label ? ' ' + label : ''}`, 'success', 2000);
+      } catch(e) {
+        showToast(`新增失敗：${e.message}`, 'error', 3000);
+      } finally {
+        btn.disabled = false; btn.textContent = orig;
+      }
+    }
+
+    function removeCustomMarker(id) {
+      const i = _customMarkers.findIndex(m => m.id === id);
+      if (i < 0) return;
+      try { map.removeLayer(_customMarkers[i].marker); } catch{}
+      _customMarkers.splice(i, 1);
+      renderCustomMarkerList();
+      map.closePopup();
+      showToast('標記已刪除', 'info', 1400);
+    }
+    // 暴露到全域供 popup HTML onclick 使用（保險）
+    window.removeCustomMarker = removeCustomMarker;
+
+    function renderCustomMarkerList() {
+      const el = $('customMarkerList');
+      if (!el) return;
+      if (_customMarkers.length === 0) {
+        el.innerHTML = '<div style="font-size:11px;color:#aaa;margin-top:8px;text-align:center">尚無自訂標記</div>';
+        return;
+      }
+      el.innerHTML = _customMarkers.map(m => `
+        <div class="custom-marker-item">
+          <span class="icon">${m.icon}</span>
+          <span class="addr" title="${escH(m.addr)}">${m.label ? `<b>${escH(m.label)}</b> · ` : ''}${escH(m.addr)}</span>
+          <button data-cm-list-del="${m.id}">刪除</button>
+        </div>
+      `).join('');
+      el.querySelectorAll('button[data-cm-list-del]').forEach(b => {
+        b.addEventListener('click', () => removeCustomMarker(b.dataset.cmListDel));
+      });
+    }
+
+    function bindCustomMarkerUI() {
+      // 圖示選擇（單選）
+      document.querySelectorAll('.custom-icon-pick').forEach(el => {
+        el.addEventListener('click', () => {
+          document.querySelectorAll('.custom-icon-pick').forEach(x => x.classList.remove('selected'));
+          el.classList.add('selected');
+          _selectedIcon = el.dataset.icon;
+        });
+      });
+      $('customLocateBtn').addEventListener('click', locateCustomAddr);
+      $('customAddBtn').addEventListener('click', addCustomMarker);
+      // Enter 觸發定位
+      $('customAddr').addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); locateCustomAddr(); }
+      });
+      renderCustomMarkerList();
     }
 
     // 訪客上傳 → parse-only API（無 DB 寫入）
     async function doGuestUpload(files) {
-      showToast('解析中…', 'info', 1200);
+      let totalPlotted = 0, anyFail = null;
       for (const file of files) {
-        const tid = $('tid').value.trim() || file.name.replace(/\.[^.]+$/, '');
+        const tid = file.name.replace(/\.[^.]+$/, '');
         const fd = new FormData();
         fd.append('file', file);
         fd.append('target_id', tid);
+        setUploadState('uploading', file.name);
         try {
           const res = await fetch(`${API_BASE}/parse-only/`, { method:'POST', body: fd });
+          if (res.status === 422) {
+            // 智慧診斷：開 diagnosis modal
+            const j = await res.json().catch(() => ({}));
+            setUploadState('error', '無法解析此檔案，請查看診斷結果');
+            showDiagnosisModal({
+              filename: file.name,
+              file,
+              headers: (j.diagnosis || {}).available_columns || [],
+              diagnosis: j.diagnosis || {},
+            });
+            continue;
+          }
           if (!res.ok) {
             const j = await res.json().catch(() => ({}));
-            if (res.status === 429) {
-              showToast(j.detail || '使用次數過多，請登入後繼續使用', 'error', 4500);
-            } else {
-              showToast(`解析失敗：${j.detail || 'HTTP ' + res.status}`, 'error', 3000);
-            }
+            const msg = res.status === 429
+              ? (j.detail || '使用次數過多，請登入後繼續')
+              : (j.detail || ('HTTP ' + res.status));
+            anyFail = msg;
             continue;
           }
           const geo = await res.json();
           _tempRecordsStore.set(tid, geo._records || []);
           appendGeoJsonToSeries(geo);
-          showToast(`${escH(tid)}：解析 ${geo.plotted} 點（${geo.skipped} 筆無座標跳過）`, 'success', 2500);
-          $('guestDataBanner').style.display = 'flex';
+          totalPlotted += geo.plotted || 0;
+          const gb = $('guestDataBanner');
+          gb.classList.remove('hiding');
+          gb.style.display = 'flex';
+          _updateTimeBarPosition();
           populateTargetList();
         } catch(e) {
-          showToast(`解析失敗：${e.message}`, 'error', 3000);
+          anyFail = e.message;
           console.error('[parse-only]', e);
         }
+      }
+      shouldFit = true;
+      refreshSeriesPanel();
+      await render();
+      if (anyFail) {
+        setUploadState('error', `解析失敗：${anyFail}`);
+      } else {
+        setUploadState('success', `解析完成，已載入 ${totalPlotted} 筆資料`);
       }
     }
 
@@ -2160,21 +3404,15 @@
     // 綁事件（登入成功後才生效的初始化）
     function initAfterLogin(user){
       updateUserChip(user);
-      $('loadBtn').addEventListener('click', load);
+      $('caseSection').style.display = '';
       $('btnUpload').addEventListener('click', uploadQueued);
       $('logoutBtn').addEventListener('click', logout);
       $('membersBtn').addEventListener('click', () => openMembersModal($('projectId').value.trim()));
       $('courtBtn').addEventListener('click', openCourtDefenseModal);
-      $('tourHelpBtn').addEventListener('click', startTour);
 
-      $('showAcc').addEventListener('change',   e=>{ SHOW_ACC  =e.target.checked; render(); });
       $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });
       $('onlyStops').addEventListener('change', e=>{
         ONLY_STOPS = e.target.checked;
-        if (ONLY_STOPS) {
-          for (const s of seriesMap.values()) s.showTrack = false;
-          document.querySelectorAll('#seriesPanel input[data-k="trk"]').forEach(cb => { cb.checked = false; });
-        }
         render();
       });
       $('angleInput').addEventListener('input', e=>{
@@ -2184,18 +3422,9 @@
         const v=Number(e.target.value); MIN_SECTOR_RADIUS=Number.isFinite(v)?Math.max(0,v):250; render();
       });
 
-      $('panelToggle').addEventListener('click', ()=>{
-        document.querySelector('.control').classList.toggle('hidden');
-        updateTogglePosition();
-      });
-      $('recenterBtn').addEventListener('click', ()=>{
-        shouldFit = true;
-        render();
-      });
-      window.addEventListener('resize', updateTogglePosition);
-
-      updateTogglePosition();
+      bindCommonUI();
       bumpAndShowCounter();
+
       // 首次登入自動啟動導覽
       if (!localStorage.getItem(TOUR_DONE_KEY)) startTour();
 
@@ -2204,22 +3433,24 @@
       if (_pendingGuest) {
         sessionStorage.removeItem('ct_guest_store');
         restoreGuestData(_pendingGuest);
-        // 跳過模式選擇 modal（還原 modal 本身即是模式選擇）
       } else {
-        // 模式選擇（有 token 才詢問；匿名直接跳過）
         if (TOKEN) showModeSelectionModal(user);
       }
 
-      loadProjectList(); // 初始載入案件清單
+      loadProjectList();
 
-      // 從下拉選單選擇案件後自動載入
-      $('projectId').addEventListener('change', () => {
+      // #projectId Enter 鍵自動載入；下拉選擇也載入
+      const triggerLoad = () => {
         const val = $('projectId').value.trim();
         if (!val) return;
         _sessionProjectId = val;
         updateModeChip();
         updateMembersBtn();
         load();
+      };
+      $('projectId').addEventListener('change', triggerLoad);
+      $('projectId').addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); triggerLoad(); }
       });
 
       // 顯示對象 radio
@@ -2232,7 +3463,7 @@
         $('targetId').focus();
       });
 
-      load(); // 初次載入
+      if ($('projectId').value.trim()) load();
     }
 
     // 啟動：先做登入檢查

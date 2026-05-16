@@ -22,6 +22,26 @@ from app.services import geocode
 NA_TOKENS = {"#N/A", "", "NA", "N/A", None}
 TPE_TZ = timezone(timedelta(hours=8))  # Asia/Taipei
 
+
+class ParseDiagnosisError(Exception):
+    """
+    解析失敗時拋出，附帶診斷資訊供前端「智慧錯誤診斷」UI 使用。
+
+    diagnosis dict 結構：
+      {
+        "found_time_col":     bool,
+        "found_time_col_name": str | None,
+        "found_cell_id_col":  bool,
+        "found_cell_id_col_name": str | None,
+        "found_addr_col":     bool,
+        "found_addr_col_name": str | None,
+        "available_columns":  list[str],
+      }
+    """
+    def __init__(self, message: str, diagnosis: Dict[str, Any]):
+        super().__init__(message)
+        self.diagnosis = diagnosis
+
 def _is_na(v):
     return v is None or (isinstance(v, str) and v.strip() in NA_TOKENS)
 
@@ -927,28 +947,168 @@ def ingest_pdf(project_id: str, target_id: str, file_bytes: bytes) -> Dict[str, 
 
 # ====== Parse-only（臨時模式）：解析 + geocode，不寫 DB ======
 
-def parse_file_only(target_id: str, filename: str, file_bytes: bytes) -> List[Dict[str, Any]]:
+# 「手動欄位對應」用：前端標準名 → ingest 內部已知 alias（讓 _normalize_row 自然處理）
+_SYSTEM_TO_ALIAS = {
+    "time":    "開始時間",    # ingest 內部 _RAW2CANON 認識
+    "cell_id": "基地台編號",
+    "addr":    "基地台地址",
+    "lat":     "緯度",
+    "lng":     "經度",
+}
+
+
+def _peek_headers(filename: str, file_bytes: bytes) -> List[str]:
+    """
+    淺薄抓取檔案的「第一個」表頭，僅供診斷與「手動對應」介面顯示。
+    不做 buried-header 偵測（W2.2 邏輯）— 此時只想讓使用者看到原始欄位。
+    """
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    try:
+        if ext in {"csv", "txt", "tsv"}:
+            txt = file_bytes.decode("utf-8-sig", errors="replace")
+            first = txt.splitlines()[0] if txt.splitlines() else ""
+            # 試逗號→tab→分號順序
+            for delim in [",", "\t", ";"]:
+                if delim in first:
+                    return [c.strip() for c in first.split(delim)]
+            return [first.strip()] if first.strip() else []
+        elif ext in {"xlsx", "xltx", "xlsm", "xltm"}:
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+            ws = wb.active
+            first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+            if first_row is None:
+                return []
+            return [str(c).strip() if c is not None else "" for c in first_row]
+        elif ext == "pdf":
+            if pdfplumber is None:
+                return []
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                for page in pdf.pages:
+                    tables = _extract_tables_from_page(page)
+                    for t in tables:
+                        if t and t[0]:
+                            return [(str(c) or "").strip() for c in t[0]]
+                    break
+            return []
+    except Exception as e:
+        print(f"[peek_headers] failed: {type(e).__name__}: {e}")
+    return []
+
+
+def _build_diagnosis(headers: List[str]) -> Dict[str, Any]:
+    """根據 _match_col_idx 結果產出前端可讀的診斷。"""
+    if not headers:
+        return {
+            "found_time_col": False,
+            "found_time_col_name": None,
+            "found_cell_id_col": False,
+            "found_cell_id_col_name": None,
+            "found_addr_col": False,
+            "found_addr_col_name": None,
+            "available_columns": [],
+        }
+    col = _match_col_idx(headers)
+    def name_at(i): return headers[i] if 0 <= i < len(headers) else None
+    cell_idx = col.get("cellid", -1) if col.get("cellid", -1) >= 0 else col.get("cid", -1)
+    return {
+        "found_time_col":          col.get("start", -1) >= 0,
+        "found_time_col_name":     name_at(col.get("start", -1)),
+        "found_cell_id_col":       cell_idx >= 0,
+        "found_cell_id_col_name":  name_at(cell_idx),
+        "found_addr_col":          col.get("addr", -1) >= 0,
+        "found_addr_col_name":     name_at(col.get("addr", -1)),
+        "available_columns":       headers,
+    }
+
+
+def _apply_user_mapping(rows_iter: Iterable[Dict[str, Any]], mapping: Dict[str, str]):
+    """
+    把使用者指定的「欄位名→系統欄位」對應套到每筆 row。
+    將 raw key rename 為 _RAW2CANON 已知的 alias，後續 _normalize_row 會自然處理。
+    """
+    for row in rows_iter:
+        new_row: Dict[str, Any] = {}
+        for k, v in row.items():
+            target = mapping.get(k)
+            if target == "ignore":
+                continue
+            alias = _SYSTEM_TO_ALIAS.get(target) if target else None
+            if alias:
+                new_row[alias] = v
+            else:
+                # 未指定的欄位保留原 key（_normalize_row 自己處理 _RAW2CANON）
+                new_row[k] = v
+        yield new_row
+
+
+def parse_file_only(
+    target_id: str,
+    filename: str,
+    file_bytes: bytes,
+    mapping: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
     """
     解析 + geocode，但不寫入 DB。供前端臨時模式使用。
     回傳 record dict list（含 lat/lng/start_ts 等所有欄位）。
+
+    `mapping`：使用者「手動欄位對應」傳入時，格式 {raw_column_name: system_field}
+              其中 system_field ∈ {'time','cell_id','addr','lat','lng','ignore'}
+              system_field 會在 ingest 內部 rename 為 _RAW2CANON 認識的 alias。
+
+    解析後若 records 為空 → raise ParseDiagnosisError（供前端展示診斷 + 回報入口）。
     """
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    # 先取得 rows iterator（PDF 走另一條：mapping 對 PDF 不適用，因為它有專用 table 流程）
     if ext in {"csv", "txt", "tsv"}:
-        return _parse_rows_to_records(target_id, _iter_rows_csv(file_bytes))
+        rows = _iter_rows_csv(file_bytes)
+        if mapping:
+            rows = _apply_user_mapping(rows, mapping)
+        records = _parse_rows_to_records(target_id, rows)
     elif ext in {"xlsx", "xltx", "xlsm", "xltm"}:
-        return _parse_rows_to_records(target_id, _iter_rows_excel(file_bytes))
+        rows = _iter_rows_excel(file_bytes)
+        if mapping:
+            rows = _apply_user_mapping(rows, mapping)
+        records = _parse_rows_to_records(target_id, rows)
     elif ext == "pdf":
-        return _parse_pdf_to_records(target_id, file_bytes)
+        if mapping:
+            # PDF 暫不支援使用者手動對應（內部用 _match_col_idx 直接讀 table）
+            raise ValueError("PDF 暫不支援手動欄位對應，請改用 CSV/Excel")
+        records = _parse_pdf_to_records(target_id, file_bytes)
     else:
         raise ValueError("不支援的檔案格式：請使用 CSV / TXT / XLSX / XLTX / PDF")
 
+    # 解析後 0 筆 → 觸發智慧診斷
+    if not records:
+        headers = _peek_headers(filename, file_bytes)
+        raise ParseDiagnosisError(
+            "無法從此檔案解析出任何有效記錄",
+            _build_diagnosis(headers),
+        )
+
+    return records
+
 
 def _parse_rows_to_records(target_id: str, rows_iter: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """把 rows 解析 + geocode，不做 DB insert，回傳 list[dict]。"""
-    _geo_cache: Dict[tuple, Optional[tuple]] = {}
-    result: List[Dict[str, Any]] = []
+    """
+    把 rows 解析 + geocode，不做 DB insert，回傳 list[dict]。
 
-    for idx, raw in enumerate(rows_iter, start=1):
+    B 方案（批次 geocode）：
+      Phase 1：掃過所有 rows → normalize + 時間驗證 → 收集 (cell_id, cell_addr)
+      Phase 2：把 unique (cell_id, cell_addr) 一次丟給 geocode.lookup_bulk
+               （內部一次 SQL ANY + Redis MGET，避免 3000+ round-trip）
+      Phase 3：第二輪用 bulk 結果組裝 records
+    """
+    import time as _time
+    _t_start = _time.perf_counter()
+    _rows_read = 0
+
+    # ── Phase 1：normalize + 時間驗證 + 收集 unique geo keys ────────
+    _t_phase1 = _time.perf_counter()
+    parsed: List[Dict[str, Any]] = []   # 暫存解析後且通過篩選的 row
+    for raw in rows_iter:
+        _rows_read += 1
         r = _normalize_row(raw)
 
         start_ts = _parse_ts(r.get("start_ts"))
@@ -961,50 +1121,98 @@ def _parse_rows_to_records(target_id: str, rows_iter: Iterable[Dict[str, Any]]) 
         if not cell_addr and not cell_id:
             continue
 
-        geo_key = (cell_id, cell_addr)
-        if geo_key not in _geo_cache:
-            try:
-                _geo_cache[geo_key] = geocode.lookup(cell_id, cell_addr)
-            except Exception:
-                _geo_cache[geo_key] = None
-        ll = _geo_cache[geo_key]
+        parsed.append({
+            "r":         r,
+            "start_ts":  start_ts,
+            "end_ts":    end_ts,
+            "cell_id":   cell_id,
+            "cell_addr": cell_addr,
+        })
+    _t_phase1_elapsed = _time.perf_counter() - _t_phase1
+
+    # ── Phase 2：批次 geocode ──────────────────────────────────────
+    _t_phase2 = _time.perf_counter()
+    unique_keys = list({(p["cell_id"], p["cell_addr"]) for p in parsed})
+    try:
+        bulk = geocode.lookup_bulk(unique_keys)
+    except Exception as e:
+        print(f"[ingest] bulk geocode error, fallback to None for all: {type(e).__name__}: {e}")
+        bulk = {k: None for k in unique_keys}
+    _t_phase2_elapsed = _time.perf_counter() - _t_phase2
+
+    # ── Phase 3：組裝 records ──────────────────────────────────────
+    _t_phase3 = _time.perf_counter()
+    result: List[Dict[str, Any]] = []
+    _n_geo_ok = 0
+    for p in parsed:
+        ll = bulk.get((p["cell_id"], p["cell_addr"]))
         lat = lng = None
         if ll:
             lat, lng = ll
-
+            _n_geo_ok += 1
+        r = p["r"]
         result.append({
             "target_id":   target_id,
-            "start_ts":    start_ts.isoformat(),
-            "end_ts":      end_ts.isoformat(),
-            "cell_id":     cell_id,
-            "cell_addr":   cell_addr,
+            "start_ts":    p["start_ts"].isoformat(),
+            "end_ts":      p["end_ts"].isoformat(),
+            "cell_id":     p["cell_id"],
+            "cell_addr":   p["cell_addr"],
             "sector_name": (str(r.get("sector_name") or "").strip() or None),
             "site_code":   (str(r.get("site_code")   or "").strip() or None),
             "sector_id":   (str(r.get("sector_id")   or "").strip() or None),
             "azimuth":     _to_int(r.get("azimuth")),
             "lat":         _to_float(lat),
             "lng":         _to_float(lng),
-            "accuracy_m":  _to_int(_guess_accuracy(cell_addr)),
+            "accuracy_m":  _to_int(_guess_accuracy(p["cell_addr"])),
             "azimuth_ref": "unknown",
         })
+    _t_phase3_elapsed = _time.perf_counter() - _t_phase3
+
+    _total = _time.perf_counter() - _t_start
+    print(
+        f"[ingest][timing] _parse_rows_to_records: "
+        f"total={_total*1000:.0f}ms "
+        f"rows_read={_rows_read} kept={len(result)} ok={_n_geo_ok} "
+        f"unique_keys={len(unique_keys)} "
+        f"phase1_normalize={_t_phase1_elapsed*1000:.0f}ms "
+        f"phase2_bulk_geocode={_t_phase2_elapsed*1000:.0f}ms "
+        f"phase3_assemble={_t_phase3_elapsed*1000:.0f}ms"
+    )
     return result
 
 
 def _parse_pdf_to_records(target_id: str, file_bytes: bytes) -> List[Dict[str, Any]]:
-    """同 ingest_pdf 但不寫 DB，回傳 list[dict]。"""
+    """
+    同 ingest_pdf 但不寫 DB，回傳 list[dict]。
+    B 方案（批次 geocode）：先收集 unique (cell_id, cell_addr) → 一次 bulk → 再組裝。
+    """
     if pdfplumber is None:
         raise ValueError("後端缺少 pdfplumber")
-    result: List[Dict[str, Any]] = []
+    import time as _time
+    _t_start = _time.perf_counter()
+    _t_pdf_open = 0.0
+    _t_extract  = 0.0
+    _rows_read   = 0
 
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+    # ── Phase 1：解析 PDF 表格 + 時間驗證 ──────────────────────────
+    _t_phase1 = _time.perf_counter()
+    parsed: List[Dict[str, Any]] = []
+
+    _t0 = _time.perf_counter()
+    pdf = pdfplumber.open(io.BytesIO(file_bytes))
+    _t_pdf_open = _time.perf_counter() - _t0
+    with pdf:
         for pno, page in enumerate(pdf.pages, start=1):
+            _t1 = _time.perf_counter()
             tables = _extract_tables_from_page(page)
+            _t_extract += _time.perf_counter() - _t1
             for t in tables:
                 if not t:
                     continue
                 header = [(c or "").strip() for c in t[0]]
                 col = _match_col_idx(header)
                 for row in t[1:]:
+                    _rows_read += 1
                     rr = [(row[i] if i < len(row) else "") for i in range(len(header))]
                     start_ts = _parse_ts(rr[col["start"]]) if col.get("start", -1) >= 0 else None
                     if not start_ts:
@@ -1014,28 +1222,64 @@ def _parse_pdf_to_records(target_id: str, file_bytes: bytes) -> List[Dict[str, A
                     cell_addr = (rr[col["addr"]].strip()   if col.get("addr", -1)   >= 0 and rr[col["addr"]]   else None)
                     if not cell_addr and not cell_id:
                         continue
-
-                    lat = lng = None
-                    try:
-                        ll = geocode.lookup(cell_id, cell_addr)
-                        if ll:
-                            lat, lng = ll
-                    except Exception:
-                        pass
-
-                    result.append({
-                        "target_id":   target_id,
-                        "start_ts":    start_ts.isoformat(),
-                        "end_ts":      end_ts.isoformat(),
+                    parsed.append({
+                        "start_ts":    start_ts,
+                        "end_ts":      end_ts,
                         "cell_id":     cell_id,
                         "cell_addr":   cell_addr,
                         "sector_name": (rr[col["sector"]].strip() if col.get("sector", -1) >= 0 and rr[col["sector"]] else None),
                         "site_code":   (rr[col["site"]].strip()   if col.get("site",   -1) >= 0 and rr[col["site"]]   else None),
                         "sector_id":   (rr[col["cid"]].strip()    if col.get("cid",    -1) >= 0 and rr[col["cid"]]    else None),
                         "azimuth":     (_to_int(rr[col["az"]]) if col.get("az", -1) >= 0 else None),
-                        "lat":         _to_float(lat),
-                        "lng":         _to_float(lng),
-                        "accuracy_m":  _to_int(_guess_accuracy(cell_addr)),
-                        "azimuth_ref": "unknown",
                     })
+    _t_phase1_elapsed = _time.perf_counter() - _t_phase1
+
+    # ── Phase 2：批次 geocode ──────────────────────────────────────
+    _t_phase2 = _time.perf_counter()
+    unique_keys = list({(p["cell_id"], p["cell_addr"]) for p in parsed})
+    try:
+        bulk = geocode.lookup_bulk(unique_keys)
+    except Exception as e:
+        print(f"[ingest][pdf] bulk geocode error, fallback to None: {type(e).__name__}: {e}")
+        bulk = {k: None for k in unique_keys}
+    _t_phase2_elapsed = _time.perf_counter() - _t_phase2
+
+    # ── Phase 3：組裝 records ──────────────────────────────────────
+    _t_phase3 = _time.perf_counter()
+    result: List[Dict[str, Any]] = []
+    _n_geo_ok = 0
+    for p in parsed:
+        ll = bulk.get((p["cell_id"], p["cell_addr"]))
+        lat = lng = None
+        if ll:
+            lat, lng = ll
+            _n_geo_ok += 1
+        result.append({
+            "target_id":   target_id,
+            "start_ts":    p["start_ts"].isoformat(),
+            "end_ts":      p["end_ts"].isoformat(),
+            "cell_id":     p["cell_id"],
+            "cell_addr":   p["cell_addr"],
+            "sector_name": p["sector_name"],
+            "site_code":   p["site_code"],
+            "sector_id":   p["sector_id"],
+            "azimuth":     p["azimuth"],
+            "lat":         _to_float(lat),
+            "lng":         _to_float(lng),
+            "accuracy_m":  _to_int(_guess_accuracy(p["cell_addr"])),
+            "azimuth_ref": "unknown",
+        })
+    _t_phase3_elapsed = _time.perf_counter() - _t_phase3
+
+    _total = _time.perf_counter() - _t_start
+    print(
+        f"[ingest][timing] _parse_pdf_to_records: "
+        f"total={_total*1000:.0f}ms "
+        f"pdf_open={_t_pdf_open*1000:.0f}ms extract_tables={_t_extract*1000:.0f}ms "
+        f"rows_read={_rows_read} kept={len(result)} ok={_n_geo_ok} "
+        f"unique_keys={len(unique_keys)} "
+        f"phase1_parse_pdf={_t_phase1_elapsed*1000:.0f}ms "
+        f"phase2_bulk_geocode={_t_phase2_elapsed*1000:.0f}ms "
+        f"phase3_assemble={_t_phase3_elapsed*1000:.0f}ms"
+    )
     return result

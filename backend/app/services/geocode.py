@@ -1,6 +1,6 @@
 # backend/app/services/geocode.py
 import os, json, time, re
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Iterable
 import requests
 
 try:
@@ -201,3 +201,108 @@ def lookup(cell_id: Optional[str], cell_addr: Optional[str]) -> Optional[Tuple[f
         # 兩個來源都敗：印一條彙總訊息，對照前面 Google/OSM 個別的錯誤
         print(f"[geocode] 所有來源均無結果 addr={addr!r}")
     return ll
+
+
+# ---------- 批次查詢（ingest 大檔上傳用，避免逐筆 round-trip） ----------
+def lookup_bulk(
+    unique_keys: List[Tuple[Optional[str], Optional[str]]],
+) -> Dict[Tuple[Optional[str], Optional[str]], Optional[Tuple[float, float]]]:
+    """
+    批次解析 (cell_id, cell_addr) → (lat, lng)。
+    優化重點：
+      1. 本地 cell_towers 一次 SQL `ANY()` 全撈
+      2. Redis 一次 MGET 批次（避免 3000+ round-trip）
+      3. 剩下 cache miss 才打 Google（這個無法批次，仍序列）
+
+    回傳 dict：key 為原始 (cell_id, cell_addr)，值為 (lat, lng) 或 None。
+    """
+    import time as _time
+    result: Dict[Tuple[Optional[str], Optional[str]], Optional[Tuple[float, float]]] = {}
+    if not unique_keys:
+        return result
+
+    _t_start = _time.perf_counter()
+    n_local_hit = 0
+    n_redis_hit = 0
+    n_google_call = 0
+    n_no_addr = 0
+
+    # ── Step 1: 本地 cell_towers 一次撈 ─────────────────────────
+    cell_ids = list({k[0] for k in unique_keys if k[0]})
+    local_map: Dict[str, Tuple[float, float]] = {}
+    if cell_ids:
+        try:
+            from app.db.session import get_conn
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT cell_id, lat, lng FROM cell_towers WHERE cell_id = ANY(%s)",
+                    (cell_ids,),
+                    prepare=False,
+                )
+                for row in cur.fetchall():
+                    local_map[str(row[0])] = (float(row[1]), float(row[2]))
+        except Exception as e:
+            print(f"[bulk_geocode] local lookup error: {type(e).__name__}: {e}")
+
+    # ── Step 2: 拆分尚未解決的，準備地址清洗 ──────────────────────
+    pending: List[Tuple[Tuple[Optional[str], Optional[str]], str]] = []  # (orig_key, simplified)
+    addr_keys: List[str] = []                                            # Redis keys for MGET
+
+    for k in unique_keys:
+        cell_id, cell_addr = k
+        # 先嘗試本地
+        if cell_id and str(cell_id) in local_map:
+            result[k] = local_map[str(cell_id)]
+            n_local_hit += 1
+            continue
+        # 沒地址、也沒本地對照 → 放棄
+        simplified = _simplify_addr(cell_addr or "")
+        if not simplified:
+            result[k] = None
+            n_no_addr += 1
+            continue
+        pending.append((k, simplified))
+        addr_keys.append(f"addr:{simplified}")
+
+    # ── Step 3: Redis 一次 MGET ─────────────────────────────────
+    redis_hits: Dict[str, Tuple[float, float]] = {}
+    if addr_keys and _r is not None:
+        try:
+            values = _r.mget(addr_keys)
+            for ak, v in zip(addr_keys, values):
+                if not v:
+                    continue
+                try:
+                    d = json.loads(v)
+                    redis_hits[ak] = (float(d["lat"]), float(d["lng"]))
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[bulk_geocode] redis mget error: {type(e).__name__}: {e}")
+
+    # ── Step 4: 解析 pending：Redis 有就用、沒有的丟給 Google ────
+    miss_for_google: List[Tuple[Tuple[Optional[str], Optional[str]], str]] = []
+    for orig_key, simplified in pending:
+        ak = f"addr:{simplified}"
+        if ak in redis_hits:
+            result[orig_key] = redis_hits[ak]
+            n_redis_hit += 1
+        else:
+            miss_for_google.append((orig_key, simplified))
+
+    # ── Step 5: Google（無法批次，序列）+ 寫回 Redis cache ──────
+    for orig_key, simplified in miss_for_google:
+        ll = _google_geocode(simplified) or _osm_geocode(simplified)
+        result[orig_key] = ll
+        n_google_call += 1
+        if ll:
+            _cache_set(simplified, ll[0], ll[1])
+
+    _total = _time.perf_counter() - _t_start
+    print(
+        f"[bulk_geocode][timing] total={_total*1000:.0f}ms "
+        f"unique_keys={len(unique_keys)} "
+        f"local_hit={n_local_hit} redis_hit={n_redis_hit} "
+        f"google_calls={n_google_call} no_addr={n_no_addr}"
+    )
+    return result

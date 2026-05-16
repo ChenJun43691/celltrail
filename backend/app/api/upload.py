@@ -21,7 +21,10 @@ from app.security import (
 )
 from app.services.audit import write_audit
 from app.services.evidence import register_evidence, update_evidence_stats
-from app.services.ingest import ingest_auto, ingest_pdf, parse_file_only
+import json as _json
+import time as _time
+from fastapi.responses import JSONResponse
+from app.services.ingest import ingest_auto, ingest_pdf, parse_file_only, ParseDiagnosisError
 
 router = APIRouter()
 
@@ -175,20 +178,47 @@ async def upload_file(
 async def parse_temp(
     file: UploadFile = File(...),
     target_id: str = Form(""),
+    mapping: str = Form(""),
     _current_user: dict = Depends(get_current_user),
 ):
     """
     解析 + geocode 但不寫 DB，供前端臨時模式使用。
     回傳 GeoJSON FeatureCollection（與 /map-layers 同格式）。
+
+    mapping（選填）：使用者「手動欄位對應」JSON。失敗時回 422 + diagnosis。
     """
     filename = file.filename or "upload"
+    _t0 = _time.perf_counter()
     content = await file.read()
+    print(f"[parse-temp][timing] file_read={(_time.perf_counter()-_t0)*1000:.0f}ms size={len(content)}B file={filename}")
 
     if not target_id:
         target_id = filename.rsplit(".", 1)[0]
 
+    user_mapping = None
+    if mapping:
+        try:
+            user_mapping = _json.loads(mapping)
+            if not isinstance(user_mapping, dict):
+                raise ValueError("mapping 必須是 JSON 物件")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"mapping JSON 格式錯誤：{e}")
+
     try:
-        records = parse_file_only(target_id, filename, content)
+        _t1 = _time.perf_counter()
+        records = parse_file_only(target_id, filename, content, mapping=user_mapping)
+        print(f"[parse-temp][timing] parse_total={(_time.perf_counter()-_t1)*1000:.0f}ms records={len(records)} file={filename}")
+    except ParseDiagnosisError as e:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "ok": False,
+                "error": "format_unknown",
+                "detail": str(e),
+                "diagnosis": e.diagnosis,
+                "filename": filename,
+            },
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

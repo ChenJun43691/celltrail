@@ -375,6 +375,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_cell_towers_cell_id
 CREATE INDEX IF NOT EXISTS idx_cell_towers_carrier
     ON cell_towers (carrier_name);
 
+-- ---------- 格式回報（使用者上傳無法解析的檔案 → 回報管理員加新方言） ----------
+-- 設計考量：
+--   - 不存原始檔案內容（隱私 + 容量考量），只存 headers 清單與診斷結果
+--   - status: 'open' | 'handled' | 'rejected'；admin 加入新方言後改 handled
+--   - reporter_user_id 可為 null（訪客也能回報）
+CREATE TABLE IF NOT EXISTS format_reports (
+    id              BIGSERIAL PRIMARY KEY,
+    filename        TEXT NOT NULL,
+    headers         JSONB NOT NULL,
+    diagnosis       JSONB NOT NULL,
+    note            TEXT NULL,
+    reporter_user_id BIGINT NULL REFERENCES users(id) ON DELETE SET NULL,
+    reporter_ip     INET NULL,
+    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'handled', 'rejected')),
+    handled_by      BIGINT NULL REFERENCES users(id) ON DELETE SET NULL,
+    handled_at      TIMESTAMPTZ NULL,
+    handled_note    TEXT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_format_reports_status ON format_reports (status);
+CREATE INDEX IF NOT EXISTS idx_format_reports_created ON format_reports (created_at DESC);
+
 -- ---------- Seed：初始管理員 ----------
 -- 系統管理員帳號：CIDadmin / 436910619（must_change_password=FALSE，正式環境請定期修改密碼）
 -- 測試用舊帳號：admin / admin123（僅開發用，正式環境應停用）

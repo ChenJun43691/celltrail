@@ -27,12 +27,16 @@ def geocode(address: str = Query(..., min_length=1, description="完整門牌或
     addr = _norm(address)
     cache_key = "geocode:v1:" + hashlib.sha1((addr + "|" + GOOGLE_REGION).encode("utf-8")).hexdigest()
 
+    # Redis 沒跑時不致命：cache miss 即可，照樣走 Google API
     if use_cache:
-        cached = rds.get(cache_key)
-        if cached:
-            res = json.loads(cached)
-            res["cache"] = "hit"
-            return res
+        try:
+            cached = rds.get(cache_key)
+            if cached:
+                res = json.loads(cached)
+                res["cache"] = "hit"
+                return res
+        except Exception as e:
+            print(f"[geocode] redis get skipped: {type(e).__name__}: {e}")
 
     params = {
         "address": address,          # 注意：傳原字串給 Google（不要用 _norm 後的，避免過度簡化）
@@ -66,6 +70,9 @@ def geocode(address: str = Query(..., min_length=1, description="完整門牌或
     }
 
     if use_cache:
-        rds.setex(cache_key, 7 * 24 * 3600, json.dumps(result))  # 快取 7 天
+        try:
+            rds.setex(cache_key, 7 * 24 * 3600, json.dumps(result))  # 快取 7 天
+        except Exception as e:
+            print(f"[geocode] redis setex skipped: {type(e).__name__}: {e}")
     result["cache"] = "miss"
     return result

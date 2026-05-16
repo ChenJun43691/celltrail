@@ -306,6 +306,35 @@
       </table>
     </div>
 
+    <!-- 格式回報（使用者上傳無法解析的檔案 → 管理員加入新方言） -->
+    <div class="section">
+      <div class="section-title">
+        📧 格式回報
+        <select id="frStatusFilter" style="font-size:12px;padding:3px 8px;border:1px solid #ccc;border-radius:4px">
+          <option value="open" selected>待處理（open）</option>
+          <option value="handled">已處理</option>
+          <option value="rejected">已拒絕</option>
+          <option value="">全部</option>
+        </select>
+        <button class="secondary" id="refreshFormatReportsBtn" style="font-size:12px;padding:3px 9px;margin-left:8px">重新載入</button>
+      </div>
+      <table id="formatReportsTable">
+        <thead>
+          <tr>
+            <th style="width:140px">時間</th>
+            <th>檔名 / 欄位</th>
+            <th style="width:200px">診斷</th>
+            <th style="width:120px">回報者</th>
+            <th style="width:80px">狀態</th>
+            <th style="width:120px">操作</th>
+          </tr>
+        </thead>
+        <tbody id="formatReportsTbody">
+          <tr><td class="empty" colspan="6">載入中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
   </div>
 
   <script>
@@ -795,12 +824,99 @@
       }
     });
 
+    // ── 格式回報 ─────────────────────────────────────────────
+    async function loadFormatReports() {
+      const status = document.getElementById('frStatusFilter').value;
+      const tbody = document.getElementById('formatReportsTbody');
+      tbody.innerHTML = '<tr><td class="empty" colspan="6">載入中…</td></tr>';
+      try {
+        const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+        const res = await fetch(`${API}/format-reports/${qs}`, { headers: authHeaders() });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const j = await res.json();
+        if (!j.items || j.items.length === 0) {
+          tbody.innerHTML = '<tr><td class="empty" colspan="6">沒有回報紀錄</td></tr>';
+          return;
+        }
+        tbody.innerHTML = j.items.map(r => {
+          const d = r.diagnosis || {};
+          const diagLine = [
+            d.found_time_col    ? '✅ 時間' : '❌ 時間',
+            d.found_cell_id_col ? '✅ Cell' : '❌ Cell',
+            d.found_addr_col    ? '✅ 地址' : '❌ 地址',
+          ].join('・');
+          const headersTxt = (r.headers || []).slice(0, 6).map(escH).join('、');
+          const more = (r.headers || []).length > 6 ? '…' : '';
+          const reporter = r.reporter
+            ? escH(r.reporter.real_name || r.reporter.username || '訪客')
+            : `<span style="color:#888">訪客 ${escH(r.reporter && r.reporter.ip || '')}</span>`;
+          const ts = r.created_at ? new Date(r.created_at).toLocaleString('zh-TW',
+            { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
+          const statusBadge = r.status === 'handled'
+            ? '<span style="color:#2e7d32;font-weight:600">已處理</span>'
+            : r.status === 'rejected'
+              ? '<span style="color:#888">已拒絕</span>'
+              : '<span style="color:#c62828;font-weight:600">待處理</span>';
+          const actions = r.status === 'open' ? `
+            <button class="primary" data-fr-handle="${r.id}" style="font-size:11px;padding:3px 8px">✓ 已處理</button>
+            <button class="secondary" data-fr-reject="${r.id}" style="font-size:11px;padding:3px 8px;margin-left:4px">拒絕</button>` : '';
+          const noteHtml = r.note ? `<div style="font-size:11px;color:#666;margin-top:4px"><b>備註：</b>${escH(r.note)}</div>` : '';
+          return `<tr>
+            <td>${escH(ts)}</td>
+            <td>
+              <div style="font-weight:600">${escH(r.filename)}</div>
+              <div style="font-size:11px;color:#888;margin-top:2px;word-break:break-all">${headersTxt}${more}</div>
+              ${noteHtml}
+            </td>
+            <td style="font-size:11px;color:#555">${diagLine}</td>
+            <td>${reporter}</td>
+            <td>${statusBadge}</td>
+            <td>${actions}</td>
+          </tr>`;
+        }).join('');
+
+        tbody.querySelectorAll('button[data-fr-handle]').forEach(b => {
+          b.addEventListener('click', () => handleFormatReport(b.dataset.frHandle, 'handled'));
+        });
+        tbody.querySelectorAll('button[data-fr-reject]').forEach(b => {
+          b.addEventListener('click', () => handleFormatReport(b.dataset.frReject, 'rejected'));
+        });
+      } catch (e) {
+        tbody.innerHTML = `<tr><td class="empty" colspan="6" style="color:#c00">載入失敗：${escH(e.message)}</td></tr>`;
+      }
+    }
+
+    async function handleFormatReport(id, status) {
+      const note = prompt(status === 'handled'
+        ? '已處理備註（選填，例：已加入 cht_internet_v2 方言）：'
+        : '拒絕原因（選填）：', '');
+      if (note === null) return;  // 使用者按取消
+      try {
+        const res = await fetch(`${API}/format-reports/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type':'application/json', ...authHeaders() },
+          body: JSON.stringify({ status, note: note || null }),
+        });
+        if (!res.ok) {
+          const j = await res.json().catch(() => ({}));
+          throw new Error(j.detail || `HTTP ${res.status}`);
+        }
+        loadFormatReports();
+      } catch (e) {
+        alert('更新失敗：' + e.message);
+      }
+    }
+
+    document.getElementById('refreshFormatReportsBtn').addEventListener('click', loadFormatReports);
+    document.getElementById('frStatusFilter').addEventListener('change', loadFormatReports);
+
     // 初始載入
     loadRequests();
     loadUsers();
     loadAudit();
     loadTowerStats();
     loadCarrierProfile();
+    loadFormatReports();
   </script>
 </body>
 </html>

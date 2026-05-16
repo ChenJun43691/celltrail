@@ -17,7 +17,7 @@
 import secrets
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.db.session import get_conn
@@ -102,6 +102,38 @@ def create_user(payload: UserCreateIn):
     result = _row_to_user(row)
     result["temp_password"] = temp_password  # 只在建立時回傳
     return result
+
+
+@router.get("/search", dependencies=[Depends(require_admin)])
+def search_user(username: str = Query(..., min_length=1, max_length=64,
+                                       description="精確匹配的帳號")):
+    """
+    依 username 精確搜尋單一帳號，供「授權共辦人員」介面確認對象身分用。
+
+    只回傳授權必要欄位：id、username、real_name、unit、is_active。
+    刻意不回 email / role / badge_number / created_at 等敏感資訊。
+    找不到回 404。
+    """
+    uname = username.strip()
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, username, real_name, unit, is_active
+              FROM users
+             WHERE username = %s
+            """,
+            (uname,), prepare=False,
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"找不到帳號「{uname}」")
+    return {
+        "id":         row[0],
+        "username":   row[1],
+        "real_name":  row[2],
+        "unit":       row[3],
+        "is_active":  row[4],
+    }
 
 
 @router.get("", dependencies=[Depends(require_admin)])

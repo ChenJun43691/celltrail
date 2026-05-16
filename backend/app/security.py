@@ -118,6 +118,28 @@ def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> dict:
     return user
 
 
+def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme)) -> Optional[dict]:
+    """
+    類似 get_current_user 但無 token 或 token 無效時回 None（不拋 401）。
+    供「訪客也能用」的端點使用（例如格式回報）。
+    """
+    if not AUTH_ENABLED:
+        return _ANONYMOUS_ADMIN
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: Optional[str] = payload.get("sub")
+        if not username:
+            return None
+    except JWTError:
+        return None
+    user = get_user_by_username(username)
+    if not user or not user.get("is_active", True):
+        return None
+    return user
+
+
 def require_admin(user: dict = Depends(get_current_user)) -> dict:
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="需要管理員權限")
