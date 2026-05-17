@@ -21,4 +21,7 @@ frontend/node_modules/
 data/tiles/*
 data/uploads/*
 
+# 圖片／影片素材（logo、demo 影片等，不進版控）
+Pic/
+
 .DS_Store
