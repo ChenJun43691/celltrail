@@ -1,29 +1,42 @@
-# 醒來要做的事（v10 — P4.x 系列完成）
+# 醒來要做的事（v11 — P5 / P6 完成）
 
-> 更新時間：2026-05-10
-> 狀態：✅ 92/92 pytest passed ｜ ✅ demo_case 30843 列 / 98% geom ｜ 法庭可防禦性 9/10
+> 更新時間：2026-05-17
+> 狀態：✅ 92/92 pytest passed ｜ 證據完整性 9/10
 
 ---
 
-## 本輪（2026-05-10）大事記
+## 本輪（2026-05-11 ～ 05-17）大事記
 
 | Commit | 內容 |
 |---|---|
-| `adb4f7c` | P4.2: 地圖「顯示定位時間」標籤功能 |
-| `eef1f11` | P4.3: 臨時使用 vs 專案管理模式切換系統 |
-| `9dbf288` | P4.3-finish: 案件名稱下拉自動補全 + 模式切換串接 |
-| `67b07f5` | P4.4-v2: login.html 全面改版—科技感深藍系設計 |
-| `dac4a9b` | refactor: Logo 移入卡片頂端，重組版面結構 |
-| 本輪 | register.html / change-password.html 統一視覺風格 |
+| `d262df9` | refactor: 使用者列精簡 + 法庭防禦移入案件區塊 + 文字語系統一 |
+| `e8e628f` | **P5**: 訪客免登入流程 + parse-only API（純解析、不寫 DB） |
+| `4dec36c` | refactor: 新手導覽步驟重整（移除「填入案件代號」，加入「地圖顯示結果」） |
+| `d3ad73a` | **P6**: Google Maps 風格 UI 改造 + 格式回報三層機制 + geocode 批次優化 |
+| `5e5b9bb` | P6-fix: PDF 診斷 modal 隱藏「手動對應」按鈕 |
+| `56029b9` | chore: .gitignore 加入 Pic/ |
 
-### P4.x 功能摘要
+### P5 / P6 功能摘要
 
 | 功能 | 說明 |
 |---|---|
-| **P4.1 本地基地台座標表** | cell_towers DB + admin import API + admin UI |
-| **P4.2 顯示定位時間** | 地圖時間標籤，zoom 響應字體，per-series 切換 |
-| **P4.3 臨時 vs 專案模式** | parse-temp API、session 狀態、模式選擇 modal、案件下拉清單 |
-| **P4.4 登入頁改版** | 影片背景、毛玻璃卡片、科技感深藍系、register/change-password 同步 |
+| **P5 訪客免登入** | `POST /api/parse-only` 純解析回 records，不寫 DB；訪客可先預覽再決定建案 |
+| **P6 UI 改造** | 全螢幕地圖 + 漢堡側滑選單 + 右下浮動按鈕；測量距離、自訂標記、markercluster |
+| **P6 格式回報三層** | ① 解析失敗回 422 + diagnosis ② 手動欄位對應 ③ `/api/format-reports` 回報 + admin 處理 |
+| **P6 geocode 批次化** | `lookup_bulk`：unique key 一次 SQL `ANY` + Redis `MGET`；ingest 改三 phase。403s → 2.5s |
+| **P6 韌性強化** | 全域 error/unhandledrejection 捕捉、Redis 容錯、azimuth `null` 嚴格判斷 |
+
+---
+
+## ⚠️ 尚未 commit 的工作
+
+`git status` 有三個前端檔的未 commit 改動，下次 session 先確認是否要保留：
+
+```
+M frontend/admin.html
+M frontend/index.html
+M frontend/register.html
+```
 
 ---
 
@@ -32,7 +45,7 @@
 ```bash
 open -a Docker
 docker compose -f infra/docker-compose.yml up -d db
-cd /Users/chenguanjun/Desktop/Python程序開發/CellTrail/backend
+cd "/Users/chenguanjun/Desktop/Python程序開發/CellTrail/backend"
 source .venv/bin/activate
 uvicorn app.main:app --port 8000 &
 cd ../frontend && python3 -m http.server 5501
@@ -40,33 +53,34 @@ cd ../frontend && python3 -m http.server 5501
 # 主系統：http://127.0.0.1:5501/index.html（AUTH_ENABLED=false 自動匿名 admin）
 ```
 
+> 全新環境另需套兩個 migration（schema.sql 不含）：
+> `migration_permissions.sql`、`migration_account_requests.sql`（見 CLAUDE.md 第三節）。
+
 ---
 
 ## 待辦（依優先級）
 
-### 中期功能（1-2 小時）
+### 中期
 
 | # | Task | 說明 |
 |---|---|---|
-| 1 | **P2.5-C 法庭防禦性 dashboard** | unknown azimuth 比例 / 最近標註人 / audit trail viewer / 報告 PDF 含基準 |
-| 2 | **報告含地圖截圖** | reportlab 嵌 PNG；需 selenium/playwright 或 Leaflet 後端渲染 |
-| 3 | **修 stats/hit CORS preflight** | OPTIONS 沒被 CORSMiddleware 攔到，console 噴錯但功能不影響 |
-| 4 | **carrier_profile DB 同步** | 把 _RAW2CANON 所有 key 補進 DB mapping_json（讓 DB 真正成為 SoT） |
+| 1 | **填充 cell_towers 座標表** | 架構（P4.1）就緒但表是空的；向業者取得基地台座標 CSV 匯入 |
+| 2 | **P3–P6 API 補自動化測試** | auth / members / parse-only / format-reports / cell-towers 目前只有手動驗證 |
+| 3 | **carrier_profile DB 同步** | 把 `_RAW2CANON` 所有 key 補進 DB `mapping_json` |
 
-### 長期（半天以上）
+### 長期
 
 | # | Task | 說明 |
 |---|---|---|
-| 5 | **多人多角色細緻權限** | 目前只 admin/user 兩級 |
-| 6 | **uvicorn `--reload` Python 3.13 macOS spawn bug** | 可能要改 watchmedo |
-| 7 | **本地 cell_id 座標表填充** | 從業者拿基地台座標 CSV，徹底解決純數字 cell_id 的 geocode 問題 |
+| 4 | **檢警分艙 / 案件分艙細緻權限** | 目前 admin/user + project_members 三級已可用，尚無組織層隔離 |
+| 5 | **uvicorn `--reload` Python 3.13 macOS spawn bug** | 可能要改 watchmedo |
+| 6 | **前端 UI 自動化回歸** | P6 後 index.html 近乎重寫，目前 UI 只靠人工測試 |
 
 ---
 
 ## 提醒
 
-- 本機 `.env`：`AUTH_ENABLED=false`、`GEO_OSM_FALLBACK=1`、Google API key 已設。
-- Redis 離線不再致命（已修）；OSM 兩段式查詢已啟用。
-- carrier_profile 現在合併 DB + _RAW2CANON，新增欄自動生效，無需 DB migration。
-- 案件資料已加入 .gitignore，不會被 commit。
-- 詳細架構與 onboard checklist 見 `CLAUDE.md`。
+- 本機 `.env`：`AUTH_ENABLED=false`、`GEO_OSM_FALLBACK=1`、Google API key / `SECRET_KEY` 已設。
+- Redis 離線不致命（geocode 已全包 try-catch）。
+- 案件資料 / `Pic/` 素材已在 `.gitignore`，不會被 commit。
+- 詳細架構與 onboard checklist 見 `CLAUDE.md`（已於 2026-05-17 同步更新至 P6）。
