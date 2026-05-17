@@ -2846,6 +2846,17 @@
           <span>${escH(label)}${ok && name ? `：<b style="color:#1565c0">${escH(name)}</b>` : ''}</span>
         </div>`;
 
+      // PDF 的表格是 list-of-lists（純位置），無法套用以欄名為基礎的手動對應；
+      // 因此 PDF 不顯示「手動對應」按鈕，改提示走回報路徑（避免使用者填完才收到 400）。
+      const isPdf = /\.pdf$/i.test(info.filename || '');
+      const manualBtnHtml = isPdf ? '' :
+        `<button id="__diagManual" style="padding:8px 16px;border:none;border-radius:6px;cursor:pointer;background:#1565c0;color:#fff;font-size:13px;font-weight:600">🔧 手動對應欄位</button>`;
+      const pdfHintHtml = isPdf ?
+        `<div style="font-size:12px;color:#8a6d00;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:8px 12px;margin-bottom:14px;line-height:1.6">
+          ⚠ PDF 檔無法手動對應欄位（PDF 表格沒有可辨識的欄位名稱）。<br/>
+          請點「📧 回報此格式」交給管理員新增支援。
+        </div>` : '';
+
       const overlay = _makeOverlay();
       const card = document.createElement('div');
       card.style.cssText = 'background:#fff;padding:24px;border-radius:12px;width:min(96vw,520px);max-height:88vh;overflow-y:auto;box-shadow:0 8px 36px rgba(0,0,0,.28);font:14px/1.55 system-ui,-apple-system,sans-serif;';
@@ -2860,16 +2871,17 @@
           ${checkLine(d.found_addr_col,    '地址欄位',     d.found_addr_col_name)}
         </div>
 
-        <div style="font-size:13px;color:#555;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:10px 12px;margin-bottom:18px;line-height:1.7">
+        <div style="font-size:13px;color:#555;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:10px 12px;margin-bottom:14px;line-height:1.7">
           <b>可能原因：</b><br/>
           此電信業者格式目前不在支援清單內，<br/>
           或欄位名稱與已知格式不符。
         </div>
+        ${pdfHintHtml}
 
         <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
           <button id="__diagCancel" style="padding:8px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;background:#fff;font-size:13px">取消</button>
           <button id="__diagReport" style="padding:8px 14px;border:1px solid #1565c0;color:#1565c0;border-radius:6px;cursor:pointer;background:#fff;font-size:13px">📧 回報此格式</button>
-          <button id="__diagManual" style="padding:8px 16px;border:none;border-radius:6px;cursor:pointer;background:#1565c0;color:#fff;font-size:13px;font-weight:600">🔧 手動對應欄位</button>
+          ${manualBtnHtml}
         </div>`;
       overlay.appendChild(card);
       document.body.appendChild(overlay);
@@ -2878,7 +2890,8 @@
       card.querySelector('#__diagCancel').onclick = dispose;
       overlay.addEventListener('click', e => { if (e.target === overlay) dispose(); });
       card.querySelector('#__diagReport').onclick = () => { dispose(); showFormatReportModal(info); };
-      card.querySelector('#__diagManual').onclick = () => { dispose(); showManualMappingModal(info); };
+      const manualBtn = card.querySelector('#__diagManual');
+      if (manualBtn) manualBtn.onclick = () => { dispose(); showManualMappingModal(info); };
     }
 
     /**
