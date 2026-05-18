@@ -304,11 +304,14 @@
       display:flex; align-items:center; justify-content:center;
       font-weight:700; font-size:13px; box-shadow:0 2px 6px rgba(0,0,0,.3);
     }
-    .measure-label{
-      background:#fff; border:1.5px solid #d32f2f; border-radius:6px;
-      padding:3px 8px; font-size:13px; font-weight:600; color:#d32f2f;
-      box-shadow:0 2px 6px rgba(0,0,0,.15); white-space:nowrap;
+    /* 線段中點的距離標籤：用 leaflet tooltip（自動包住內容、自動置中，不破圖） */
+    .leaflet-tooltip.measure-dist-label{
+      background:#fff; border:2px solid #d32f2f; border-radius:6px;
+      padding:4px 10px; font-size:14px; font-weight:700; color:#d32f2f;
+      box-shadow:0 2px 6px rgba(0,0,0,.25); white-space:nowrap;
     }
+    /* direction:center 時不需要 tooltip 預設的小三角箭頭 */
+    .leaflet-tooltip.measure-dist-label::before{ display:none; }
 
     /* ── 時間軸：bottom 由 _updateTimeBarPosition() 依 banner 顯示狀態動態調整，0.3s 平滑過渡 ── */
     #timeBar{
@@ -584,6 +587,7 @@
       <!-- 登入使用者按鈕 -->
       <div id="loggedInBtns" style="display:none">
         <button id="membersBtn" type="button" title="管理此案件的共辦人員授權" style="display:none">👥 授權共辦人員</button>
+        <button id="shareLinkBtn" type="button" title="建立 12 小時臨時檢視連結" style="display:none">🔗 分享連結</button>
         <a href="./admin.html" id="adminLink" style="display:none" title="帳號與系統管理">🏛️ 管理後台</a>
         <button id="logoutBtn" type="button">🚪 登出</button>
       </div>
@@ -951,7 +955,11 @@
       const overlay = _makeOverlay();
       overlay.innerHTML = `
         <div style="background:#fff;border-radius:14px;padding:26px 24px;width:min(96vw,420px);box-shadow:0 8px 32px rgba(0,0,0,.25);font:14px/1.5 system-ui,-apple-system,sans-serif;">
-          <div style="font-size:16px;font-weight:700;margin-bottom:18px">📁 建立新專案</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:18px;position:relative">
+            <div style="font-size:16px;font-weight:700">📁 建立新專案</div>
+            <button id="_pcPrevBtn" type="button" style="display:none;padding:5px 10px;font-size:12px;border:1px solid #c7d7fd;background:#eef6ff;color:#1a56db;border-radius:6px;cursor:pointer;white-space:nowrap">回到先前的專案 ▼</button>
+            <div id="_pcPrevMenu" style="display:none;position:absolute;top:100%;right:0;margin-top:4px;background:#fff;border:1px solid #ddd;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.18);min-width:240px;max-height:280px;overflow-y:auto;z-index:10"></div>
+          </div>
           <label style="display:block;margin-bottom:14px;font-size:13px;color:#555;font-weight:500">
             專案名稱（Project ID）
             <input id="_pcName" type="text" placeholder="例：2026_HL001" autocomplete="off"
@@ -982,6 +990,58 @@
         loadProjectList(); // 進入專案模式 → 重新載入下拉清單
         showToast(`進入專案模式：${name}`, 'success', 2000);
       };
+
+      // ── 「回到先前的專案」下拉：直接載入既有專案到地圖 ──
+      const prevBtn  = overlay.querySelector('#_pcPrevBtn');
+      const prevMenu = overlay.querySelector('#_pcPrevMenu');
+
+      function openExistingProject(name) {
+        overlay.remove();
+        _sessionMode = 'project';
+        _sessionProjectId = name;
+        $('projectId').value = name;
+        hideTempBanner();
+        updateModeChip();
+        updateMembersBtn();
+        loadProjectList();
+        load(); // 與新建專案不同：既有專案有資料 → 直接載入地圖
+        showToast(`已載入專案：${name}`, 'success', 2000);
+      }
+
+      // 訪客（未登入）沒有帳號、沒有歷史專案 → 不抓清單、按鈕保持隱藏
+      if (TOKEN) {
+        fetch(`${API_BASE}/projects/`, { headers: authHeaders() })
+          .then(r => r.ok ? r.json() : [])
+          .then(items => {
+            // 沒有任何先前專案 → 隱藏按鈕（spec）
+            if (!Array.isArray(items) || items.length === 0) return;
+            // 最多 10 筆；API 已按建立時間新→舊排序
+            prevMenu.innerHTML = items.slice(0, 10).map(p => {
+              const date = p.created_at ? p.created_at.slice(0, 10) : '';
+              return `<div class="_pcPrevItem" data-pid="${escH(p.project_id)}"
+                style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #f0f0f0;font-size:13px"
+                onmouseover="this.style.background='#f3f7ff'" onmouseout="this.style.background=''">
+                📁 ${escH(p.project_id)}${date ? `<span style="color:#999;font-size:11px;margin-left:6px">${escH(date)}</span>` : ''}
+              </div>`;
+            }).join('');
+            prevMenu.querySelectorAll('._pcPrevItem').forEach(el => {
+              el.onclick = () => openExistingProject(el.dataset.pid);
+            });
+            prevBtn.style.display = '';
+          })
+          .catch(() => { /* 取清單失敗：靜默，按鈕維持隱藏 */ });
+      }
+
+      prevBtn.onclick = (e) => {
+        e.stopPropagation();
+        prevMenu.style.display = (prevMenu.style.display === 'none') ? '' : 'none';
+      };
+      // 點選單與按鈕以外處 → 收合下拉
+      overlay.addEventListener('click', (e) => {
+        if (e.target !== prevBtn && !prevMenu.contains(e.target)) {
+          prevMenu.style.display = 'none';
+        }
+      });
     }
 
     // ── 臨時模式：upload → parse-temp → appendGeoJsonToSeries ──
@@ -1315,7 +1375,7 @@
     const TOUR_STEPS = [
       {
         title: '歡迎使用 CellTrail',
-        body: '這套系統用於分析基地台連線歷程，<br/>幫助您在地圖上視覺化通聯軌跡。<br/><br/><b>無需登入</b>即可直接體驗核心功能。',
+        body: '這套系統用於分析基地台連線歷程，<br/>幫助您在地圖上視覺化通聯軌跡。<br/><br/><b>無需登入</b>即可直接體驗視覺化功能。',
         target: null,
       },
       {
@@ -1437,10 +1497,12 @@
     }
 
     function updateMembersBtn() {
-      const btn = $('membersBtn');
-      if (!btn) return;
       const visible = _sessionMode === 'project' && !!$('projectId')?.value?.trim();
-      btn.style.display = visible ? '' : 'none';
+      const btn = $('membersBtn');
+      if (btn) btn.style.display = visible ? '' : 'none';
+      // 分享連結按鈕與「授權共辦人員」同樣只在專案模式下出現
+      const shareBtn = $('shareLinkBtn');
+      if (shareBtn) shareBtn.style.display = visible ? '' : 'none';
       refreshCourtBadge();
     }
 
@@ -1625,10 +1687,10 @@
       cluster.addTo(map);
 
       // ── 自訂 cluster 行為 ─────────────────────────────────────
-      // (a) hover tooltip：「此處有 N 筆通聯，點擊展開」
+      // (a) hover tooltip：「此處有 N 筆基地台位置，點擊展開」
       cluster.on('clustermouseover', e => {
         const count = e.layer.getChildCount();
-        e.layer.bindTooltip(`此處有 ${count} 筆通聯，點擊展開`, {
+        e.layer.bindTooltip(`此處有 ${count} 筆基地台位置，點擊展開`, {
           direction: 'top', offset: [0, -18], opacity: 0.95,
         }).openTooltip();
       });
@@ -2590,14 +2652,12 @@
       _measureLayers.push(line);
       const d = distM([_measureA.lat,_measureA.lng],[_measureB.lat,_measureB.lng]);
       const mid = L.latLng((_measureA.lat+_measureB.lat)/2, (_measureA.lng+_measureB.lng)/2);
-      const tag = L.marker(mid, {
-        interactive:false,
-        icon: L.divIcon({
-          className:'',
-          html:`<div class="measure-label">${_fmtDist(d)}</div>`,
-          iconSize:[1,1], iconAnchor:[40,12]
-        })
-      }).addTo(map);
+      // 用 permanent tooltip：尺寸由內容自動撐開、direction:center 置中於線段中點
+      const tag = L.tooltip({
+        permanent: true, direction: 'center', interactive: false,
+        className: 'measure-dist-label', opacity: 1,
+      }).setLatLng(mid).setContent(_fmtDist(d));
+      map.openTooltip(tag);
       _measureLayers.push(tag);
     }
     function _onMeasureClick(e){
@@ -2824,6 +2884,129 @@
       };
 
       loadMembers();
+    }
+
+    // ── 分享連結（12 小時臨時免登入檢視）─────────────────────────
+    // 與「授權共辦人員」的差別：授權是綁註冊帳號、可協作；分享連結是
+    // 一條免登入、唯讀、12 小時自動失效的 URL，給沒有帳號的人臨時看。
+    async function openShareLinkModal(projectId){
+      if (!projectId){ showToast('請先進入專案模式','error',1800); return; }
+
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+      const card = document.createElement('div');
+      card.style.cssText = 'background:#fff;padding:20px 22px;border-radius:10px;width:min(96vw,580px);max-height:84vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25);font:13px/1.5 system-ui,-apple-system,sans-serif;';
+      card.innerHTML = `
+        <div style="font-size:15px;font-weight:700;margin-bottom:4px">🔗 分享連結：${escH(projectId)}</div>
+        <div style="font-size:12px;color:#666;margin-bottom:12px">
+          連結有效期 <b>12 小時</b>，任何人持連結可<b>免登入、唯讀</b>檢視此專案地圖。<br/>
+          每次開啟都會記入稽核日誌；連結外流時可隨時「撤銷」使其立即失效。
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+          <button id="__shareCreate" style="padding:7px 16px;background:#1a56db;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">＋ 建立新連結</button>
+        </div>
+        <div id="__shareMsg" style="font-size:12px;color:#d00;min-height:16px"></div>
+        <div id="__shareBody" style="margin-top:4px"><i>載入中…</i></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:14px">
+          <button id="__shareClose" style="padding:6px 16px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px">關閉</button>
+        </div>`;
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      const dispose = () => { try{ overlay.remove(); }catch{} };
+      card.querySelector('#__shareClose').onclick = dispose;
+      overlay.addEventListener('click', e => { if (e.target === overlay) dispose(); });
+
+      const shareUrl = token => `${location.origin}/share.html?t=${token}`;
+      const fmtDt = s => s ? new Date(s).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+
+      async function copyText(text, btn){
+        try{
+          await navigator.clipboard.writeText(text);
+          const old = btn.textContent; btn.textContent = '已複製 ✓';
+          setTimeout(()=>{ btn.textContent = old; }, 1500);
+        }catch{
+          prompt('請手動複製連結：', text);
+        }
+      }
+
+      async function loadLinks(){
+        const body = card.querySelector('#__shareBody');
+        try{
+          const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/share-links`, { headers: authHeaders() });
+          if (res.status === 403){
+            body.innerHTML = '<span style="color:#c00">您沒有此案件的管理權限（需要 owner 或 admin）</span>';
+            return;
+          }
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const j = await res.json();
+          const items = j.items || [];
+          if (!items.length){
+            body.innerHTML = '<span style="color:#888">尚無分享連結，點上方「建立新連結」。</span>';
+            return;
+          }
+          body.innerHTML = items.map(it => {
+            const url = shareUrl(it.token);
+            const status = it.revoked_at
+              ? '<span style="color:#c00">已撤銷</span>'
+              : (it.is_valid ? '<span style="color:#2e7d32">有效</span>' : '<span style="color:#999">已過期</span>');
+            return `<div style="border:1px solid #e3e3e3;border-radius:8px;padding:10px 12px;margin-bottom:8px">
+              <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:6px">
+                ${status}
+                <span style="color:#666">到期 ${escH(fmtDt(it.expires_at))}</span>
+                <span style="color:#666">· 已開啟 ${it.use_count} 次</span>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input readonly value="${escH(url)}" onclick="this.select()"
+                  style="flex:1;padding:5px 8px;border:1px solid #ccc;border-radius:5px;font-size:12px;background:#f7f7f7"/>
+                <button class="__shareCopy" data-url="${escH(url)}" ${it.is_valid?'':'disabled'}
+                  style="padding:5px 10px;font-size:12px;border:1px solid #1a56db;color:#1a56db;background:#fff;border-radius:5px;cursor:${it.is_valid?'pointer':'not-allowed'}">複製</button>
+                ${it.is_valid ? `<button class="__shareRevoke" data-token="${escH(it.token)}"
+                  style="padding:5px 10px;font-size:12px;border:1px solid #c00;color:#c00;background:#fff;border-radius:5px;cursor:pointer">撤銷</button>` : ''}
+              </div>
+            </div>`;
+          }).join('');
+          body.querySelectorAll('.__shareCopy').forEach(b => {
+            if (!b.disabled) b.onclick = () => copyText(b.dataset.url, b);
+          });
+          body.querySelectorAll('.__shareRevoke').forEach(b => {
+            b.onclick = async () => {
+              if (!confirm('撤銷後此連結立即失效，確定撤銷？')) return;
+              try{
+                const r = await fetch(`${API_BASE}/share-links/${encodeURIComponent(b.dataset.token)}`,
+                  { method:'DELETE', headers: authHeaders() });
+                if (!r.ok){ const t=await r.text(); throw new Error(JSON.parse(t).detail||t); }
+                showToast('已撤銷連結','success',1400);
+                loadLinks();
+              }catch(e){ showToast('撤銷失敗：'+e.message,'error',2200); }
+            };
+          });
+        }catch(e){
+          body.innerHTML = `<span style="color:#c00">載入失敗：${escH(e.message)}</span>`;
+        }
+      }
+
+      card.querySelector('#__shareCreate').onclick = async () => {
+        const msgEl = card.querySelector('#__shareMsg');
+        const btn = card.querySelector('#__shareCreate');
+        msgEl.style.color = '#d00'; msgEl.textContent = '';
+        btn.disabled = true; btn.textContent = '建立中…';
+        try{
+          const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/share-links`,
+            { method:'POST', headers: authHeaders() });
+          const j = await res.json().catch(()=>({}));
+          if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+          msgEl.style.color = '#2e7d32';
+          msgEl.textContent = '已建立新連結（有效 12 小時）';
+          loadLinks();
+        }catch(e){
+          msgEl.textContent = '建立失敗：' + e.message;
+        }finally{
+          btn.disabled = false; btn.textContent = '＋ 建立新連結';
+        }
+      };
+
+      loadLinks();
     }
 
     // ── 智慧錯誤診斷 / 手動對應 / 回報格式 ────────────────────────
@@ -3421,6 +3604,7 @@
       $('btnUpload').addEventListener('click', uploadQueued);
       $('logoutBtn').addEventListener('click', logout);
       $('membersBtn').addEventListener('click', () => openMembersModal($('projectId').value.trim()));
+      $('shareLinkBtn')?.addEventListener('click', () => openShareLinkModal($('projectId').value.trim()));
       $('courtBtn').addEventListener('click', openCourtDefenseModal);
 
       $('showSector').addEventListener('change',e=>{ SHOW_SECTOR=e.target.checked; render(); });

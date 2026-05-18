@@ -437,10 +437,13 @@
         });
         const j = await res.json();
         if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+        // 先刷新清單（loadRequests 內會把 approveResultBox 設 none），
+        // 等它跑完再顯示臨時密碼框，否則密碼框會被瞬間蓋掉。
+        await loadRequests();
         document.getElementById('approveUsername').textContent = j.username;
         document.getElementById('approveTempPass').textContent = j.temp_password;
         document.getElementById('approveResultBox').style.display = '';
-        loadRequests();
+        document.getElementById('approveResultBox').scrollIntoView({ behavior:'smooth', block:'center' });
       } catch (e) { alert('核准失敗：' + e.message); }
     }
 
