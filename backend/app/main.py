@@ -24,6 +24,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from app.db.session import pool
 from app.services.limiter import limiter
+from app.security import SECRET_KEY, AUTH_ENABLED
 
 logger = logging.getLogger("celltrail")
 
@@ -33,6 +34,7 @@ logger = logging.getLogger("celltrail")
 async def lifespan(app: FastAPI):
     # === startup ===
     print("[CORS] allow_origins =", allow_origins)
+    _config_safety_audit()
     try:
         pool.open()
         pool.wait(10)
@@ -69,6 +71,49 @@ raw = os.getenv(
 )
 allow_origins = [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
 
+
+# ---------- 啟動設定安全自檢 ----------
+def _config_safety_audit() -> None:
+    """啟動時檢查不適合正式環境的設定，misconfiguration 即大聲警告。
+
+    只印警告、不改變任何行為。對應 docs/部署檢查清單.md A 區 ——
+    把「靠人記得檢查的清單」變成「系統啟動時自己檢查」。
+    """
+    warnings: list[str] = []
+
+    # SECRET_KEY：JWT 簽章金鑰。預設值或過短 → 可被偽造 token、冒充 admin。
+    if SECRET_KEY in ("change-me-please", ""):
+        warnings.append("SECRET_KEY 仍是預設值 —— 正式環境務必用 `openssl rand -hex 32` 重產")
+    elif len(SECRET_KEY) < 32:
+        warnings.append(
+            f"SECRET_KEY 僅 {len(SECRET_KEY)} 字元、過短 —— 正式環境請用 "
+            "`openssl rand -hex 32`（64 字元）重產"
+        )
+
+    # AUTH_ENABLED=false：所有請求都以 anonymous admin 通行。
+    if not AUTH_ENABLED:
+        warnings.append(
+            "AUTH_ENABLED=false —— 所有請求以 anonymous admin 通行，正式環境務必設 true"
+        )
+
+    # CORS：AUTH 已開（疑似正式環境）卻仍允許本機來源 → 多半忘了設正式網域。
+    if AUTH_ENABLED:
+        local = [o for o in allow_origins if "localhost" in o or "127.0.0.1" in o]
+        if local:
+            warnings.append(
+                f"CORS 白名單仍含本機來源 {local} —— 正式環境請以環境變數 "
+                "CORS_ORIGINS 設為正式前端網域"
+            )
+
+    if warnings:
+        print("=" * 70)
+        print("[CONFIG WARNING] 偵測到不適合正式環境的設定（僅警告，不影響啟動）：")
+        for w in warnings:
+            print(f"  ⚠  {w}")
+        print("  完整檢查項目見 docs/部署檢查清單.md")
+        print("=" * 70)
+    else:
+        print("[CONFIG] 設定安全自檢通過")
 
 
 # ---------- FastAPI App ----------
