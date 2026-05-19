@@ -397,6 +397,17 @@ CREATE TABLE IF NOT EXISTS format_reports (
 CREATE INDEX IF NOT EXISTS idx_format_reports_status ON format_reports (status);
 CREATE INDEX IF NOT EXISTS idx_format_reports_created ON format_reports (created_at DESC);
 
+-- ---------- users 擴充欄位（供下方 Seed 使用，修正套用順序陷阱）----------
+-- 這幾個欄位的「正式定義」在 migration_permissions.sql；此處重複宣告是為了
+-- 讓 schema.sql 自足 —— 下方 Seed 的 INSERT 會用到 real_name / is_active /
+-- must_change_password，若在全新 DB 上嚴格「先 schema 後 migration」，會因
+-- 欄位尚未存在而種不出 admin 帳號（psql 預設不中止、會跳過該 INSERT）。
+-- ADD COLUMN IF NOT EXISTS 為冪等，欄位定義與 migration_permissions.sql 完全
+-- 一致，兩邊並存無害。
+ALTER TABLE users ADD COLUMN IF NOT EXISTS real_name            TEXT    NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active            BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- ---------- Seed：初始管理員 ----------
 -- 系統管理員帳號：CIDadmin / 436910619（must_change_password=FALSE，正式環境請定期修改密碼）
 -- 測試用舊帳號：admin / admin123（僅開發用，正式環境應停用）
