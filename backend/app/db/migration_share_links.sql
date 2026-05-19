@@ -1,6 +1,6 @@
 -- backend/app/db/migration_share_links.sql
 -- ============================================================
--- 分享連結（12 小時臨時免登入檢視）
+-- 分享連結（30 分鐘臨時免登入檢視）
 -- 執行：
 --   docker exec -i celltrail_db psql -U celltrail -d celltrail < backend/app/db/migration_share_links.sql
 -- 或：
@@ -12,7 +12,7 @@
 --     暴力枚舉在實務上不可行。
 --   - 純檢視：此表只授予「看某 project 地圖」的權限，不涉及任何寫入，
 --     檢視者也拿不到下載報告 / 匯出的入口。
---   - 12 小時：expires_at 由後端在建立時一律設為 created_at + 12h，
+--   - 30 分鐘：expires_at 由後端在建立時一律設為 created_at + 30 分鐘，
 --     不開放呼叫端自訂，避免有人開出永久連結。
 --   - revoked_at：owner 可在到期前手動撤銷（連結外流時的補救手段）。
 --     連結是否有效 = revoked_at IS NULL AND expires_at > now()。

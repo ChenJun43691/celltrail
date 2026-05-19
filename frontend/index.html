@@ -137,8 +137,25 @@
     #guestBtns a.primary{ background:#0b5ed7; color:#fff; }
     #guestBtns a.secondary{ border:1px solid #0b5ed7; color:#0b5ed7; }
 
-    /* 案件區 */
+    /* 案件區 + 案件下拉選單 */
     #projectId::placeholder{ color:#bbb; }
+    #projectSelectWrap{ position:relative; }
+    #projectSelectWrap #projectId{ width:100%; box-sizing:border-box; }
+    #projectDropdown{
+      display:none; position:absolute; left:0; right:0; top:100%; margin-top:4px;
+      background:#fff; border:1px solid #ccc; border-radius:7px;
+      box-shadow:0 6px 20px rgba(0,0,0,.18); z-index:60;
+      max-height:300px; overflow-y:auto;
+    }
+    #projectDropdown.open{ display:block; }
+    .proj-opt{
+      padding:8px 12px; cursor:pointer; font-size:13px;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    .proj-opt:hover{ background:#f0f7ff; }
+    .proj-opt-new{ color:#1a56db; font-weight:600; }
+    .proj-opt-date{ color:#999; font-size:11px; margin-left:6px; }
+    .proj-dropdown-sep{ height:1px; background:#eee; margin:3px 0; }
 
     /* 資料組 */
     .series-line{
@@ -505,9 +522,11 @@
     <!-- 案件 -->
     <div class="menu-section" id="caseSection">
       <div class="menu-section-title">案件</div>
-      <input id="projectId" type="text" list="projectList"
-             placeholder="輸入案件名稱按 Enter 載入…" autocomplete="off" />
-      <datalist id="projectList"></datalist>
+      <div id="projectSelectWrap">
+        <input id="projectId" type="text"
+               placeholder="輸入或選擇案件…" autocomplete="off" />
+        <div id="projectDropdown"></div>
+      </div>
       <div id="status" class="small" style="margin-top:6px"></div>
     </div>
 
@@ -587,7 +606,7 @@
       <!-- 登入使用者按鈕 -->
       <div id="loggedInBtns" style="display:none">
         <button id="membersBtn" type="button" title="管理此案件的共辦人員授權" style="display:none">👥 授權共辦人員</button>
-        <button id="shareLinkBtn" type="button" title="建立 12 小時臨時檢視連結" style="display:none">🔗 分享連結</button>
+        <button id="shareLinkBtn" type="button" title="建立 30 分鐘臨時檢視連結" style="display:none">🔗 分享連結</button>
         <a href="./admin.html" id="adminLink" style="display:none" title="帳號與系統管理">🏛️ 管理後台</a>
         <button id="logoutBtn" type="button">🚪 登出</button>
       </div>
@@ -857,25 +876,59 @@
     $('saveAsProjectBtn').addEventListener('click', () => openSaveToProjectModal());
 
     // ── 案件清單自動補全 ──
+    // 歷史專案清單快取（custom dropdown 的資料來源）
+    let _projectCache = [];
+
     async function loadProjectList() {
-      const dl = $('projectList');
-      if (!dl) return;
-      // 臨時模式或未登入：不顯示
-      if (_sessionMode === 'temp' || !TOKEN) { dl.innerHTML = ''; return; }
+      // 訪客或非專案模式：不提供下拉（spec）
+      if (!TOKEN || _sessionMode !== 'project') {
+        _projectCache = [];
+        renderProjectDropdown();
+        return;
+      }
       try {
         const res = await fetch(`${API_BASE}/projects/`, { headers: authHeaders() });
-        if (!res.ok) return;
-        const items = await res.json();
-        dl.innerHTML = items.map(p => {
-          const dateStr = p.created_at
-            ? p.created_at.slice(0, 10)   // YYYY-MM-DD
-            : '';
-          const label = dateStr ? `${p.project_id}（${dateStr}）` : p.project_id;
-          return `<option value="${escH(p.project_id)}">${escH(label)}</option>`;
-        }).join('');
+        if (res.ok) {
+          const items = await res.json();
+          _projectCache = Array.isArray(items) ? items : [];
+        }
       } catch(e) {
         console.warn('[projectList] failed:', e);
+        _projectCache = [];
       }
+      renderProjectDropdown();
+    }
+
+    // 把快取渲染進 #projectDropdown：[＋ 建立新專案] + 分隔線 + 歷史專案（新→舊）
+    function renderProjectDropdown() {
+      const dd = $('projectDropdown');
+      if (!dd) return;
+      let html = '<div class="proj-opt proj-opt-new" data-act="new">＋ 建立新專案</div>';
+      if (_projectCache.length) {
+        html += '<div class="proj-dropdown-sep"></div>';
+        // GET /api/projects/ 已按建立時間新→舊排序
+        html += _projectCache.map(p => {
+          const date = p.created_at ? p.created_at.slice(0, 10) : '';
+          return `<div class="proj-opt" data-act="open" data-pid="${escH(p.project_id)}">`
+            + `📁 ${escH(p.project_id)}`
+            + (date ? `<span class="proj-opt-date">（${escH(date)}）</span>` : '')
+            + '</div>';
+        }).join('');
+      }
+      dd.innerHTML = html;
+    }
+
+    // 載入既有專案到地圖（custom dropdown 選取歷史專案時用）
+    function selectExistingProject(name) {
+      _sessionMode = 'project';
+      _sessionProjectId = name;
+      $('projectId').value = name;
+      hideTempBanner();
+      updateModeChip();
+      updateMembersBtn();
+      loadProjectList();
+      load();
+      showToast(`已載入專案：${name}`, 'success', 2000);
     }
 
     // ── mode chip 顯示 ──
@@ -2886,29 +2939,29 @@
       loadMembers();
     }
 
-    // ── 分享連結（12 小時臨時免登入檢視）─────────────────────────
+    // ── 分享連結（30 分鐘臨時免登入檢視）─────────────────────────
     // 與「授權共辦人員」的差別：授權是綁註冊帳號、可協作；分享連結是
-    // 一條免登入、唯讀、12 小時自動失效的 URL，給沒有帳號的人臨時看。
+    // 一條免登入、唯讀、30 分鐘自動失效的 URL，給沒有帳號的人臨時看。
+    // 一鍵分享：開啟 modal 即自動產生連結，只顯示最新一條、不列歷史。
     async function openShareLinkModal(projectId){
       if (!projectId){ showToast('請先進入專案模式','error',1800); return; }
 
       const overlay = document.createElement('div');
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
       const card = document.createElement('div');
-      card.style.cssText = 'background:#fff;padding:20px 22px;border-radius:10px;width:min(96vw,580px);max-height:84vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25);font:13px/1.5 system-ui,-apple-system,sans-serif;';
+      card.style.cssText = 'background:#fff;padding:22px 24px;border-radius:12px;width:min(96vw,440px);box-shadow:0 8px 32px rgba(0,0,0,.25);font:13px/1.6 system-ui,-apple-system,sans-serif;';
       card.innerHTML = `
-        <div style="font-size:15px;font-weight:700;margin-bottom:4px">🔗 分享連結：${escH(projectId)}</div>
-        <div style="font-size:12px;color:#666;margin-bottom:12px">
-          連結有效期 <b>12 小時</b>，任何人持連結可<b>免登入、唯讀</b>檢視此專案地圖。<br/>
-          每次開啟都會記入稽核日誌；連結外流時可隨時「撤銷」使其立即失效。
+        <div style="font-size:16px;font-weight:700;margin-bottom:10px">🔗 分享此專案</div>
+        <div style="font-size:12px;color:#666;margin-bottom:14px">
+          連結有效期：<b>30 分鐘</b><br/>
+          任何人持連結可<b>免登入查看</b>此專案地圖
         </div>
-        <div style="display:flex;justify-content:flex-end;margin-bottom:8px">
-          <button id="__shareCreate" style="padding:7px 16px;background:#1a56db;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px">＋ 建立新連結</button>
-        </div>
-        <div id="__shareMsg" style="font-size:12px;color:#d00;min-height:16px"></div>
-        <div id="__shareBody" style="margin-top:4px"><i>載入中…</i></div>
-        <div style="display:flex;justify-content:flex-end;margin-top:14px">
-          <button id="__shareClose" style="padding:6px 16px;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:13px">關閉</button>
+        <div id="__shareMsg" style="font-size:13px;color:#888;min-height:18px;margin-bottom:10px">連結產生中…</div>
+        <input id="__shareUrl" readonly value="" onclick="this.select()"
+          style="display:none;width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font-size:12px;background:#f7f7f7;margin-bottom:14px"/>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button id="__shareCopy" disabled style="padding:8px 16px;background:#1a56db;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px;opacity:.5">📋 複製連結</button>
+          <button id="__shareClose" style="padding:8px 16px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px">關閉</button>
         </div>`;
       overlay.appendChild(card);
       document.body.appendChild(overlay);
@@ -2917,96 +2970,33 @@
       card.querySelector('#__shareClose').onclick = dispose;
       overlay.addEventListener('click', e => { if (e.target === overlay) dispose(); });
 
-      const shareUrl = token => `${location.origin}/share.html?t=${token}`;
-      const fmtDt = s => s ? new Date(s).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—';
+      const msgEl   = card.querySelector('#__shareMsg');
+      const urlEl   = card.querySelector('#__shareUrl');
+      const copyBtn = card.querySelector('#__shareCopy');
 
-      async function copyText(text, btn){
-        try{
-          await navigator.clipboard.writeText(text);
-          const old = btn.textContent; btn.textContent = '已複製 ✓';
-          setTimeout(()=>{ btn.textContent = old; }, 1500);
-        }catch{
-          prompt('請手動複製連結：', text);
-        }
+      // 開啟 modal 即自動產生一條新連結（不需手動按「建立」）。
+      // 關閉視窗不撤銷連結 —— 30 分鐘內仍有效。
+      try{
+        const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/share-links`,
+          { method:'POST', headers: authHeaders() });
+        const j = await res.json().catch(()=>({}));
+        if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+        const url = `${location.origin}/share.html?t=${j.token}`;
+        urlEl.value = url;
+        urlEl.style.display = '';
+        msgEl.style.display = 'none';
+        copyBtn.disabled = false;
+        copyBtn.style.opacity = '1';
+        copyBtn.onclick = async () => {
+          try{ await navigator.clipboard.writeText(url); }
+          catch{ urlEl.focus(); urlEl.select(); try{ document.execCommand('copy'); }catch{} }
+          copyBtn.textContent = '✅ 已複製！';
+          setTimeout(()=>{ copyBtn.textContent = '📋 複製連結'; }, 1800);
+        };
+      }catch(e){
+        msgEl.style.color = '#c00';
+        msgEl.textContent = '連結產生失敗：' + e.message;
       }
-
-      async function loadLinks(){
-        const body = card.querySelector('#__shareBody');
-        try{
-          const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/share-links`, { headers: authHeaders() });
-          if (res.status === 403){
-            body.innerHTML = '<span style="color:#c00">您沒有此案件的管理權限（需要 owner 或 admin）</span>';
-            return;
-          }
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const j = await res.json();
-          const items = j.items || [];
-          if (!items.length){
-            body.innerHTML = '<span style="color:#888">尚無分享連結，點上方「建立新連結」。</span>';
-            return;
-          }
-          body.innerHTML = items.map(it => {
-            const url = shareUrl(it.token);
-            const status = it.revoked_at
-              ? '<span style="color:#c00">已撤銷</span>'
-              : (it.is_valid ? '<span style="color:#2e7d32">有效</span>' : '<span style="color:#999">已過期</span>');
-            return `<div style="border:1px solid #e3e3e3;border-radius:8px;padding:10px 12px;margin-bottom:8px">
-              <div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:6px">
-                ${status}
-                <span style="color:#666">到期 ${escH(fmtDt(it.expires_at))}</span>
-                <span style="color:#666">· 已開啟 ${it.use_count} 次</span>
-              </div>
-              <div style="display:flex;gap:6px;align-items:center">
-                <input readonly value="${escH(url)}" onclick="this.select()"
-                  style="flex:1;padding:5px 8px;border:1px solid #ccc;border-radius:5px;font-size:12px;background:#f7f7f7"/>
-                <button class="__shareCopy" data-url="${escH(url)}" ${it.is_valid?'':'disabled'}
-                  style="padding:5px 10px;font-size:12px;border:1px solid #1a56db;color:#1a56db;background:#fff;border-radius:5px;cursor:${it.is_valid?'pointer':'not-allowed'}">複製</button>
-                ${it.is_valid ? `<button class="__shareRevoke" data-token="${escH(it.token)}"
-                  style="padding:5px 10px;font-size:12px;border:1px solid #c00;color:#c00;background:#fff;border-radius:5px;cursor:pointer">撤銷</button>` : ''}
-              </div>
-            </div>`;
-          }).join('');
-          body.querySelectorAll('.__shareCopy').forEach(b => {
-            if (!b.disabled) b.onclick = () => copyText(b.dataset.url, b);
-          });
-          body.querySelectorAll('.__shareRevoke').forEach(b => {
-            b.onclick = async () => {
-              if (!confirm('撤銷後此連結立即失效，確定撤銷？')) return;
-              try{
-                const r = await fetch(`${API_BASE}/share-links/${encodeURIComponent(b.dataset.token)}`,
-                  { method:'DELETE', headers: authHeaders() });
-                if (!r.ok){ const t=await r.text(); throw new Error(JSON.parse(t).detail||t); }
-                showToast('已撤銷連結','success',1400);
-                loadLinks();
-              }catch(e){ showToast('撤銷失敗：'+e.message,'error',2200); }
-            };
-          });
-        }catch(e){
-          body.innerHTML = `<span style="color:#c00">載入失敗：${escH(e.message)}</span>`;
-        }
-      }
-
-      card.querySelector('#__shareCreate').onclick = async () => {
-        const msgEl = card.querySelector('#__shareMsg');
-        const btn = card.querySelector('#__shareCreate');
-        msgEl.style.color = '#d00'; msgEl.textContent = '';
-        btn.disabled = true; btn.textContent = '建立中…';
-        try{
-          const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/share-links`,
-            { method:'POST', headers: authHeaders() });
-          const j = await res.json().catch(()=>({}));
-          if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
-          msgEl.style.color = '#2e7d32';
-          msgEl.textContent = '已建立新連結（有效 12 小時）';
-          loadLinks();
-        }catch(e){
-          msgEl.textContent = '建立失敗：' + e.message;
-        }finally{
-          btn.disabled = false; btn.textContent = '＋ 建立新連結';
-        }
-      };
-
-      loadLinks();
     }
 
     // ── 智慧錯誤診斷 / 手動對應 / 回報格式 ────────────────────────
@@ -3636,7 +3626,7 @@
 
       loadProjectList();
 
-      // #projectId Enter 鍵自動載入；下拉選擇也載入
+      // ── #projectId Enter / change 自動載入 ──
       const triggerLoad = () => {
         const val = $('projectId').value.trim();
         if (!val) return;
@@ -3646,8 +3636,38 @@
         load();
       };
       $('projectId').addEventListener('change', triggerLoad);
+
+      // ── 案件下拉選單（custom dropdown：建立新專案 + 歷史專案）──
+      const projDropdown = $('projectDropdown');
+      const projWrap     = $('projectSelectWrap');
+      const hideProjDropdown = () => projDropdown && projDropdown.classList.remove('open');
+      const showProjDropdown = () => {
+        // 訪客或非專案模式：不顯示下拉（spec）
+        if (!projDropdown || !TOKEN || _sessionMode !== 'project') return;
+        loadProjectList();                 // 每次展開都刷新清單
+        projDropdown.classList.add('open');
+      };
+      $('projectId').addEventListener('focus', showProjDropdown);
+      $('projectId').addEventListener('click', showProjDropdown);
       $('projectId').addEventListener('keydown', e => {
-        if (e.key === 'Enter') { e.preventDefault(); triggerLoad(); }
+        if (e.key === 'Enter')       { e.preventDefault(); hideProjDropdown(); triggerLoad(); }
+        else if (e.key === 'Escape') { hideProjDropdown(); }
+      });
+      // 選項用 mousedown（早於 input blur，點擊才命中）
+      if (projDropdown) projDropdown.addEventListener('mousedown', e => {
+        const opt = e.target.closest('.proj-opt');
+        if (!opt) return;
+        e.preventDefault();
+        hideProjDropdown();
+        if (opt.dataset.act === 'new') {
+          openProjectCreationModal(window.__currentUser);
+        } else if (opt.dataset.act === 'open') {
+          selectExistingProject(opt.dataset.pid);
+        }
+      });
+      // 點輸入框與下拉以外處 → 收合
+      document.addEventListener('mousedown', e => {
+        if (projWrap && !projWrap.contains(e.target)) hideProjDropdown();
       });
 
       // 顯示對象 radio

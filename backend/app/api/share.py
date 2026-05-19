@@ -1,6 +1,6 @@
 # backend/app/api/share.py
 """
-專案分享連結（12 小時臨時免登入檢視）
+專案分享連結（30 分鐘臨時免登入檢視）
 =========================================================
 端點：
   POST   /api/projects/{project_id}/share-links   建立分享連結（owner / admin）
@@ -25,8 +25,8 @@ from app.services.audit import write_audit
 
 router = APIRouter(tags=["share"])
 
-# 連結效期：固定 12 小時，不開放呼叫端自訂（避免有人開出永久連結）。
-SHARE_LINK_TTL = timedelta(hours=12)
+# 連結效期：固定 30 分鐘，不開放呼叫端自訂（避免有人開出永久連結）。
+SHARE_LINK_TTL = timedelta(minutes=30)
 
 
 # ---------- 輔助 ----------
@@ -92,7 +92,7 @@ def create_share_link(
     request: Request,
     current_user: dict = Depends(get_current_user),
 ):
-    """建立一條 12 小時分享連結。需 owner 或 admin。"""
+    """建立一條 30 分鐘分享連結。需 owner 或 admin。"""
     _require_project_owner(project_id, current_user)
 
     # 為不存在資料的 project 開連結沒有意義 → 先確認此 project 有未刪除的列。
@@ -231,7 +231,7 @@ def view_shared_project(token: str, request: Request):
     if revoked_at is not None:
         raise HTTPException(status_code=410, detail="此分享連結已被撤銷")
     if expires_at <= datetime.now(timezone.utc):
-        raise HTTPException(status_code=410, detail="此分享連結已過期（連結有效期為 12 小時）")
+        raise HTTPException(status_code=410, detail="此分享連結已過期（連結有效期為 30 分鐘）")
 
     geojson = _fetch_map_geojson(project_id)
 
