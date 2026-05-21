@@ -15,6 +15,10 @@ from app.services.limiter import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# 防使用者列舉用的固定假雜湊：帳號不存在時也對它跑一次 verify，
+# 讓「帳號不存在」與「帳號存在但密碼錯」的回應時間相近（見 login()）。
+_DUMMY_PASSWORD_HASH = hash_password("celltrail-timing-equalizer-dummy")
+
 
 @router.post("/login")
 @limiter.limit("10/5minutes")
@@ -29,6 +33,8 @@ def login(request: Request, form: OAuth2PasswordRequestForm = Depends()):
     """
     user = get_user_by_username(form.username)
     if not user:
+        # 防使用者列舉：對不存在的帳號也跑一次等量 bcrypt 驗證，拉平回應時間
+        verify_password(form.password, _DUMMY_PASSWORD_HASH)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="帳號或密碼錯誤",

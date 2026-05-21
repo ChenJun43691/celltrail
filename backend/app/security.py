@@ -93,7 +93,7 @@ _ANONYMOUS_ADMIN = {
 
 def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> dict:
     if not AUTH_ENABLED:
-        return _ANONYMOUS_ADMIN
+        return dict(_ANONYMOUS_ADMIN)  # 回傳複本，避免呼叫端 mutate 汙染共用範本
 
     cred_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -124,7 +124,7 @@ def get_current_user_optional(token: Optional[str] = Depends(oauth2_scheme)) -> 
     供「訪客也能用」的端點使用（例如格式回報）。
     """
     if not AUTH_ENABLED:
-        return _ANONYMOUS_ADMIN
+        return dict(_ANONYMOUS_ADMIN)  # 回傳複本，避免呼叫端 mutate 汙染共用範本
     if not token:
         return None
     try:

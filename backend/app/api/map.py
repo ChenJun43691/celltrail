@@ -11,12 +11,16 @@ router = APIRouter()
 def project_map_layers(
     project_id: str,
     target_id: Optional[str] = None,
-    limit: int = Query(5000, ge=1, le=10000),
+    limit: int = Query(50000, ge=1, le=200000),
     current_user: dict = Depends(get_current_user),
 ):
     """
     依 project（可選 target）取得地圖圖層（標準 GeoJSON）。
     只回傳已定位的資料（geom IS NOT NULL）。需 viewer 以上權限。
+
+    回應的 FeatureCollection 另附 total / returned / truncated 三欄：
+    當符合條件的點數超過 limit 上限時 truncated=true，前端據此提醒使用者
+    「地圖未顯示完整軌跡」，避免靜默截斷導致偵查員誤判軌跡已完整。
     """
     assert_project_access(current_user, project_id, "viewer")
     # 軟刪過濾：永遠不顯示已刪除的紀錄（deleted_at IS NULL）
@@ -77,12 +81,23 @@ def project_map_layers(
     ) AS fc
     FROM rows;
     """
-    params.append(limit)
+    count_sql = f"SELECT count(*) FROM raw_traces WHERE {where_sql}"
 
     with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(sql, params, prepare=False)  # ← 關鍵：不使用 prepared
+        # 先取符合條件的真實總數，再取（受 limit 上限的）GeoJSON
+        cur.execute(count_sql, params, prepare=False)
+        total = int((cur.fetchone() or [0])[0])
+        cur.execute(sql, params + [limit], prepare=False)  # ← 不使用 prepared
         row = cur.fetchone()
-        return row[0] or {"type": "FeatureCollection", "features": []}
+        fc = (row[0] if row else None) or {"type": "FeatureCollection", "features": []}
+
+    # 把真實總數與是否截斷一併回傳，讓前端能在點數超過上限時提醒使用者，
+    # 避免偵查員誤以為地圖上的軌跡已完整（GeoJSON 允許 foreign members）。
+    returned = len(fc.get("features") or [])
+    fc["total"] = total
+    fc["returned"] = returned
+    fc["truncated"] = total > returned
+    return fc
 
 # --- 附加：未定位清單（方便除錯） ---
 @router.get("/projects/{project_id}/unlocated")

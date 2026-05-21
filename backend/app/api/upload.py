@@ -28,6 +28,10 @@ from app.services.ingest import ingest_auto, ingest_pdf, parse_file_only, ParseD
 
 router = APIRouter()
 
+# 上傳檔案大小上限：避免單一超大檔把後端記憶體吃光（OOM）。
+# 真實電信歷程檔多為數 MB 級，100 MB 已非常寬鬆。
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+
 
 # 同時支援 /api/upload 及 /api/upload/
 @router.post("")   # /api/upload
@@ -40,7 +44,13 @@ async def upload_file(
     current_user: dict = Depends(get_current_user),
 ):
     filename = file.filename or ""
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413,
+                            detail=f"檔案過大，上限 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
     content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413,
+                            detail=f"檔案過大，上限 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
     ext = (filename.rsplit(".", 1)[-1].lower() if "." in filename else "")
     mime = file.content_type
 
@@ -188,8 +198,14 @@ async def parse_temp(
     mapping（選填）：使用者「手動欄位對應」JSON。失敗時回 422 + diagnosis。
     """
     filename = file.filename or "upload"
+    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413,
+                            detail=f"檔案過大，上限 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
     _t0 = _time.perf_counter()
     content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413,
+                            detail=f"檔案過大，上限 {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
     print(f"[parse-temp][timing] file_read={(_time.perf_counter()-_t0)*1000:.0f}ms size={len(content)}B file={filename}")
 
     if not target_id:

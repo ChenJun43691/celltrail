@@ -2213,6 +2213,9 @@
         refreshSeriesPanel();
         await render();
         showToast(`載入完成：${[...seriesMap.values()].reduce((a,s)=>a+s.records.length,0)} 點（共 ${seriesMap.size} 組）`,'success',1800);
+        if (geo && geo.truncated) {
+          showToast(`⚠ 本案共 ${geo.total} 個定位點，已達顯示上限、地圖僅顯示 ${geo.returned} 個 —— 部分軌跡未顯示`,'error',9000);
+        }
         refreshCourtBadge();
         updateMembersBtn();
         populateTargetList();

@@ -48,10 +48,11 @@ def _require_project_owner(project_id: str, user: dict) -> None:
         raise HTTPException(status_code=403, detail="需要此案件的 owner 或 admin 身份")
 
 
-def _fetch_map_geojson(project_id: str, limit: int = 10000) -> dict:
+def _fetch_map_geojson(project_id: str, limit: int = 50000) -> dict:
     """
-    取地圖 GeoJSON：與 /api/projects/{id}/map-layers 完全相同的查詢規則
-    —— 只回「已定位（geom IS NOT NULL）」且「未軟刪（deleted_at IS NULL）」的列。
+    取地圖 GeoJSON：與 /api/projects/{id}/map-layers 相同的篩選與排序規則
+    —— 只回「已定位（geom IS NOT NULL）」且「未軟刪（deleted_at IS NULL）」的列，
+    上限亦與 map-layers 預設一致（50000），避免分享頁與主地圖顯示的點數不一致。
     為保持 share.py 自足、不牽動 map.py，此處刻意複製查詢而非 import。
     """
     sql = """

@@ -110,8 +110,7 @@ def restore_target(
     body: RestoreTargetIn,
     current_user: dict = Depends(get_current_user),
 ):
-    """還原軟刪的 target 紀錄；強制填還原理由。需 owner 以上。"""
-    assert_project_access(current_user, project_id, "owner")
+    """還原軟刪的 target 紀錄；強制填還原理由。需系統管理員（admin）。"""
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
@@ -200,9 +199,8 @@ def update_azimuth_ref(
 
     僅針對「未軟刪」的紀錄（deleted_at IS NULL）；
     若需更新已軟刪的紀錄（罕見），請先 restore 再 patch。
-    需 owner 以上。
+    需系統管理員（admin）。
     """
-    assert_project_access(current_user, project_id, "owner")
     try:
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
