@@ -12,8 +12,10 @@ load_dotenv()
 
 import logging
 import os
+import sys
 import traceback
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,8 +23,9 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from apscheduler.schedulers.background import BackgroundScheduler
 
-from app.db.session import pool
+from app.db.session import pool, get_conn
 from app.services.limiter import limiter
 from app.security import SECRET_KEY, AUTH_ENABLED
 
@@ -42,9 +45,40 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[DB] pool warmup error: {type(e).__name__}: {e}")
 
+    # APScheduler：每 6 小時 ping 一次 DB，保 Supabase 免費方案不被暫停。
+    # 整段包 try-catch；pytest 下不啟動（測試不需保活，避免背景執行緒干擾）。
+    if "pytest" not in sys.modules:
+        try:
+            scheduler = BackgroundScheduler(daemon=True)
+            scheduler.add_job(
+                _supabase_keepalive,
+                trigger="interval",
+                hours=6,
+                id="supabase_keepalive",
+                next_run_time=datetime.now(timezone.utc),  # 啟動後立即跑一次，之後每 6h
+                max_instances=1,
+                coalesce=True,
+            )
+            scheduler.start()
+            app.state.keepalive_scheduler = scheduler
+            print("[keepalive] scheduler started（每 6 小時 ping 一次 DB）")
+        except Exception as e:
+            app.state.keepalive_scheduler = None
+            print(f"[keepalive] scheduler 啟動失敗（不影響主程式）: {type(e).__name__}: {e}")
+    else:
+        app.state.keepalive_scheduler = None
+
     yield
 
     # === shutdown ===
+    try:
+        sched = getattr(app.state, "keepalive_scheduler", None)
+        if sched is not None:
+            sched.shutdown(wait=False)
+            print("[keepalive] scheduler stopped")
+    except Exception as e:
+        print(f"[keepalive] scheduler shutdown error: {type(e).__name__}: {e}")
+
     # 註：psycopg-pool 3.2.x 的 ConnectionPool.close() 本身即為同步收尾，
     # 不需要（也沒有）wait_close() 這個方法。
     try:
@@ -114,6 +148,22 @@ def _config_safety_audit() -> None:
         print("=" * 70)
     else:
         print("[CONFIG] 設定安全自檢通過")
+
+
+# ---------- Supabase 保活（APScheduler）----------
+def _supabase_keepalive() -> None:
+    """對 DB 跑一次 SELECT 1，避免 Supabase 免費方案因一週無活動而自動暫停。
+
+    由 APScheduler 每 6 小時呼叫一次。全程包 try-catch：保活失敗只寫 log，
+    絕不影響主程式。
+    """
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1", prepare=False)
+            cur.fetchone()
+        print("[keepalive] Supabase ping OK")
+    except Exception as e:
+        print(f"[keepalive] ping failed: {type(e).__name__}: {e}")
 
 
 # ---------- FastAPI App ----------

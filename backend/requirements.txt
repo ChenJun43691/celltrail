@@ -52,6 +52,10 @@ charset-normalizer==3.4.3
 # === Redis / Cache ===
 redis==6.4.0
 
+# === Scheduler（Supabase 免費方案保活：每 6h ping 一次 DB）===
+APScheduler==3.10.4
+tzlocal==5.3.1
+
 # === Env / CLI ===
 python-dotenv==1.0.1
 click==8.2.1
