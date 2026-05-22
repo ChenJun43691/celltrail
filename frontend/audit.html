@@ -49,10 +49,6 @@
     tr:hover td{background:#fbfcfe}
     tr.expanded{background:#f0f7ff}
     tr.expanded:hover td{background:#e8f1ff}
-    td.action-upload{color:var(--ok);font-weight:600}
-    td.action-delete_target,td.action-delete_target_failed{color:var(--bad);font-weight:600}
-    td.action-restore_target{color:var(--warn);font-weight:600}
-    td.action-upload_failed{color:var(--bad)}
 
     .details-row{background:var(--code-bg)}
     .details-row td{padding:0}
@@ -195,8 +191,9 @@
     </div>
   </div>
 
+  <script src="./api.js"></script>
   <script type="module">
-    import { API } from './api.js';
+    const API = window.CT_API_BASE;  // 由 api.js 提供（不含 /api）
 
     const $ = (id) => document.getElementById(id);
     const tbody = $('tbody');
@@ -209,10 +206,18 @@
       window.location.href = './login.html';
     }
 
+    // 遇 401（token 過期）集中清 token 並導回登入頁，避免各面板各自卡在錯誤訊息
+    function handle401() {
+      localStorage.removeItem('ct_token');
+      alert('登入已逾期，請重新登入。');
+      window.location.href = './login.html';
+    }
+
     async function apiGet(path) {
       const token = getToken();
       const headers = token ? { Authorization: `Bearer ${token}` } : {};
       const res = await fetch(`${API}${path}`, { headers });
+      if (res.status === 401) { handle401(); throw new Error('登入已逾期'); }
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${await res.text()}`);
       }
@@ -244,6 +249,15 @@
       return `<span class="badge ${cls}">${sc}</span>`;
     }
 
+    // action 語意配色（涵蓋證據路徑 + admin 管理操作，取代過時的 td.action-* CSS）
+    function actionColor(action) {
+      if (!action) return '';
+      if (action.includes('failed'))                                                 return 'var(--bad)';
+      if (/delete|deactivate|clear|reject|revoke|remove/.test(action))                return 'var(--warn)';
+      if (/create|upload|approve|import|upsert|reactivate|restore|save/.test(action)) return 'var(--ok)';
+      return '';
+    }
+
     function escapeHtml(s) {
       if (s == null) return '';
       return String(s).replace(/[&<>"']/g, c => ({
@@ -259,10 +273,11 @@
       `;
       const userCell = `${escapeHtml(it.username || '')}<div style="color:var(--sub);font-size:11px">${escapeHtml(it.role || '')}</div>`;
       const hashShort = (it.payload_hash || '').slice(0, 12);
+      const actCol = actionColor(it.action);
       return `
         <tr data-id="${it.id}" class="row-main">
           <td>${escapeHtml(ts)}</td>
-          <td class="action-${escapeHtml(it.action)}">${escapeHtml(it.action)}</td>
+          <td style="${actCol ? 'color:' + actCol + ';font-weight:600' : ''}">${escapeHtml(it.action)}</td>
           <td>${targetCell}</td>
           <td>${userCell}</td>
           <td><code>${escapeHtml(it.ip || '')}</code></td>
@@ -429,6 +444,7 @@
       const token = getToken();
       try {
         const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+        if (res.status === 401) { handle401(); return; }
         if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
         const blob = await res.blob();
         const a = document.createElement('a');

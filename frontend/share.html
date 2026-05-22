@@ -64,18 +64,13 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+  <script src="./api.js"></script>
   <script>
   (function () {
     'use strict';
 
-    // ── API base：與 api.js 相同的解析規則 ────────────────────────
-    function resolveApiBase() {
-      if (window.__CELLTRAIL_API__) return window.__CELLTRAIL_API__.replace(/\/$/, '');
-      const host = location.hostname || '';
-      const isLocal = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/.test(host);
-      return isLocal ? 'http://localhost:8000' : 'https://celltrail-api.onrender.com';
-    }
-    const API = resolveApiBase();
+    // API base 由 api.js 提供（不含 /api）
+    const API = window.CT_API_BASE;
 
     // 與 index.html 相同的台灣 NLSC 公開圖磚（外部使用者也可存取）
     const TILE_URL = 'https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}';
@@ -84,7 +79,8 @@
 
     const $ = id => document.getElementById(id);
     const escH = s => String(s == null ? '' : s)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     const fmt = v => (v == null || v === '') ? '—' : escH(v);
 
     function showError(icon, title, lines) {
@@ -119,19 +115,31 @@
     }
 
     // ── 到期資訊 ─────────────────────────────────────────────────
-    function renderExpiry(iso) {
+    // 每 30 秒更新「剩餘時間」；分頁久開也不會顯示過時數字，到期即蓋上失效畫面。
+    function startExpiryWatch(iso) {
       const exp = new Date(iso);
-      const mins = Math.round((exp - Date.now()) / 60000);
-      const hh = Math.floor(mins / 60), mm = mins % 60;
-      const remain = mins <= 0 ? '已過期' : ('剩 ' + (hh > 0 ? hh + ' 小時 ' : '') + mm + ' 分');
       const t = exp.toLocaleString('zh-TW', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
-      $('expInfo').textContent = '⏱ ' + t + ' 到期（' + remain + '）';
+      let timer = null;
+      function tick() {
+        const mins = Math.round((exp - Date.now()) / 60000);
+        if (mins <= 0) {
+          $('expInfo').textContent = '⏱ ' + t + ' 到期（已過期）';
+          if (timer) clearInterval(timer);
+          showError('⌛', '連結已過期',
+            ['此分享連結 30 分鐘效期已到。', '請重新整理，或向分享者索取新連結。']);
+          return;
+        }
+        const hh = Math.floor(mins / 60), mm = mins % 60;
+        $('expInfo').textContent = '⏱ ' + t + ' 到期（剩 ' + (hh > 0 ? hh + ' 小時 ' : '') + mm + ' 分）';
+      }
+      tick();
+      timer = setInterval(tick, 30000);
     }
 
     // ── 地圖渲染 ─────────────────────────────────────────────────
     function renderMap(data) {
       $('projName').textContent = '📁 ' + data.project_id;
-      renderExpiry(data.expires_at);
+      startExpiryWatch(data.expires_at);
 
       const map = L.map('map', { preferCanvas:true }).setView([22.6273, 120.3014], 12);
       L.tileLayer(TILE_URL, { maxZoom:18, attribution:'© 內政部國土測繪中心', crossOrigin:true }).addTo(map);

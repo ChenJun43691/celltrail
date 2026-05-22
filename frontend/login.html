@@ -335,17 +335,11 @@
   </div><!-- /.card -->
 </div><!-- /.page -->
 
+<script src="./api.js"></script>
 <script>
   const TOKEN_KEY = 'ct_token';
 
-  function getApiBase() {
-    if (window.__CELLTRAIL_API__) return window.__CELLTRAIL_API__.replace(/\/$/, '');
-    const host = location.hostname || '';
-    if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/.test(host))
-      return 'http://localhost:8000';
-    return 'https://celltrail-api.onrender.com';
-  }
-  const API = getApiBase() + '/api';
+  const API = window.CT_API;  // 由 api.js 提供（含 /api）
 
   let _tempToken = null;
   let _oldPassword = '';

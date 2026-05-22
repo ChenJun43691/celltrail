@@ -13,17 +13,31 @@
     html,body{ margin:0; padding:0; background:var(--bg); color:var(--text);
       font:14px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,'Noto Sans TC'; }
 
-    header{
+    /* header + tabs 一起 sticky */
+    .topbar{
       position:sticky; top:0; z-index:10; background:#fff;
-      border-bottom:1px solid var(--border); padding:10px 16px;
-      display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+      border-bottom:1px solid var(--border);
+    }
+    header{
+      padding:10px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;
     }
     h1{ font-size:18px; margin:0; font-weight:600; }
     a.back{ color:var(--primary); text-decoration:none; font-size:13px; }
     a.back:hover{ text-decoration:underline; }
     #adminUserChip{ margin-left:auto; font-size:12px; color:var(--primary); font-weight:500; }
 
+    .tabs{ display:flex; gap:4px; padding:0 12px; }
+    .tab-btn{
+      padding:9px 18px; border:none; background:transparent; color:var(--sub);
+      border-bottom:2px solid transparent; border-radius:0;
+      cursor:pointer; font-size:14px;
+    }
+    .tab-btn:hover{ color:var(--text); }
+    .tab-btn.active{ color:var(--primary); font-weight:600; border-bottom-color:var(--primary); }
+
     .container{ max-width:1100px; margin:20px auto; padding:0 16px; }
+    .tab-panel{ display:none; }
+    .tab-panel.active{ display:block; }
 
     .section{
       background:var(--card); border:1px solid var(--border); border-radius:10px;
@@ -36,7 +50,7 @@
 
     table{ width:100%; border-collapse:collapse; }
     th,td{ padding:8px 10px; text-align:left; border-bottom:1px solid var(--border); font-size:13px; }
-    th{ color:var(--sub); font-weight:600; font-size:12px; background:#fafbfd; position:sticky; top:50px; }
+    th{ color:var(--sub); font-weight:600; font-size:12px; background:#fafbfd; }
     tr:hover td{ background:#fbfcfe; }
     .badge{
       display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:600;
@@ -80,270 +94,270 @@
   </style>
 </head>
 <body>
-  <header>
-    <h1>👤 系統管理</h1>
-    <a class="back" href="./index.html">← 回主畫面</a>
-    <a class="back" href="./audit.html" style="margin-left:8px">🛡️ 稽核紀錄</a>
-    <span id="adminUserChip"></span>
-    <button class="secondary" id="adminLogoutBtn" style="padding:4px 10px;font-size:12px">登出</button>
-  </header>
+  <div class="topbar">
+    <header>
+      <h1>👤 系統管理</h1>
+      <a class="back" href="./index.html">← 回主畫面</a>
+      <a class="back" href="./audit.html" style="margin-left:8px">🛡️ 稽核紀錄</a>
+      <span id="adminUserChip"></span>
+      <button class="secondary" id="adminLogoutBtn" style="padding:4px 10px;font-size:12px">登出</button>
+    </header>
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="accounts">👤 帳號管理</button>
+      <button class="tab-btn" data-tab="data">🗂️ 資料表</button>
+      <button class="tab-btn" data-tab="audit">🛡️ 稽核與回報</button>
+    </nav>
+  </div>
 
   <div class="container">
 
-    <!-- 帳號申請審核 -->
-    <div class="section">
-      <div class="section-title">
-        📋 帳號申請審核
-        <button class="secondary" id="refreshReqBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
-        <label style="font-size:12px;font-weight:normal;margin:0;cursor:pointer">
-          <input type="checkbox" id="showAllReq" /> 顯示已審核
-        </label>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>帳號名稱</th><th>姓名</th><th>服務單位</th><th>聯絡電話</th>
-            <th>申請時間</th><th>狀態</th><th>操作</th>
-          </tr>
-        </thead>
-        <tbody id="reqTbody">
-          <tr><td class="empty" colspan="7">載入中…</td></tr>
-        </tbody>
-      </table>
-      <!-- 核准結果（內容由 approveRequest() 依是否有臨時密碼動態填入）-->
-      <div id="approveResultBox" style="display:none" class="temp-pass"></div>
-      <!-- 拒絕原因輸入框 -->
-      <div id="rejectPanel" style="display:none;margin-top:12px;padding:12px;background:#fff3e0;border:1px solid #ffe0b2;border-radius:8px">
-        <div style="font-size:13px;font-weight:600;margin-bottom:8px">拒絕原因 <span id="rejectTarget" style="font-weight:normal;color:#888"></span></div>
-        <textarea id="rejectReason" rows="2" style="width:100%;padding:6px;border:1px solid #ccc;border-radius:6px;font-size:13px;font-family:inherit" placeholder="請填寫拒絕原因（必填）"></textarea>
-        <div style="display:flex;gap:8px;margin-top:8px">
-          <button id="rejectConfirmBtn" class="danger" style="padding:5px 14px;font-size:13px">確認拒絕</button>
-          <button id="rejectCancelBtn" class="secondary" style="padding:5px 14px;font-size:13px">取消</button>
-        </div>
-        <div id="rejectMsg" class="msg"></div>
-      </div>
-    </div>
+    <!-- ══════════ 分頁：帳號管理 ══════════ -->
+    <div class="tab-panel active" data-tab-panel="accounts">
 
-    <!-- 建立帳號 -->
-    <div class="section">
-      <div class="section-title">➕ 建立新帳號</div>
-      <div class="form-grid">
-        <div class="form-group">
-          <label>帳號（username）*</label>
-          <input id="cUsername" type="text" placeholder="officer01" autocomplete="off" />
-        </div>
-        <div class="form-group">
-          <label>姓名（real_name）</label>
-          <input id="cRealName" type="text" placeholder="陳大明" />
-        </div>
-        <div class="form-group">
-          <label>單位（unit）</label>
-          <input id="cUnit" type="text" placeholder="高市刑大六隊" />
-        </div>
-        <div class="form-group">
-          <label>警號（badge_number）</label>
-          <input id="cBadge" type="text" placeholder="E43691" />
-        </div>
-        <div class="form-group">
-          <label>Email</label>
-          <input id="cEmail" type="email" placeholder="user@kcg.gov.tw" />
-        </div>
-        <div class="form-group">
-          <label>角色（role）</label>
-          <select id="cRole">
-            <option value="user">user（一般偵查員）</option>
-            <option value="admin">admin（系統管理員）</option>
-          </select>
-        </div>
-      </div>
-      <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
-        <button id="createBtn">建立帳號</button>
-        <span class="msg" id="createMsg"></span>
-      </div>
-      <div id="tempPassBox" style="display:none" class="temp-pass">
-        ✅ 帳號建立成功！請將臨時密碼告知使用者（<b>僅顯示一次</b>）：<br/>
-        <code id="tempPassVal"></code>
-        <div style="font-size:11px;color:#a07000;margin-top:4px">首次登入後系統將強制要求修改密碼。</div>
-      </div>
-    </div>
-
-    <!-- 帳號清單 -->
-    <div class="section">
-      <div class="section-title">
-        帳號清單
-        <button class="secondary" id="refreshUsersBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th><th>帳號</th><th>姓名</th><th>單位</th><th>警號</th>
-            <th>角色</th><th>狀態</th><th>需改密碼</th><th>操作</th>
-          </tr>
-        </thead>
-        <tbody id="usersTbody">
-          <tr><td class="empty" colspan="9">載入中…</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <!-- 密碼重設（admin 重設他人） -->
-    <div class="section">
-      <div class="section-title">🔑 重設帳號密碼</div>
-      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
-        <div class="form-group" style="margin-bottom:0">
-          <label>User ID</label>
-          <input id="resetUid" type="number" min="1" style="width:80px" placeholder="2" />
-        </div>
-        <button id="resetPassBtn">產生新臨時密碼</button>
-        <span class="msg" id="resetMsg"></span>
-      </div>
-      <div id="resetPassBox" style="display:none" class="temp-pass">
-        ✅ 重設成功！新臨時密碼（<b>僅顯示一次</b>）：<br/>
-        <code id="resetPassVal"></code>
-        <div style="font-size:11px;color:#a07000;margin-top:4px">使用者下次登入將被強制要求修改密碼。</div>
-      </div>
-    </div>
-
-    <!-- 本地基地台座標表（P4.1） -->
-    <div class="section">
-      <div class="section-title">
-        📡 本地基地台座標表
-        <button class="secondary" id="refreshTowersBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
-      </div>
-      <div id="towerStats" style="margin-bottom:12px;font-size:13px;color:var(--sub)">載入中…</div>
-      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
-        <div>
-          <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:3px">
-            CSV 檔（必填欄：cell_id,lat,lng；選填：carrier_name,memo）
+      <!-- 帳號申請審核 -->
+      <div class="section">
+        <div class="section-title">
+          📋 帳號申請審核
+          <button class="secondary" id="refreshReqBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
+          <label style="font-size:12px;font-weight:normal;margin:0;cursor:pointer">
+            <input type="checkbox" id="showAllReq" /> 顯示已審核
           </label>
-          <input type="file" id="towerFile" accept=".csv" />
         </div>
-        <div>
-          <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:3px">業者（選填，可覆蓋 CSV 欄）</label>
-          <input type="text" id="towerCarrier" placeholder="如：中華電信" style="width:140px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px" />
-        </div>
-        <div>
-          <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:3px">來源描述（選填）</label>
-          <input type="text" id="towerSource" placeholder="如：CHT 2024Q1 座標表" style="width:200px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px" />
-        </div>
-        <button id="importTowersBtn">匯入</button>
-        <button class="secondary" id="clearTowersBtn" style="color:var(--bad);border-color:var(--bad)">清空全部</button>
-      </div>
-      <div id="towerImportResult" style="font-size:13px;min-height:20px"></div>
-    </div>
-
-    <!-- 欄名對照表管理 -->
-    <div class="section">
-      <div class="section-title">
-        🗂️ 欄名對照表（carrier_profile）
-        <button class="secondary" id="refreshCpBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
-      </div>
-      <div id="cpMeta" style="font-size:12px;color:var(--sub);margin-bottom:10px">載入中…</div>
-
-      <!-- 搜尋 + 新增 -->
-      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
-        <div class="form-group" style="margin:0;flex:1;min-width:160px">
-          <label>搜尋（原始欄名）</label>
-          <input id="cpSearch" type="text" placeholder="輸入關鍵字…" />
-        </div>
-        <div class="form-group" style="margin:0;flex:1;min-width:160px">
-          <label>新增原始欄名 <span style="color:var(--bad)">*</span></label>
-          <input id="cpRawKey" type="text" placeholder="例：起訖基地台編號" autocomplete="off" />
-        </div>
-        <div class="form-group" style="margin:0;flex:1;min-width:160px">
-          <label>對應到 canonical 欄名 <span style="color:var(--bad)">*</span></label>
-          <input id="cpCanonKey" type="text" placeholder="例：cell_id" autocomplete="off" />
-        </div>
-        <button id="cpAddBtn">新增 / 覆蓋</button>
-        <span class="msg" id="cpMsg" style="margin:0"></span>
-      </div>
-
-      <!-- 對照表 -->
-      <div style="max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">
-        <table style="margin:0">
+        <table>
           <thead>
             <tr>
-              <th>原始欄名（raw_key）</th>
-              <th>Canonical 欄名</th>
-              <th style="width:80px">來源</th>
-              <th style="width:60px">操作</th>
+              <th>帳號名稱</th><th>姓名</th><th>服務單位</th><th>聯絡電話</th>
+              <th>申請時間</th><th>狀態</th><th>操作</th>
             </tr>
           </thead>
-          <tbody id="cpTbody">
-            <tr><td class="empty" colspan="4">載入中…</td></tr>
+          <tbody id="reqTbody">
+            <tr><td class="empty" colspan="7">載入中…</td></tr>
+          </tbody>
+        </table>
+        <!-- 核准結果（內容由 approveRequest() 依是否有臨時密碼動態填入）-->
+        <div id="approveResultBox" style="display:none" class="temp-pass"></div>
+        <!-- 拒絕原因輸入框 -->
+        <div id="rejectPanel" style="display:none;margin-top:12px;padding:12px;background:#fff3e0;border:1px solid #ffe0b2;border-radius:8px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:8px">拒絕原因 <span id="rejectTarget" style="font-weight:normal;color:#888"></span></div>
+          <textarea id="rejectReason" rows="2" style="width:100%;padding:6px;border:1px solid #ccc;border-radius:6px;font-size:13px;font-family:inherit" placeholder="請填寫拒絕原因（必填）"></textarea>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button id="rejectConfirmBtn" class="danger" style="padding:5px 14px;font-size:13px">確認拒絕</button>
+            <button id="rejectCancelBtn" class="secondary" style="padding:5px 14px;font-size:13px">取消</button>
+          </div>
+          <div id="rejectMsg" class="msg"></div>
+        </div>
+      </div>
+
+      <!-- 建立帳號 -->
+      <div class="section">
+        <div class="section-title">➕ 建立新帳號</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>帳號（username）*</label>
+            <input id="cUsername" type="text" placeholder="officer01" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label>姓名（real_name）</label>
+            <input id="cRealName" type="text" placeholder="陳大明" />
+          </div>
+          <div class="form-group">
+            <label>單位（unit）</label>
+            <input id="cUnit" type="text" placeholder="高市刑大六隊" />
+          </div>
+          <div class="form-group">
+            <label>警號（badge_number）</label>
+            <input id="cBadge" type="text" placeholder="E43691" />
+          </div>
+          <div class="form-group">
+            <label>Email</label>
+            <input id="cEmail" type="email" placeholder="user@kcg.gov.tw" />
+          </div>
+          <div class="form-group">
+            <label>角色（role）</label>
+            <select id="cRole">
+              <option value="user">user（一般偵查員）</option>
+              <option value="admin">admin（系統管理員）</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+          <button id="createBtn">建立帳號</button>
+          <span class="msg" id="createMsg"></span>
+        </div>
+        <div id="tempPassBox" style="display:none" class="temp-pass">
+          ✅ 帳號建立成功！請將臨時密碼告知使用者（<b>僅顯示一次</b>）：<br/>
+          <code id="tempPassVal"></code>
+          <div style="font-size:11px;color:#a07000;margin-top:4px">首次登入後系統將強制要求修改密碼。</div>
+        </div>
+      </div>
+
+      <!-- 帳號清單（停用/啟用、重設密碼、改角色 皆 per-row） -->
+      <div class="section">
+        <div class="section-title">
+          帳號清單
+          <button class="secondary" id="refreshUsersBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
+        </div>
+        <!-- per-row 操作的結果（重設密碼臨時密碼）顯示於此 -->
+        <div id="userOpResult" style="display:none" class="temp-pass"></div>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th><th>帳號</th><th>姓名</th><th>單位</th><th>警號</th>
+              <th>角色</th><th>狀態</th><th>需改密碼</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="usersTbody">
+            <tr><td class="empty" colspan="9">載入中…</td></tr>
           </tbody>
         </table>
       </div>
-      <div style="font-size:11px;color:var(--sub);margin-top:6px">
-        「DB 自訂」可刪除（刪後自動退回 code 預設值）；「code 預設」僅顯示，如需覆蓋請在上方表單填寫相同 raw_key。
-      </div>
-    </div>
 
-    <!-- 稽核日誌（最新 50 筆） -->
-    <div class="section">
-      <div class="section-title">
-        📋 最新操作紀錄
-        <button class="secondary" id="refreshAuditBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
-        <a href="./audit.html" style="font-size:12px;color:var(--primary);text-decoration:none;margin-left:8px">查看完整稽核 →</a>
-      </div>
-      <table id="auditTable">
-        <thead>
-          <tr>
-            <th style="width:160px">時間</th>
-            <th style="width:140px">Action</th>
-            <th>Target / Project</th>
-            <th style="width:100px">操作者</th>
-            <th style="width:60px">狀態</th>
-          </tr>
-        </thead>
-        <tbody id="auditTbody">
-          <tr><td class="empty" colspan="5">載入中…</td></tr>
-        </tbody>
-      </table>
-    </div>
+    </div><!-- /accounts -->
 
-    <!-- 格式回報（使用者上傳無法解析的檔案 → 管理員加入新方言） -->
-    <div class="section">
-      <div class="section-title">
-        📧 格式回報
-        <select id="frStatusFilter" style="font-size:12px;padding:3px 8px;border:1px solid #ccc;border-radius:4px">
-          <option value="open" selected>待處理（open）</option>
-          <option value="handled">已處理</option>
-          <option value="rejected">已拒絕</option>
-          <option value="">全部</option>
-        </select>
-        <button class="secondary" id="refreshFormatReportsBtn" style="font-size:12px;padding:3px 9px;margin-left:8px">重新載入</button>
+    <!-- ══════════ 分頁：資料表 ══════════ -->
+    <div class="tab-panel" data-tab-panel="data">
+
+      <!-- 本地基地台座標表（P4.1） -->
+      <div class="section">
+        <div class="section-title">
+          📡 本地基地台座標表
+          <button class="secondary" id="refreshTowersBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
+        </div>
+        <div id="towerStats" style="margin-bottom:12px;font-size:13px;color:var(--sub)">載入中…</div>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+          <div>
+            <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:3px">
+              CSV 檔（必填欄：cell_id,lat,lng；選填：carrier_name,memo）
+            </label>
+            <input type="file" id="towerFile" accept=".csv" />
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:3px">業者（選填，可覆蓋 CSV 欄）</label>
+            <input type="text" id="towerCarrier" placeholder="如：中華電信" style="width:140px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px" />
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--sub);display:block;margin-bottom:3px">來源描述（選填）</label>
+            <input type="text" id="towerSource" placeholder="如：CHT 2024Q1 座標表" style="width:200px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px" />
+          </div>
+          <button id="importTowersBtn">匯入</button>
+          <button class="secondary" id="clearTowersBtn" style="color:var(--bad);border-color:var(--bad)">清空全部</button>
+        </div>
+        <div id="towerImportResult" style="font-size:13px;min-height:20px"></div>
       </div>
-      <table id="formatReportsTable">
-        <thead>
-          <tr>
-            <th style="width:140px">時間</th>
-            <th>檔名 / 欄位</th>
-            <th style="width:200px">診斷</th>
-            <th style="width:120px">回報者</th>
-            <th style="width:80px">狀態</th>
-            <th style="width:120px">操作</th>
-          </tr>
-        </thead>
-        <tbody id="formatReportsTbody">
-          <tr><td class="empty" colspan="6">載入中…</td></tr>
-        </tbody>
-      </table>
-    </div>
+
+      <!-- 欄名對照表管理 -->
+      <div class="section">
+        <div class="section-title">
+          🗂️ 欄名對照表（carrier_profile）
+          <button class="secondary" id="refreshCpBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
+        </div>
+        <div id="cpMeta" style="font-size:12px;color:var(--sub);margin-bottom:10px">載入中…</div>
+
+        <!-- 搜尋 + 新增 -->
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+          <div class="form-group" style="margin:0;flex:1;min-width:160px">
+            <label>搜尋（原始欄名）</label>
+            <input id="cpSearch" type="text" placeholder="輸入關鍵字…" />
+          </div>
+          <div class="form-group" style="margin:0;flex:1;min-width:160px">
+            <label>新增原始欄名 <span style="color:var(--bad)">*</span></label>
+            <input id="cpRawKey" type="text" placeholder="例：起訖基地台編號" autocomplete="off" />
+          </div>
+          <div class="form-group" style="margin:0;flex:1;min-width:160px">
+            <label>對應到 canonical 欄名 <span style="color:var(--bad)">*</span></label>
+            <input id="cpCanonKey" type="text" placeholder="例：cell_id" autocomplete="off" />
+          </div>
+          <button id="cpAddBtn">新增 / 覆蓋</button>
+          <span class="msg" id="cpMsg" style="margin:0"></span>
+        </div>
+
+        <!-- 對照表 -->
+        <div style="max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:6px">
+          <table style="margin:0">
+            <thead>
+              <tr>
+                <th>原始欄名（raw_key）</th>
+                <th>Canonical 欄名</th>
+                <th style="width:80px">來源</th>
+                <th style="width:60px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="cpTbody">
+              <tr><td class="empty" colspan="4">載入中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="font-size:11px;color:var(--sub);margin-top:6px">
+          「DB 自訂」可刪除（刪後自動退回 code 預設值）；「code 預設」僅顯示，如需覆蓋請在上方表單填寫相同 raw_key。
+        </div>
+      </div>
+
+    </div><!-- /data -->
+
+    <!-- ══════════ 分頁：稽核與回報 ══════════ -->
+    <div class="tab-panel" data-tab-panel="audit">
+
+      <!-- 稽核日誌（最新 50 筆） -->
+      <div class="section">
+        <div class="section-title">
+          🛡️ 最新操作紀錄
+          <button class="secondary" id="refreshAuditBtn" style="font-size:12px;padding:3px 9px">重新載入</button>
+          <a href="./audit.html" style="font-size:12px;color:var(--primary);text-decoration:none;margin-left:8px">查看完整稽核 →</a>
+        </div>
+        <table id="auditTable">
+          <thead>
+            <tr>
+              <th style="width:160px">時間</th>
+              <th style="width:140px">Action</th>
+              <th>Target / Project</th>
+              <th style="width:100px">操作者</th>
+              <th style="width:60px">狀態</th>
+            </tr>
+          </thead>
+          <tbody id="auditTbody">
+            <tr><td class="empty" colspan="5">載入中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 格式回報（使用者上傳無法解析的檔案 → 管理員加入新方言） -->
+      <div class="section">
+        <div class="section-title">
+          📧 格式回報
+          <select id="frStatusFilter" style="font-size:12px;padding:3px 8px;border:1px solid #ccc;border-radius:4px">
+            <option value="open" selected>待處理（open）</option>
+            <option value="handled">已處理</option>
+            <option value="rejected">已拒絕</option>
+            <option value="">全部</option>
+          </select>
+          <button class="secondary" id="refreshFormatReportsBtn" style="font-size:12px;padding:3px 9px;margin-left:8px">重新載入</button>
+        </div>
+        <table id="formatReportsTable">
+          <thead>
+            <tr>
+              <th style="width:140px">時間</th>
+              <th>檔名 / 欄位</th>
+              <th style="width:200px">診斷</th>
+              <th style="width:120px">回報者</th>
+              <th style="width:80px">狀態</th>
+              <th style="width:120px">操作</th>
+            </tr>
+          </thead>
+          <tbody id="formatReportsTbody">
+            <tr><td class="empty" colspan="6">載入中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div><!-- /audit -->
 
   </div>
 
+  <script src="./api.js"></script>
   <script>
     const TOKEN_KEY = 'ct_token';
 
-    function getApiBase() {
-      if (window.__CELLTRAIL_API__) return window.__CELLTRAIL_API__.replace(/\/$/, '');
-      const host = location.hostname || '';
-      if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/.test(host))
-        return 'http://localhost:8000';
-      return 'https://celltrail-api.onrender.com';
-    }
-    const API = getApiBase() + '/api';
+    const API = window.CT_API;  // 由 api.js 提供（含 /api）
 
     function getToken() { return localStorage.getItem(TOKEN_KEY); }
     function authHeaders() {
@@ -355,7 +369,30 @@
       return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     }
 
-    // Auth guard — admin only
+    // 目前登入的 admin（由 init() 設定，loadUsers 用來辨識「自己那一列」）
+    let CURRENT_USER = null;
+
+    /**
+     * 統一的 API 呼叫入口。
+     * 為什麼要包一層：① 自動帶 token ② token 過期（401）時，集中
+     * 清掉 token 並導回登入頁 —— 否則 JWT 12h 到期後每個面板只會
+     * 各自卡在「載入失敗：HTTP 401」，使用者不知道要重新登入。
+     */
+    async function apiFetch(path, opts = {}) {
+      const res = await fetch(`${API}${path}`, {
+        ...opts,
+        headers: { ...(opts.headers || {}), ...authHeaders() },
+      });
+      if (res.status === 401) {
+        localStorage.removeItem(TOKEN_KEY);
+        alert('登入已逾期，請重新登入。');
+        window.location.href = './login.html';
+        throw new Error('登入已逾期');
+      }
+      return res;
+    }
+
+    // ── Auth guard — admin only ──────────────────────────────
     (async function init() {
       const tok = getToken();
       if (!tok) { window.location.href = './login.html'; return; }
@@ -368,8 +405,11 @@
           window.location.href = './index.html';
           return;
         }
+        CURRENT_USER = u;
         const chip = document.getElementById('adminUserChip');
         if (chip) chip.textContent = (u.real_name || u.username) + (u.unit ? ' · ' + u.unit : '');
+        // CURRENT_USER 就緒後才載入預設分頁（loadUsers 需要它辨識自己那列）
+        activateTab('accounts');
       } catch {
         localStorage.removeItem(TOKEN_KEY);
         window.location.href = './login.html';
@@ -381,7 +421,43 @@
       window.location.href = './login.html';
     });
 
-    // ── 帳號申請審核 ──
+    // ── 分頁切換（首次開啟才載入該頁資料）────────────────────
+    const TAB_LOADERS = {
+      accounts: () => { loadRequests(); loadUsers(); },
+      data:     () => { loadTowerStats(); loadCarrierProfile(); },
+      audit:    () => { loadAudit(); loadFormatReports(); },
+    };
+    const loadedTabs = {};
+    function activateTab(name) {
+      document.querySelectorAll('.tab-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.tab === name));
+      document.querySelectorAll('.tab-panel').forEach(p =>
+        p.classList.toggle('active', p.dataset.tabPanel === name));
+      if (!loadedTabs[name]) {
+        loadedTabs[name] = true;
+        (TAB_LOADERS[name] || (() => {}))();
+      }
+    }
+    document.querySelectorAll('.tab-btn').forEach(b => {
+      b.addEventListener('click', () => activateTab(b.dataset.tab));
+    });
+
+    // ── 共用：HTTP 狀態碼 badge ───────────────────────────────
+    function statusBadge(sc) {
+      if (sc == null) return '';
+      const cls = sc < 300 ? 'badge-ok' : (sc < 500 ? 'badge-warn' : 'badge-off');
+      return `<span class="badge ${cls}">${sc}</span>`;
+    }
+    // 稽核 action 的語意配色（涵蓋證據路徑 + admin 管理操作）
+    function actionColor(action) {
+      if (!action) return '';
+      if (action.includes('failed'))                                          return 'var(--bad)';
+      if (/delete|deactivate|clear|reject|revoke|remove/.test(action))         return 'var(--warn)';
+      if (/create|upload|approve|import|upsert|reactivate|restore|save/.test(action)) return 'var(--ok)';
+      return '';
+    }
+
+    // ════════════ 帳號申請審核 ════════════
     let _pendingRejectId = null;
 
     async function loadRequests() {
@@ -392,7 +468,7 @@
       document.getElementById('rejectPanel').style.display = 'none';
       try {
         const qs = all ? '?status=all' : '';
-        const res = await fetch(`${API}/account-requests${qs}`, { headers: authHeaders() });
+        const res = await apiFetch(`/account-requests${qs}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const j = await res.json();
         const items = j.items || [];
@@ -407,9 +483,9 @@
           else if (r.status === 'approved') statusHtml = '<span class="badge badge-ok">已核准</span>';
           else statusHtml = `<span class="badge badge-off" title="${escH(r.reason||'')}">已拒絕</span>`;
           const actions = r.status === 'pending'
-            ? `<button class="sm" onclick="approveRequest(${r.id},'${escH(r.username)}')">✅ 核准</button>
-               <button class="sm danger" onclick="promptReject(${r.id},'${escH(r.username)}')">❌ 拒絕</button>`
-            : `<span style="font-size:11px;color:#888">${r.reviewed_by_name||'—'}</span>`;
+            ? `<button class="sm" data-act="approve" data-id="${r.id}" data-name="${escH(r.username)}">✅ 核准</button>
+               <button class="sm danger" data-act="reject" data-id="${r.id}" data-name="${escH(r.username)}">❌ 拒絕</button>`
+            : `<span style="font-size:11px;color:#888">${escH(r.reviewed_by_name||'—')}</span>`;
           return `<tr>
             <td>${escH(r.username)}</td>
             <td>${escH(r.real_name)}</td>
@@ -428,9 +504,7 @@
     async function approveRequest(id, username) {
       if (!confirm(`確認核准「${username}」的帳號申請？`)) return;
       try {
-        const res = await fetch(`${API}/account-requests/${id}/approve`, {
-          method: 'POST', headers: authHeaders(),
-        });
+        const res = await apiFetch(`/account-requests/${id}/approve`, { method: 'POST' });
         const j = await res.json();
         if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
         // 先刷新清單（loadRequests 內會把 approveResultBox 設 none），再顯示結果。
@@ -466,9 +540,9 @@
       const msgEl  = document.getElementById('rejectMsg');
       if (!reason) { msgEl.textContent = '請填寫拒絕原因'; return; }
       try {
-        const res = await fetch(`${API}/account-requests/${_pendingRejectId}/reject`, {
+        const res = await apiFetch(`/account-requests/${_pendingRejectId}/reject`, {
           method: 'POST',
-          headers: { 'Content-Type':'application/json', ...authHeaders() },
+          headers: { 'Content-Type':'application/json' },
           body: JSON.stringify({ reason }),
         });
         const j = await res.json();
@@ -483,12 +557,21 @@
     document.getElementById('refreshReqBtn').addEventListener('click', loadRequests);
     document.getElementById('showAllReq').addEventListener('change', loadRequests);
 
-    // ── 帳號清單 ──
+    // 事件委派：帳號申請的核准 / 拒絕鈕（取代 inline onclick）
+    document.getElementById('reqTbody').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const { act, id, name } = btn.dataset;
+      if (act === 'approve') approveRequest(+id, name);
+      else if (act === 'reject') promptReject(+id, name);
+    });
+
+    // ════════════ 帳號清單 ════════════
     async function loadUsers() {
       const tbody = document.getElementById('usersTbody');
       tbody.innerHTML = '<tr><td class="empty" colspan="9">載入中…</td></tr>';
       try {
-        const res = await fetch(`${API}/users`, { headers: authHeaders() });
+        const res = await apiFetch('/users');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const j = await res.json();
         const items = j.items || [];
@@ -505,9 +588,20 @@
             : `<span class="badge badge-off">停用</span>`;
           const changePw = u.must_change_password
             ? `<span class="badge badge-warn">待改密碼</span>` : '—';
-          const deactBtn = u.is_active
-            ? `<button class="sm danger" onclick="deactivateUser(${u.id})">停用</button>`
-            : `<button class="sm secondary" onclick="reactivateUser(${u.id})">啟用</button>`;
+
+          // 自己那列不顯示操作鈕：停用自己 / 降級自己 後端都會擋（B6）
+          let ops;
+          if (CURRENT_USER && u.id === CURRENT_USER.id) {
+            ops = '<span style="color:var(--sub);font-size:11px">目前登入帳號</span>';
+          } else {
+            const actBtn = u.is_active
+              ? `<button class="sm danger" data-act="deactivate" data-id="${u.id}">停用</button>`
+              : `<button class="sm secondary" data-act="reactivate" data-id="${u.id}">啟用</button>`;
+            const roleTo = u.role === 'admin' ? 'user' : 'admin';
+            ops = `${actBtn}
+              <button class="sm secondary" data-act="reset-pw" data-id="${u.id}" data-name="${escH(u.username)}">重設密碼</button>
+              <button class="sm secondary" data-act="set-role" data-id="${u.id}" data-role="${roleTo}" data-name="${escH(u.username)}">設為 ${roleTo}</button>`;
+          }
           return `<tr>
             <td>${u.id}</td>
             <td>${escH(u.username)}</td>
@@ -517,7 +611,7 @@
             <td>${roleBadge}</td>
             <td>${activeBadge}</td>
             <td>${changePw}</td>
-            <td>${deactBtn}</td>
+            <td style="white-space:nowrap">${ops}</td>
           </tr>`;
         }).join('');
       } catch (e) {
@@ -528,8 +622,8 @@
     async function deactivateUser(id) {
       if (!confirm(`確定停用 user_id=${id}？停用後無法登入。`)) return;
       try {
-        const res = await fetch(`${API}/users/${id}/deactivate`, { method:'PATCH', headers: authHeaders() });
-        if (!res.ok) { const t=await res.text(); throw new Error(JSON.parse(t).detail||t); }
+        const res = await apiFetch(`/users/${id}/deactivate`, { method:'PATCH' });
+        if (!res.ok) { const j = await res.json().catch(()=>({})); throw new Error(j.detail || `HTTP ${res.status}`); }
         loadUsers();
       } catch (e) { alert('停用失敗：' + e.message); }
     }
@@ -537,15 +631,63 @@
     async function reactivateUser(id) {
       if (!confirm(`確定重新啟用 user_id=${id}？`)) return;
       try {
-        const res = await fetch(`${API}/users/${id}/reactivate`, { method:'PATCH', headers: authHeaders() });
-        if (!res.ok) { const t=await res.text(); throw new Error(JSON.parse(t).detail||t); }
+        const res = await apiFetch(`/users/${id}/reactivate`, { method:'PATCH' });
+        if (!res.ok) { const j = await res.json().catch(()=>({})); throw new Error(j.detail || `HTTP ${res.status}`); }
         loadUsers();
       } catch (e) { alert('啟用失敗：' + e.message); }
     }
 
+    // per-row 重設密碼（取代原本要手動抄 User ID 的獨立區塊）
+    async function resetUserPassword(id, name) {
+      if (!confirm(`確定為「${name}」(user_id=${id}) 產生新臨時密碼？\n使用者下次登入將被強制改密碼。`)) return;
+      try {
+        const res = await apiFetch(`/users/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify({ reset_password: true }),
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+        const box = document.getElementById('userOpResult');
+        box.innerHTML =
+          `✅「<b>${escH(name)}</b>」密碼已重設，新臨時密碼（<b>僅顯示一次</b>）：<br/>` +
+          `<code>${escH(j.temp_password)}</code>` +
+          `<div style="font-size:11px;color:#a07000;margin-top:4px">使用者下次登入將被強制要求修改密碼。</div>`;
+        box.style.display = '';
+        box.scrollIntoView({ behavior:'smooth', block:'center' });
+        loadUsers();
+      } catch (e) { alert('重設密碼失敗：' + e.message); }
+    }
+
+    // per-row 改角色（admin ⇄ user）
+    async function setUserRole(id, newRole, name) {
+      if (!confirm(`確定將「${name}」(user_id=${id}) 的角色改為 ${newRole}？`)) return;
+      try {
+        const res = await apiFetch(`/users/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type':'application/json' },
+          body: JSON.stringify({ role: newRole }),
+        });
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
+        loadUsers();
+      } catch (e) { alert('改角色失敗：' + e.message); }
+    }
+
     document.getElementById('refreshUsersBtn').addEventListener('click', loadUsers);
 
-    // ── 建立帳號 ──
+    // 事件委派：帳號清單的 停用 / 啟用 / 重設密碼 / 改角色
+    document.getElementById('usersTbody').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const { act, id, name, role } = btn.dataset;
+      if (act === 'deactivate')      deactivateUser(+id);
+      else if (act === 'reactivate') reactivateUser(+id);
+      else if (act === 'reset-pw')   resetUserPassword(+id, name);
+      else if (act === 'set-role')   setUserRole(+id, role, name);
+    });
+
+    // ════════════ 建立帳號 ════════════
     document.getElementById('createBtn').addEventListener('click', async () => {
       const username = document.getElementById('cUsername').value.trim();
       const real_name = document.getElementById('cRealName').value.trim() || undefined;
@@ -565,9 +707,9 @@
         if (unit)         payload.unit         = unit;
         if (badge_number) payload.badge_number = badge_number;
         if (email)        payload.email        = email;
-        const res = await fetch(`${API}/users`, {
+        const res = await apiFetch('/users', {
           method: 'POST',
-          headers: { 'Content-Type':'application/json', ...authHeaders() },
+          headers: { 'Content-Type':'application/json' },
           body: JSON.stringify(payload),
         });
         const j = await res.json();
@@ -589,41 +731,12 @@
       }
     });
 
-    // ── 重設密碼 ──
-    document.getElementById('resetPassBtn').addEventListener('click', async () => {
-      const uid = document.getElementById('resetUid').value;
-      const msgEl = document.getElementById('resetMsg');
-      const box = document.getElementById('resetPassBox');
-      box.style.display = 'none';
-      if (!uid) { msgEl.textContent = '請填入 User ID'; msgEl.className='msg'; return; }
-      msgEl.textContent = '處理中…'; msgEl.className='msg';
-      document.getElementById('resetPassBtn').disabled = true;
-      try {
-        const res = await fetch(`${API}/users/${uid}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type':'application/json', ...authHeaders() },
-          body: JSON.stringify({ reset_password: true }),
-        });
-        const j = await res.json();
-        if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
-        msgEl.textContent = '';
-        document.getElementById('resetPassVal').textContent = j.temp_password;
-        box.style.display = '';
-        loadUsers();
-      } catch (e) {
-        msgEl.textContent = e.message || '重設失敗';
-        msgEl.className = 'msg';
-      } finally {
-        document.getElementById('resetPassBtn').disabled = false;
-      }
-    });
-
-    // ── 稽核日誌 ──
+    // ════════════ 稽核日誌 ════════════
     async function loadAudit() {
       const tbody = document.getElementById('auditTbody');
       tbody.innerHTML = '<tr><td class="empty" colspan="5">載入中…</td></tr>';
       try {
-        const res = await fetch(`${API}/audit/logs?page_size=50&page=1`, { headers: authHeaders() });
+        const res = await apiFetch('/audit/logs?page_size=50&page=1');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const j = await res.json();
         const items = j.items || [];
@@ -631,18 +744,13 @@
           tbody.innerHTML = '<tr><td class="empty" colspan="5">無記錄</td></tr>';
           return;
         }
-        function statusBadge(sc) {
-          if (sc == null) return '';
-          const cls = sc < 300 ? 'badge-ok' : (sc < 500 ? 'badge-warn' : 'badge-off');
-          return `<span class="badge ${cls}">${sc}</span>`;
-        }
         tbody.innerHTML = items.map(it => {
           const ts = it.ts ? it.ts.replace('T',' ').replace(/\..*$/,'').replace(/\+.*/,'') : '';
-          const actionCls = it.action.includes('failed') ? 'style="color:var(--bad);font-weight:600"' :
-                            it.action.startsWith('upload') ? 'style="color:var(--ok);font-weight:600"' : '';
+          const ac = actionColor(it.action);
+          const acStyle = ac ? `style="color:${ac};font-weight:600"` : '';
           return `<tr>
             <td style="font-size:11px">${escH(ts)}</td>
-            <td ${actionCls}>${escH(it.action)}</td>
+            <td ${acStyle}>${escH(it.action)}</td>
             <td><code style="font-size:11px">${escH(it.target_ref||'')}</code>
               <span style="color:var(--sub);font-size:11px"> ${escH(it.project_id||'')}</span></td>
             <td style="font-size:11px">${escH(it.username||'')}</td>
@@ -656,18 +764,18 @@
     }
     document.getElementById('refreshAuditBtn').addEventListener('click', loadAudit);
 
-    // ── 本地基地台座標表 ──
+    // ════════════ 本地基地台座標表 ════════════
     async function loadTowerStats() {
       const el = document.getElementById('towerStats');
       try {
-        const r = await fetch(`${API}/admin/cell-towers/stats`, { headers: authHeaders() });
+        const r = await apiFetch('/admin/cell-towers/stats');
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const d = await r.json();
         if (d.total === 0) {
           el.textContent = '尚未匯入任何資料。';
           return;
         }
-        const carrierStr = d.carriers.map(c => `${escH(c.carrier_name)} ${c.count} 筆`).join('、');
+        const carrierStr = (d.carriers || []).map(c => `${escH(c.carrier_name)} ${c.count} 筆`).join('、');
         const latestStr  = d.latest_import
           ? new Date(d.latest_import).toLocaleString('zh-TW')
           : '—';
@@ -694,9 +802,7 @@
 
       resultEl.textContent = '匯入中…';
       try {
-        const r = await fetch(`${API}/admin/cell-towers/import`, {
-          method: 'POST', headers: authHeaders(), body: fd,
-        });
+        const r = await apiFetch('/admin/cell-towers/import', { method: 'POST', body: fd });
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
         let msg = `新增 ${d.inserted} 筆，更新 ${d.updated} 筆，跳過 ${d.skipped} 筆。`;
@@ -714,9 +820,7 @@
       if (!confirm('確定要清空全部基地台座標資料？此動作無法復原。')) return;
       const resultEl = document.getElementById('towerImportResult');
       try {
-        const r = await fetch(`${API}/admin/cell-towers?confirm=true`, {
-          method: 'DELETE', headers: authHeaders(),
-        });
+        const r = await apiFetch('/admin/cell-towers?confirm=true', { method: 'DELETE' });
         const d = await r.json();
         if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
         resultEl.innerHTML = `<span style="color:var(--warn)">已清空。</span>`;
@@ -726,14 +830,14 @@
       }
     });
 
-    // ── 欄名對照表 ──
+    // ════════════ 欄名對照表 ════════════
     let _cpData = { db_mapping: {}, code_mapping: {}, active_count: 0, source: 'code_fallback', profile: null };
 
     async function loadCarrierProfile() {
       const metaEl = document.getElementById('cpMeta');
       metaEl.textContent = '載入中…';
       try {
-        const r = await fetch(`${API}/admin/carrier-profile`, { headers: authHeaders() });
+        const r = await apiFetch('/admin/carrier-profile');
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         _cpData = await r.json();
 
@@ -774,18 +878,20 @@
       }
       const filtered = rows
         .filter(r => !q || r.raw.toLowerCase().includes(q))
-        .sort((a, b) => a.raw.localeCompare(b, 'zh-Hant'));
+        .sort((a, b) => a.raw.localeCompare(b.raw, 'zh-Hant'));
 
       if (filtered.length === 0) {
         tbody.innerHTML = `<tr><td class="empty" colspan="4">${q ? '無符合結果' : '（無對照條目）'}</td></tr>`;
         return;
       }
+      // raw_key 用 escH 寫進 data-raw 屬性（HTML 屬性轉義），事件委派時
+      // 由 dataset.raw 取回 —— 取代原本 JSON.stringify 進 onclick 的不安全寫法。
       tbody.innerHTML = filtered.map(r => {
         const srcBadge = r.src === 'db'
           ? `<span class="badge badge-ok" style="font-size:10px">DB 自訂${r.overrides ? '（覆蓋）' : ''}</span>`
           : `<span class="badge badge-user" style="font-size:10px">code 預設</span>`;
         const delBtn = r.src === 'db'
-          ? `<button class="sm danger" onclick="deleteCpEntry(${JSON.stringify(r.raw)})">刪除</button>`
+          ? `<button class="sm danger" data-act="del-cp" data-raw="${escH(r.raw)}">刪除</button>`
           : `<span style="color:var(--sub);font-size:11px">—</span>`;
         return `<tr>
           <td><code style="font-size:12px">${escH(r.raw)}</code></td>
@@ -801,9 +907,9 @@
       const msgEl = document.getElementById('cpMsg');
       msgEl.textContent = ''; msgEl.className = 'msg';
       try {
-        const r = await fetch(`${API}/admin/carrier-profile/entry`, {
+        const r = await apiFetch('/admin/carrier-profile/entry', {
           method: 'DELETE',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ raw_key: rawKey }),
         });
         const j = await r.json();
@@ -818,6 +924,13 @@
     document.getElementById('cpSearch').addEventListener('input', renderCpTable);
     document.getElementById('refreshCpBtn').addEventListener('click', loadCarrierProfile);
 
+    // 事件委派：欄名對照表的刪除鈕
+    document.getElementById('cpTbody').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-act="del-cp"]');
+      if (!btn) return;
+      deleteCpEntry(btn.dataset.raw);
+    });
+
     document.getElementById('cpAddBtn').addEventListener('click', async () => {
       const rawKey  = document.getElementById('cpRawKey').value.trim();
       const canonKey = document.getElementById('cpCanonKey').value.trim();
@@ -828,9 +941,9 @@
       document.getElementById('cpAddBtn').disabled = true;
       msgEl.textContent = '儲存中…';
       try {
-        const r = await fetch(`${API}/admin/carrier-profile/entry`, {
+        const r = await apiFetch('/admin/carrier-profile/entry', {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ raw_key: rawKey, canon_key: canonKey }),
         });
         const j = await r.json();
@@ -846,14 +959,14 @@
       }
     });
 
-    // ── 格式回報 ─────────────────────────────────────────────
+    // ════════════ 格式回報 ════════════
     async function loadFormatReports() {
       const status = document.getElementById('frStatusFilter').value;
       const tbody = document.getElementById('formatReportsTbody');
       tbody.innerHTML = '<tr><td class="empty" colspan="6">載入中…</td></tr>';
       try {
         const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-        const res = await fetch(`${API}/format-reports/${qs}`, { headers: authHeaders() });
+        const res = await apiFetch(`/format-reports/${qs}`);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const j = await res.json();
         if (!j.items || j.items.length === 0) {
@@ -874,14 +987,14 @@
             : `<span style="color:#888">訪客 ${escH(r.reporter && r.reporter.ip || '')}</span>`;
           const ts = r.created_at ? new Date(r.created_at).toLocaleString('zh-TW',
             { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }) : '';
-          const statusBadge = r.status === 'handled'
+          const stBadge = r.status === 'handled'
             ? '<span style="color:#2e7d32;font-weight:600">已處理</span>'
             : r.status === 'rejected'
               ? '<span style="color:#888">已拒絕</span>'
               : '<span style="color:#c62828;font-weight:600">待處理</span>';
           const actions = r.status === 'open' ? `
-            <button class="primary" data-fr-handle="${r.id}" style="font-size:11px;padding:3px 8px">✓ 已處理</button>
-            <button class="secondary" data-fr-reject="${r.id}" style="font-size:11px;padding:3px 8px;margin-left:4px">拒絕</button>` : '';
+            <button class="sm" data-act="fr-handle" data-id="${r.id}" style="font-size:11px;padding:3px 8px">✓ 已處理</button>
+            <button class="sm secondary" data-act="fr-reject" data-id="${r.id}" style="font-size:11px;padding:3px 8px;margin-left:4px">拒絕</button>` : '';
           const noteHtml = r.note ? `<div style="font-size:11px;color:#666;margin-top:4px"><b>備註：</b>${escH(r.note)}</div>` : '';
           return `<tr>
             <td>${escH(ts)}</td>
@@ -892,19 +1005,12 @@
             </td>
             <td style="font-size:11px;color:#555">${diagLine}</td>
             <td>${reporter}</td>
-            <td>${statusBadge}</td>
-            <td>${actions}</td>
+            <td>${stBadge}</td>
+            <td style="white-space:nowrap">${actions}</td>
           </tr>`;
         }).join('');
-
-        tbody.querySelectorAll('button[data-fr-handle]').forEach(b => {
-          b.addEventListener('click', () => handleFormatReport(b.dataset.frHandle, 'handled'));
-        });
-        tbody.querySelectorAll('button[data-fr-reject]').forEach(b => {
-          b.addEventListener('click', () => handleFormatReport(b.dataset.frReject, 'rejected'));
-        });
       } catch (e) {
-        tbody.innerHTML = `<tr><td class="empty" colspan="6" style="color:#c00">載入失敗：${escH(e.message)}</td></tr>`;
+        tbody.innerHTML = `<tr><td class="empty" colspan="6" style="color:var(--bad)">載入失敗：${escH(e.message)}</td></tr>`;
       }
     }
 
@@ -914,9 +1020,9 @@
         : '拒絕原因（選填）：', '');
       if (note === null) return;  // 使用者按取消
       try {
-        const res = await fetch(`${API}/format-reports/${id}`, {
+        const res = await apiFetch(`/format-reports/${id}`, {
           method: 'PATCH',
-          headers: { 'Content-Type':'application/json', ...authHeaders() },
+          headers: { 'Content-Type':'application/json' },
           body: JSON.stringify({ status, note: note || null }),
         });
         if (!res.ok) {
@@ -932,13 +1038,17 @@
     document.getElementById('refreshFormatReportsBtn').addEventListener('click', loadFormatReports);
     document.getElementById('frStatusFilter').addEventListener('change', loadFormatReports);
 
-    // 初始載入
-    loadRequests();
-    loadUsers();
-    loadAudit();
-    loadTowerStats();
-    loadCarrierProfile();
-    loadFormatReports();
+    // 事件委派：格式回報的 已處理 / 拒絕 鈕
+    document.getElementById('formatReportsTbody').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const { act, id } = btn.dataset;
+      if (act === 'fr-handle') handleFormatReport(id, 'handled');
+      else if (act === 'fr-reject') handleFormatReport(id, 'rejected');
+    });
+
+    // 注意：各分頁的資料在 activateTab() 首次開啟時才載入；
+    // 預設分頁（accounts）由 init() 確認 admin 身分後才觸發。
   </script>
 </body>
 </html>

@@ -673,6 +673,7 @@
           crossorigin=""></script>
   <script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
+  <script src="./api.js"></script>
 
   <script>
     // ── 全域錯誤捕捉：任何未捕捉的錯誤都不該讓整個 UI 崩潰 ──
@@ -719,18 +720,8 @@
     // URL 中座標順序為 {z}/{y}/{x}（與 OSM 的 {z}/{x}/{y} 相反），這是 NLSC WMTS 規格
     const TILE_URL  = 'https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}';
 
-    // API base：本機開發時自動切到 localhost:8000；
-    // 亦可在 <script> 中事先設定 window.__CELLTRAIL_API__ = 'https://xxx' 覆寫
-    const API_BASE = (function () {
-      if (window.__CELLTRAIL_API__) {
-        return window.__CELLTRAIL_API__.replace(/\/$/, '') + '/api';
-      }
-      const host = location.hostname || '';
-      if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.|10\.)/.test(host)) {
-        return 'http://localhost:8000/api';
-      }
-      return 'https://celltrail-api.onrender.com/api';
-    })();
+    // API base 由 api.js 提供（含 /api）；api.js 仍支援 window.__CELLTRAIL_API__ 覆寫
+    const API_BASE = window.CT_API;
     const SERIES_COLORS = ['#ff3b30', '#ff9500', '#34c759', '#007aff', '#af52de'];
     const OSRM_SERVERS = [
       'https://router.project-osrm.org/route/v1/driving/',
@@ -1061,29 +1052,64 @@
         showToast(`已載入專案：${name}`, 'success', 2000);
       }
 
-      // 訪客（未登入）沒有帳號、沒有歷史專案 → 不抓清單、按鈕保持隱藏
-      if (TOKEN) {
-        fetch(`${API_BASE}/projects/`, { headers: authHeaders() })
+      // 載入下拉清單：每列左側專案名（點擊載入）、右側刪除鈕（owner/admin 才顯示）
+      function loadPrevProjects() {
+        return fetch(`${API_BASE}/projects/`, { headers: authHeaders() })
           .then(r => r.ok ? r.json() : [])
           .then(items => {
-            // 沒有任何先前專案 → 隱藏按鈕（spec）
-            if (!Array.isArray(items) || items.length === 0) return;
+            // 沒有任何先前專案 → 隱藏按鈕與選單（spec）
+            if (!Array.isArray(items) || items.length === 0) {
+              prevBtn.style.display = 'none';
+              prevMenu.style.display = 'none';
+              prevMenu.innerHTML = '';
+              return;
+            }
             // 最多 10 筆；API 已按建立時間新→舊排序
             prevMenu.innerHTML = items.slice(0, 10).map(p => {
               const date = p.created_at ? p.created_at.slice(0, 10) : '';
+              // permission 由 GET /projects/ 回傳（admin / owner / collaborator / viewer）。
+              // 只有 owner / admin 顯示刪除鈕；AUTH_ENABLED=false 時後端一律回 'admin'。
+              const canDelete = p.permission === 'owner' || p.permission === 'admin';
+              const delBtn = canDelete
+                ? `<span class="_pcDelBtn" title="刪除此專案"
+                     style="flex:none;color:#c0392b;font-size:13px;cursor:pointer;padding:2px 7px;border-radius:4px">✕</span>`
+                : '';
               return `<div class="_pcPrevItem" data-pid="${escH(p.project_id)}"
-                style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #f0f0f0;font-size:13px"
+                style="display:flex;align-items:center;gap:6px;padding:8px 12px;cursor:pointer;border-bottom:1px solid #f0f0f0;font-size:13px"
                 onmouseover="this.style.background='#f3f7ff'" onmouseout="this.style.background=''">
-                📁 ${escH(p.project_id)}${date ? `<span style="color:#999;font-size:11px;margin-left:6px">${escH(date)}</span>` : ''}
+                <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">📁 ${escH(p.project_id)}${date ? `<span style="color:#999;font-size:11px;margin-left:6px">${escH(date)}</span>` : ''}</span>${delBtn}
               </div>`;
             }).join('');
             prevMenu.querySelectorAll('._pcPrevItem').forEach(el => {
               el.onclick = () => openExistingProject(el.dataset.pid);
+              const del = el.querySelector('._pcDelBtn');
+              if (del) del.onclick = (e) => {
+                e.stopPropagation();          // 不冒泡到外層 → 不觸發「選取專案」
+                deleteProjectFromDropdown(el.dataset.pid);
+              };
             });
             prevBtn.style.display = '';
           })
           .catch(() => { /* 取清單失敗：靜默，按鈕維持隱藏 */ });
       }
+
+      // 刪除專案：confirm → DELETE /api/projects/{id} → 重新整理下拉清單
+      function deleteProjectFromDropdown(pid) {
+        if (!confirm(`確認刪除專案「${pid}」？此操作無法復原。`)) return;
+        fetch(`${API_BASE}/projects/${encodeURIComponent(pid)}`, {
+          method: 'DELETE', headers: authHeaders(),
+        })
+          .then(async r => {
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+            showToast(`已刪除專案：${pid}`, 'success', 2000);
+            loadPrevProjects();             // 重新整理下拉清單
+          })
+          .catch(e => showToast(`刪除失敗：${e.message}`, 'error', 2600));
+      }
+
+      // 訪客（未登入）沒有帳號、沒有歷史專案 → 不抓清單、按鈕保持隱藏
+      if (TOKEN) loadPrevProjects();
 
       prevBtn.onclick = (e) => {
         e.stopPropagation();
@@ -2399,7 +2425,7 @@
           <td style="padding:7px 8px;font-size:12px;color:#444;white-space:nowrap">${t.last_annotator ? escH(t.last_annotator) + '<br/><span style="color:#888">' + fmtDt(t.last_annotated_at) + '</span>' : '<span style="color:#bbb">—</span>'}</td>
           <td style="padding:7px 8px;font-size:11px;color:#666;max-width:150px;word-break:break-all">${t.last_evidence ? escH(t.last_evidence) : '<span style="color:#bbb">—</span>'}</td>
           <td style="padding:7px 8px;text-align:center">
-            <button onclick="this.closest('[data-overlay]').remove();openAzRefModal(${JSON.stringify(t.target_id)})"
+            <button data-azref-target="${escH(t.target_id)}"
               style="padding:4px 10px;font-size:12px;cursor:pointer;background:${unk > 0 ? '#0066cc' : '#6c757d'};color:#fff;border:none;border-radius:4px;white-space:nowrap">
               ${unk > 0 ? '⚠ 標註' : '重標'}
             </button>
@@ -2442,6 +2468,15 @@
           本表由 audit_logs 驅動（action=update_azimuth_ref）。點擊「標註」完成後系統自動記錄操作人、時間、書面依據。<br/>
           完整稽核鏈請見 <a href="./audit.html" target="_blank" style="color:#0b5ed7">稽核頁面</a> 或下載 PDF 報告（三、方位角北方基準標註狀態）。
         </div>`;
+
+      // 事件委派：標註鈕。取代原本的 inline onclick + JSON.stringify(target_id) ——
+      // target_id 源自上傳檔資料，含雙引號會破壞 onclick="" 屬性邊界（latent XSS）。
+      el.querySelectorAll('button[data-azref-target]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          overlay.remove();
+          openAzRefModal(btn.dataset.azrefTarget);
+        });
+      });
     }
 
     // ── P2.5-B：方位角北方基準標註 modal ───────────────────────
