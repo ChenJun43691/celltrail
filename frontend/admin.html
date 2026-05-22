@@ -110,12 +110,8 @@
           <tr><td class="empty" colspan="7">載入中…</td></tr>
         </tbody>
       </table>
-      <!-- 核准後顯示臨時密碼 -->
-      <div id="approveResultBox" style="display:none" class="temp-pass">
-        ✅ 帳號已建立！請<b>電話告知申請者</b>臨時密碼（<b>僅顯示一次</b>）：<br/>
-        申請者：<b id="approveUsername"></b>　臨時密碼：<code id="approveTempPass"></code>
-        <div style="font-size:11px;color:#a07000;margin-top:4px">首次登入後系統將強制要求修改密碼。</div>
-      </div>
+      <!-- 核准結果（內容由 approveRequest() 依是否有臨時密碼動態填入）-->
+      <div id="approveResultBox" style="display:none" class="temp-pass"></div>
       <!-- 拒絕原因輸入框 -->
       <div id="rejectPanel" style="display:none;margin-top:12px;padding:12px;background:#fff3e0;border:1px solid #ffe0b2;border-radius:8px">
         <div style="font-size:13px;font-weight:600;margin-bottom:8px">拒絕原因 <span id="rejectTarget" style="font-weight:normal;color:#888"></span></div>
@@ -430,20 +426,29 @@
     }
 
     async function approveRequest(id, username) {
-      if (!confirm(`確認核准「${username}」的帳號申請？\n將自動建立帳號並產生臨時密碼。`)) return;
+      if (!confirm(`確認核准「${username}」的帳號申請？`)) return;
       try {
         const res = await fetch(`${API}/account-requests/${id}/approve`, {
           method: 'POST', headers: authHeaders(),
         });
         const j = await res.json();
         if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
-        // 先刷新清單（loadRequests 內會把 approveResultBox 設 none），
-        // 等它跑完再顯示臨時密碼框，否則密碼框會被瞬間蓋掉。
+        // 先刷新清單（loadRequests 內會把 approveResultBox 設 none），再顯示結果。
         await loadRequests();
-        document.getElementById('approveUsername').textContent = j.username;
-        document.getElementById('approveTempPass').textContent = j.temp_password;
-        document.getElementById('approveResultBox').style.display = '';
-        document.getElementById('approveResultBox').scrollIntoView({ behavior:'smooth', block:'center' });
+        const box = document.getElementById('approveResultBox');
+        if (j.temp_password) {
+          // 舊申請（無自設密碼）：顯示一次性臨時密碼
+          box.innerHTML =
+            `✅ 帳號已建立！此申請未自設密碼，請<b>電話告知申請者</b>臨時密碼（<b>僅顯示一次</b>）：<br/>` +
+            `申請者：<b>${escH(j.username)}</b>　臨時密碼：<code>${escH(j.temp_password)}</code>` +
+            `<div style="font-size:11px;color:#a07000;margin-top:4px">首次登入後系統將強制要求修改密碼。</div>`;
+        } else {
+          // 新流程：申請者申請時已自設密碼
+          box.innerHTML =
+            `✅ 帳號「<b>${escH(j.username)}</b>」已建立，申請者可用<b>申請時自設的密碼</b>直接登入。`;
+        }
+        box.style.display = '';
+        box.scrollIntoView({ behavior:'smooth', block:'center' });
       } catch (e) { alert('核准失敗：' + e.message); }
     }
 
@@ -722,8 +727,7 @@
     });
 
     // ── 欄名對照表 ──
-    let _cpData = { db_mapping: {}, active_count: 0, source: 'code_fallback', profile: null };
-    let _cpCodeKeys = new Set();
+    let _cpData = { db_mapping: {}, code_mapping: {}, active_count: 0, source: 'code_fallback', profile: null };
 
     async function loadCarrierProfile() {
       const metaEl = document.getElementById('cpMeta');
@@ -733,20 +737,17 @@
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         _cpData = await r.json();
 
-        // Code 預設 keys = active map keys not in db_mapping
-        const dbKeys = new Set(Object.keys(_cpData.db_mapping));
-        // We don't have the code map directly; mark them by exclusion
-        _cpCodeKeys = dbKeys; // will refine display logic below
-
+        const dbCount   = Object.keys(_cpData.db_mapping || {}).length;
+        const codeCount = Object.keys(_cpData.code_mapping || {}).length;
         const p = _cpData.profile;
         if (p) {
           const updAt = p.updated_at ? new Date(p.updated_at).toLocaleString('zh-TW') : '—';
           metaEl.innerHTML =
             `Profile ID: <b>${p.id}</b>　業者: <b>${escH(p.carrier_name)}</b>　` +
             `Variant: <b>${escH(p.variant_label)}</b>　更新: ${updAt}　` +
-            `合併生效條目: <b>${_cpData.active_count}</b>　DB 自訂: <b>${dbKeys.size}</b>`;
+            `合併生效條目: <b>${_cpData.active_count}</b>　DB 自訂: <b>${dbCount}</b>　code 預設: <b>${codeCount}</b>`;
         } else {
-          metaEl.innerHTML = `<span style="color:var(--warn)">未找到 DB default profile，使用 code fallback。合併條目: <b>${_cpData.active_count}</b></span>`;
+          metaEl.innerHTML = `<span style="color:var(--warn)">未找到 DB default profile，使用 code fallback。code 預設: <b>${codeCount}</b> 條</span>`;
         }
         renderCpTable();
       } catch (e) {
@@ -757,24 +758,42 @@
     function renderCpTable() {
       const tbody = document.getElementById('cpTbody');
       const q = document.getElementById('cpSearch').value.trim().toLowerCase();
-      const dbMap = _cpData.db_mapping || {};
-      const entries = Object.entries(dbMap)
-        .filter(([k]) => !q || k.toLowerCase().includes(q))
-        .sort(([a], [b]) => a.localeCompare(b, 'zh-Hant'));
+      const dbMap   = _cpData.db_mapping || {};
+      const codeMap = _cpData.code_mapping || {};
 
-      if (entries.length === 0) {
-        tbody.innerHTML = `<tr><td class="empty" colspan="4">${q ? '無符合結果' : '（DB 無自訂條目，全部使用 code 預設）'}</td></tr>`;
+      // 合併：每個原始欄名一列；DB 自訂同名 key 覆蓋 code 預設
+      const rows = [];
+      const seen = new Set();
+      for (const [raw, canon] of Object.entries(dbMap)) {
+        seen.add(raw);
+        rows.push({ raw, canon, src: 'db', overrides: raw in codeMap });
+      }
+      for (const [raw, canon] of Object.entries(codeMap)) {
+        if (seen.has(raw)) continue;  // 已被 DB 自訂覆蓋，不重複列
+        rows.push({ raw, canon, src: 'code', overrides: false });
+      }
+      const filtered = rows
+        .filter(r => !q || r.raw.toLowerCase().includes(q))
+        .sort((a, b) => a.raw.localeCompare(b, 'zh-Hant'));
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td class="empty" colspan="4">${q ? '無符合結果' : '（無對照條目）'}</td></tr>`;
         return;
       }
-      tbody.innerHTML = entries.map(([raw, canon]) => `
-        <tr>
-          <td><code style="font-size:12px">${escH(raw)}</code></td>
-          <td><code style="font-size:12px;color:var(--primary)">${escH(canon)}</code></td>
-          <td><span class="badge badge-ok" style="font-size:10px">DB 自訂</span></td>
-          <td>
-            <button class="sm danger" onclick="deleteCpEntry(${JSON.stringify(raw)})">刪除</button>
-          </td>
-        </tr>`).join('');
+      tbody.innerHTML = filtered.map(r => {
+        const srcBadge = r.src === 'db'
+          ? `<span class="badge badge-ok" style="font-size:10px">DB 自訂${r.overrides ? '（覆蓋）' : ''}</span>`
+          : `<span class="badge badge-user" style="font-size:10px">code 預設</span>`;
+        const delBtn = r.src === 'db'
+          ? `<button class="sm danger" onclick="deleteCpEntry(${JSON.stringify(r.raw)})">刪除</button>`
+          : `<span style="color:var(--sub);font-size:11px">—</span>`;
+        return `<tr>
+          <td><code style="font-size:12px">${escH(r.raw)}</code></td>
+          <td><code style="font-size:12px;color:var(--primary)">${escH(r.canon)}</code></td>
+          <td>${srcBadge}</td>
+          <td>${delBtn}</td>
+        </tr>`;
+      }).join('');
     }
 
     async function deleteCpEntry(rawKey) {

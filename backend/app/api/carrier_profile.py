@@ -28,11 +28,15 @@ router = APIRouter(prefix="/admin/carrier-profile", tags=["carrier-profile"])
 def get_carrier_profile(_user: dict = Depends(require_admin)):
     """
     回傳：
-      - profile   : DB default profile 的 metadata（id, carrier_name, variant_label, notes, updated_at）
-      - db_mapping: DB mapping_json 的 raw 內容（可被管理員編輯的部分）
+      - profile     : DB default profile 的 metadata（id, carrier_name, variant_label, notes, updated_at）
+      - db_mapping  : DB mapping_json 的 raw 內容（管理員自訂、可編輯／刪除的部分）
+      - code_mapping: 程式碼內建預設對照（ingest._RAW2CANON，唯讀；DB 自訂同名 key 會覆蓋它）
       - active_count: 合併後生效的 mapping 總條目數
-      - source    : "db" | "code_fallback"
+      - source      : "db" | "code_fallback"
     """
+    from app.services.ingest import _RAW2CANON  # lazy import：避免 import 期 circular
+    code_mapping = dict(_RAW2CANON)
+
     profile = get_default_profile()
     active_map = get_active_header_map()
 
@@ -40,6 +44,7 @@ def get_carrier_profile(_user: dict = Depends(require_admin)):
         return {
             "profile": None,
             "db_mapping": {},
+            "code_mapping": code_mapping,
             "active_count": len(active_map),
             "source": "code_fallback",
         }
@@ -53,6 +58,7 @@ def get_carrier_profile(_user: dict = Depends(require_admin)):
             "updated_at": profile["updated_at"].isoformat() if profile.get("updated_at") else None,
         },
         "db_mapping": profile["mapping_json"] or {},
+        "code_mapping": code_mapping,
         "active_count": len(active_map),
         "source": "db",
     }

@@ -79,7 +79,8 @@
     }
     .field label .req { color: #ff8080; margin-left: 2px; }
     .field input[type="text"],
-    .field input[type="tel"] {
+    .field input[type="tel"],
+    .field input[type="password"] {
       display: block; width: 100%; padding: 11px 14px;
       background: rgba(255,255,255,0.07); border: 1px solid rgba(0,150,255,0.35);
       border-radius: 8px; font-size: 14px; font-family: inherit; color: #e8eef8;
@@ -153,13 +154,24 @@
         <hr class="section-sep" />
         <div class="note-box">
           ⚠ 本系統為刑事偵查專用，申請帳號需由管理員審核。<br>
-          核准後將以電話通知您登入密碼。
+          核准後即可用您自設的帳號密碼登入。
         </div>
         <div class="field">
           <label for="fUsername">帳號名稱 <span class="req">*</span></label>
           <input id="fUsername" type="text" placeholder="請輸入自訂帳號"
                  maxlength="64" autocomplete="username" />
           <div class="hint">僅限英文、數字、底線、連字號；申請後不可更改</div>
+        </div>
+        <div class="field">
+          <label for="fPassword">密碼 <span class="req">*</span></label>
+          <input id="fPassword" type="password" placeholder="至少 8 個字元"
+                 maxlength="128" autocomplete="new-password" />
+          <div class="hint">核准後即以此密碼登入，請自行妥善保管</div>
+        </div>
+        <div class="field">
+          <label for="fPassword2">確認密碼 <span class="req">*</span></label>
+          <input id="fPassword2" type="password" placeholder="再次輸入密碼"
+                 maxlength="128" autocomplete="new-password" />
         </div>
         <div class="field">
           <label for="fRealName">姓名 <span class="req">*</span></label>
@@ -172,7 +184,7 @@
         <div class="field">
           <label for="fPhone">聯絡電話 <span class="req">*</span></label>
           <input id="fPhone" type="tel" placeholder="例：0912345678" maxlength="20" />
-          <div class="hint">核准後管理員將以此電話告知密碼；同電話不得重複申請</div>
+          <div class="hint">管理員審核時可能以此電話與您聯繫；同電話不得重複申請</div>
         </div>
         <div id="formMsg" class="msg"></div>
         <button id="submitBtn" class="btn-primary">送出申請</button>
@@ -184,7 +196,7 @@
         <div class="success-box">
           <h3>✅ 申請已送出</h3>
           申請已送出，請等候管理員審核。<br>
-          核准後將以電話通知您登入密碼。<br><br>
+          核准後即可用您自設的帳號密碼登入。<br><br>
           <b style="color:#c0f0d0">帳號名稱：</b><span id="successUsername"></span><br>
           <b style="color:#c0f0d0">申請時間：</b><span id="successTime"></span>
         </div>
@@ -234,12 +246,16 @@
 
   async function doSubmit() {
     const username  = document.getElementById('fUsername').value.trim();
+    const password  = document.getElementById('fPassword').value;
+    const password2 = document.getElementById('fPassword2').value;
     const real_name = document.getElementById('fRealName').value.trim();
     const unit      = document.getElementById('fUnit').value.trim();
     const phone     = document.getElementById('fPhone').value.trim();
 
     if (!username)  { setMsg('請填入帳號名稱'); return; }
     if (!/^[A-Za-z0-9_\-]+$/.test(username)) { setMsg('帳號名稱只允許英文、數字、底線、連字號'); return; }
+    if (!password || password.length < 8) { setMsg('密碼至少 8 個字元'); return; }
+    if (password !== password2) { setMsg('兩次輸入的密碼不一致'); return; }
     if (!real_name) { setMsg('請填入姓名'); return; }
     if (!unit)      { setMsg('請填入服務單位'); return; }
     if (!phone)     { setMsg('請填入聯絡電話'); return; }
@@ -252,7 +268,7 @@
       const res = await fetch(`${API}/account-requests`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, real_name, unit, phone }),
+        body: JSON.stringify({ username, password, real_name, unit, phone }),
       });
       const j = await res.json();
       if (!res.ok) throw new Error(j.detail || `HTTP ${res.status}`);
