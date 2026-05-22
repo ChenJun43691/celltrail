@@ -17,11 +17,12 @@
 import secrets
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.db.session import get_conn
 from app.security import hash_password, require_admin
+from app.services.audit import write_audit
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -68,7 +69,8 @@ def _row_to_user(r) -> dict:
 
 # ---------- Endpoints ----------
 @router.post("", dependencies=[Depends(require_admin)])
-def create_user(payload: UserCreateIn):
+def create_user(payload: UserCreateIn, request: Request,
+                current_admin: dict = Depends(require_admin)):
     """
     建立帳號。系統自動產生臨時密碼（16 字元），must_change_password=True。
     回傳中包含 temp_password（只此一次，請當面或安全管道告知使用者）。
@@ -101,6 +103,14 @@ def create_user(payload: UserCreateIn):
 
     result = _row_to_user(row)
     result["temp_password"] = temp_password  # 只在建立時回傳
+
+    write_audit(
+        action="create_user",
+        user=current_admin, request=request,
+        target_type="user", target_ref=str(result["id"]),
+        details={"username": result["username"], "role": result["role"]},
+        status_code=200,
+    )
     return result
 
 
@@ -158,7 +168,7 @@ def list_users():
 
 
 @router.patch("/{user_id}", dependencies=[Depends(require_admin)])
-def update_user(user_id: int, payload: UserUpdateIn,
+def update_user(user_id: int, payload: UserUpdateIn, request: Request,
                 current_admin: dict = Depends(require_admin)):
     """更新角色或強制重設密碼（重設後 must_change_password=True）。"""
     if payload.password is None and payload.role is None and not payload.reset_password:
@@ -198,11 +208,26 @@ def update_user(user_id: int, payload: UserUpdateIn,
     result = _row_to_user(row)
     if temp_password:
         result["temp_password"] = temp_password
+
+    # details 只記「是否變更」的布林，絕不寫入密碼明文
+    write_audit(
+        action="update_user",
+        user=current_admin, request=request,
+        target_type="user", target_ref=str(user_id),
+        details={
+            "username": result["username"],
+            "role_changed_to": payload.role,
+            "password_reset": bool(payload.reset_password),
+            "password_set": payload.password is not None,
+        },
+        status_code=200,
+    )
     return result
 
 
 @router.patch("/{user_id}/deactivate", dependencies=[Depends(require_admin)])
-def deactivate_user(user_id: int, current_admin: dict = Depends(require_admin)):
+def deactivate_user(user_id: int, request: Request,
+                    current_admin: dict = Depends(require_admin)):
     """停用帳號（不刪除，保留 audit trail）。"""
     if current_admin["id"] == user_id:
         raise HTTPException(status_code=400, detail="不能停用自己的帳號")
@@ -217,11 +242,20 @@ def deactivate_user(user_id: int, current_admin: dict = Depends(require_admin)):
 
     if not row:
         raise HTTPException(status_code=404, detail="使用者不存在")
+
+    write_audit(
+        action="deactivate_user",
+        user=current_admin, request=request,
+        target_type="user", target_ref=str(user_id),
+        details={"username": row[1]},
+        status_code=200,
+    )
     return {"ok": True, "id": row[0], "username": row[1], "is_active": False}
 
 
 @router.patch("/{user_id}/reactivate", dependencies=[Depends(require_admin)])
-def reactivate_user(user_id: int):
+def reactivate_user(user_id: int, request: Request,
+                    current_admin: dict = Depends(require_admin)):
     """恢復已停用的帳號。"""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -233,4 +267,12 @@ def reactivate_user(user_id: int):
 
     if not row:
         raise HTTPException(status_code=404, detail="使用者不存在")
+
+    write_audit(
+        action="reactivate_user",
+        user=current_admin, request=request,
+        target_type="user", target_ref=str(user_id),
+        details={"username": row[1]},
+        status_code=200,
+    )
     return {"ok": True, "id": row[0], "username": row[1], "is_active": True}

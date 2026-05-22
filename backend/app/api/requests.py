@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from app.db.session import get_conn
 from app.security import get_current_user, hash_password, require_admin
+from app.services.audit import write_audit
 from app.services.limiter import limiter
 
 router = APIRouter(prefix="/account-requests", tags=["account-requests"])
@@ -156,6 +157,7 @@ def list_requests(
 @router.post("/{request_id}/approve", dependencies=[Depends(require_admin)])
 def approve_request(
     request_id: int,
+    request: Request,
     current_admin: dict = Depends(get_current_user),
 ):
     """核准申請：建立帳號。
@@ -225,6 +227,20 @@ def approve_request(
         resp["message"] = "帳號已建立（此申請無自設密碼），請電話告知申請者臨時密碼（僅顯示此一次）"
     else:
         resp["message"] = "帳號已建立，申請者可用申請時自設的密碼直接登入"
+
+    write_audit(
+        action="approve_account_request",
+        user=current_admin, request=request,
+        target_type="account_request", target_ref=str(request_id),
+        details={
+            "username": username,
+            "new_user_id": new_user_id,
+            "real_name": real_name,
+            "unit": unit,
+            "used_temp_password": temp_password is not None,
+        },
+        status_code=200,
+    )
     return resp
 
 
@@ -232,6 +248,7 @@ def approve_request(
 def reject_request(
     request_id: int,
     payload: RejectIn,
+    request: Request,
     current_admin: dict = Depends(get_current_user),
 ):
     """拒絕申請，填寫拒絕原因。"""
@@ -248,4 +265,12 @@ def reject_request(
         updated = cur.rowcount
     if updated == 0:
         raise HTTPException(status_code=404, detail="申請不存在或狀態非 pending")
+
+    write_audit(
+        action="reject_account_request",
+        user=current_admin, request=request,
+        target_type="account_request", target_ref=str(request_id),
+        details={"reason": payload.reason},
+        status_code=200,
+    )
     return {"ok": True, "request_id": request_id, "status": "rejected"}

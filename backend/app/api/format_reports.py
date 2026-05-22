@@ -9,7 +9,7 @@
 設計考量：
 - 訪客也能回報（reporter_user_id 可為 null，記 IP 防濫用）
 - 不存原始檔案內容，只存 headers + 診斷 + 備註
-- 寫 audit_logs 供追蹤
+- admin 處理（PATCH 變更狀態）時寫 audit_logs 供追蹤
 """
 import json
 from typing import Optional
@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from app.db.session import get_conn
 from app.security import get_current_user_optional, require_admin
+from app.services.audit import write_audit
 from app.services.limiter import limiter
 
 router = APIRouter(prefix="/format-reports", tags=["format-reports"])
@@ -139,6 +140,7 @@ class HandleIn(BaseModel):
 def update_report(
     report_id: int,
     payload: HandleIn,
+    request: Request,
     current_admin: dict = Depends(require_admin),
 ):
     """更新格式回報狀態（已處理 / 拒絕）。"""
@@ -158,4 +160,11 @@ def update_report(
         if not row:
             raise HTTPException(status_code=404, detail="找不到此回報")
 
+    write_audit(
+        action="update_format_report",
+        user=current_admin, request=request,
+        target_type="format_report", target_ref=str(report_id),
+        details={"status": payload.status, "note": payload.note},
+        status_code=200,
+    )
     return {"ok": True, "id": row[0], "status": row[1]}

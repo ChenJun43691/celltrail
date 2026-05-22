@@ -9,11 +9,12 @@
 """
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.db.session import get_conn
 from app.security import require_admin
+from app.services.audit import write_audit
 from app.services.carrier_profile import (
     get_active_header_map,
     get_default_profile,
@@ -71,7 +72,8 @@ class EntryUpsert(BaseModel):
 
 
 @router.patch("/entry")
-def upsert_entry(body: EntryUpsert, _user: dict = Depends(require_admin)):
+def upsert_entry(body: EntryUpsert, request: Request,
+                 user: dict = Depends(require_admin)):
     """
     新增或覆蓋 mapping_json 中的一個 entry。
     使用 PostgreSQL JSONB || 運算子做原子 merge，不需先讀再寫。
@@ -97,6 +99,14 @@ def upsert_entry(body: EntryUpsert, _user: dict = Depends(require_admin)):
         conn.commit()
 
     invalidate_cache()
+
+    write_audit(
+        action="upsert_carrier_profile",
+        user=user, request=request,
+        target_type="carrier_profile",
+        details={"raw_key": raw_key, "canon_key": canon_key},
+        status_code=200,
+    )
     return {"ok": True, "raw_key": raw_key, "canon_key": canon_key}
 
 
@@ -106,7 +116,8 @@ class EntryDelete(BaseModel):
 
 
 @router.delete("/entry")
-def delete_entry(body: EntryDelete, _user: dict = Depends(require_admin)):
+def delete_entry(body: EntryDelete, request: Request,
+                 user: dict = Depends(require_admin)):
     """
     從 mapping_json 移除指定 key。
     僅影響 DB 自訂部分；code 預設（_RAW2CANON）仍會在合併時補回，
@@ -131,4 +142,12 @@ def delete_entry(body: EntryDelete, _user: dict = Depends(require_admin)):
         conn.commit()
 
     invalidate_cache()
+
+    write_audit(
+        action="delete_carrier_profile",
+        user=user, request=request,
+        target_type="carrier_profile",
+        details={"raw_key": raw_key},
+        status_code=200,
+    )
     return {"ok": True, "raw_key": raw_key}

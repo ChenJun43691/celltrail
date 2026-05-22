@@ -17,10 +17,11 @@ import csv
 import io
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
 from app.db.session import get_conn
 from app.security import require_admin
+from app.services.audit import write_audit
 
 router = APIRouter(prefix="/admin/cell-towers", tags=["cell-towers"])
 
@@ -63,6 +64,7 @@ def get_stats(_user: dict = Depends(require_admin)):
 # ---------- POST /import ----------
 @router.post("/import")
 def import_csv(
+    request: Request,
     file: UploadFile = File(...),
     carrier_name: Optional[str] = Form(default=None),
     source: Optional[str] = Form(default=None),
@@ -156,6 +158,20 @@ def import_csv(
                 else:
                     updated += 1
 
+    write_audit(
+        action="import_cell_towers",
+        user=user, request=request,
+        target_type="cell_towers",
+        details={
+            "filename": file.filename,
+            "inserted": inserted,
+            "updated": updated,
+            "skipped": skipped,
+            "error_count": len(errors),
+            "source": source,
+        },
+        status_code=200,
+    )
     return {
         "inserted": inserted,
         "updated": updated,
@@ -167,16 +183,26 @@ def import_csv(
 # ---------- DELETE / ----------
 @router.delete("")
 def clear_all(
+    request: Request,
     confirm: bool = Query(default=False),
-    _user: dict = Depends(require_admin),
+    user: dict = Depends(require_admin),
 ):
     if not confirm:
         raise HTTPException(400, "請加上 ?confirm=true 確認清空")
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM cell_towers", prepare=False)
+            deleted_count = cur.rowcount
             cur.execute("SELECT COUNT(*) FROM cell_towers", prepare=False)
             remaining = cur.fetchone()[0]
+
+    write_audit(
+        action="clear_cell_towers",
+        user=user, request=request,
+        target_type="cell_towers",
+        details={"deleted_count": deleted_count, "remaining": remaining},
+        status_code=200,
+    )
     return {"deleted": True, "remaining": remaining}
 
 
