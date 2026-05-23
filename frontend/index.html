@@ -993,6 +993,9 @@
       updateModeChip();
       updateMembersBtn();
       loadProjectList(); // 臨時模式 → 清空 datalist
+      // 臨時模式不寫 DB → coverage 概念不適用，主動隱藏 banner
+      // 避免從 project 模式切過來時 banner 卡著上一個案件的數字
+      refreshCoverageBanner();
     }
 
     function openProjectCreationModal(user, rememberMode = false) {
@@ -1231,12 +1234,16 @@
           overlay.remove();
           setUploadState('uploading', file.name);
           try {
-            await uploadOneFile(projId, tid, file);
+            const uploadResult = await uploadOneFile(projId, tid, file);
             $('projectId').value = projId;
             colorMap = loadColorMap();
             await load();
             const count = [...seriesMap.values()].reduce((a,s)=>a+s.records.length,0);
             setUploadState('success', `解析完成，已載入 ${count} 筆資料`);
+            // L1：拉該 target 的 coverage，彈出「完整收據」modal
+            // 用 target_id 而非 project 範圍，數字才對應「這次上傳」
+            const cov = await fetchCoverage(projId, tid);
+            if (cov) openUploadReceipt(uploadResult, cov, projId);
           } catch(e) {
             setUploadState('error', `解析失敗：${e.message || '請看 Console'}`);
           }
@@ -2245,10 +2252,257 @@
         refreshCourtBadge();
         updateMembersBtn();
         populateTargetList();
+        // 載入完成後刷新「未定位」常駐 banner —— 即使這次沒上傳，
+        // 開舊專案也應該看到「還有 N 筆未定位」的提醒，避免使用者
+        // 在不同 session 之間忘記未處理的列。
+        refreshCoverageBanner();
       }catch(e){
         console.error(e);
         showToast('讀取失敗（請看 Console）','error',2200);
       }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // 上傳定位透明化（2026-05-23）
+    //
+    // 為什麼存在：/map-layers 過濾 geom IS NOT NULL → 使用者只看到「成功
+    // 定位」的點。若上傳 300 筆但 100 筆 geocode 失敗，地圖只剩 200 點，
+    // 沒人告訴使用者「另外 100 筆去哪了」。這違反證據完整性原則 —— 法庭
+    // 上若被問「為什麼這 100 筆沒列?」必須能答得出。
+    //
+    // 三層 UI：
+    //   L1 上傳完成 receipt modal：4 個數字 + 3 原因 + [查看詳細] [下載 CSV]
+    //   L2 地圖頂部常駐 banner：only 顯示 without_geom > 0 的案件
+    //   L3 未定位清單 modal：分原因 collapsible + 每段「排除方式」+ 下載
+    // ════════════════════════════════════════════════════════════════
+
+    const _REASON_LABELS = {
+      no_signal:           '既無 cell_id 也無地址',
+      cellid_only:         '僅有 cell_id 無地址（需業者座標表）',
+      addr_geocode_failed: '有地址但無法地理編碼',
+    };
+    const _REASON_FIXES = {
+      no_signal:
+        '原始檔該列資料殘缺，系統無從推論。可能是業者匯出時欄位錯位或該' +
+        '筆本來就有缺。請回查原始檔此筆內容。',
+      cellid_only:
+        '可向業者索取此 cell_id 的座標 CSV，由 admin 在「系統管理 → 資料表 → ' +
+        '本地基地台座標表」匯入。匯入後可重新上傳該檔，系統會直接從本地表查到。',
+      addr_geocode_failed:
+        'Google/OSM 找不到此地址，通常是社區名 / 巷弄描述模糊，或原始檔該' +
+        '欄位塞了非地址內容（例如 cell sector 代碼）。可下載 CSV 人工檢視。',
+    };
+
+    async function fetchCoverage(projectId, targetId = '') {
+      if (!projectId || !TOKEN) return null;  // 訪客 / 臨時模式不適用
+      const url = new URL(`${API_BASE}/projects/${encodeURIComponent(projectId)}/coverage`);
+      if (targetId) url.searchParams.set('target_id', targetId);
+      try {
+        const res = await fetch(url, { headers: authHeaders() });
+        if (!res.ok) return null;
+        return await res.json();
+      } catch { return null; }
+    }
+
+    // ── L2：地圖頂部常駐 banner ─────────────────────────────────
+    function _getCoverageBanner() {
+      let el = document.getElementById('_coverageBanner');
+      if (el) return el;
+      el = document.createElement('div');
+      el.id = '_coverageBanner';
+      el.style.cssText =
+        'position:fixed;top:8px;left:50%;transform:translateX(-50%);' +
+        'z-index:1000;background:#fff8e1;border:1px solid #ffb74d;' +
+        'color:#b54708;padding:8px 14px;border-radius:8px;font-size:13px;' +
+        'box-shadow:0 4px 12px rgba(0,0,0,0.12);cursor:pointer;' +
+        'display:none;font-weight:500;max-width:92vw;';
+      el.title = '點擊查看詳細';
+      document.body.appendChild(el);
+      return el;
+    }
+
+    async function refreshCoverageBanner() {
+      const el = _getCoverageBanner();
+      const projId = $('projectId')?.value?.trim();
+      // 只有「專案模式 + 已登入」才查（其他模式資料不寫 DB，coverage 無意義）
+      if (!projId || !TOKEN || _sessionMode !== 'project') {
+        el.style.display = 'none';
+        return;
+      }
+      const cov = await fetchCoverage(projId);
+      if (!cov || cov.without_geom === 0) { el.style.display = 'none'; return; }
+      const br = cov.by_reason || {};
+      const parts = [];
+      if (br.cellid_only)           parts.push(`${br.cellid_only} 僅有 cell_id`);
+      if (br.addr_geocode_failed)   parts.push(`${br.addr_geocode_failed} 地址失敗`);
+      if (br.no_signal)             parts.push(`${br.no_signal} 資料殘缺`);
+      el.innerHTML =
+        `⚠ 本案另有 <b>${cov.without_geom} / ${cov.total}</b> 筆未定位` +
+        (parts.length ? `（${parts.join('・')}）` : '') +
+        ` &nbsp;<u>查看詳細</u>`;
+      el.style.display = '';
+      el.onclick = () => openUnlocatedDetailModal(projId, cov);
+    }
+
+    // ── L1：上傳完成 receipt modal ──────────────────────────────
+    function openUploadReceipt(uploadResult, coverage, projectId) {
+      const total    = uploadResult?.total    ?? 0;
+      const inserted = uploadResult?.inserted ?? 0;
+      const filename = uploadResult?.filename || '';
+      const tid      = uploadResult?.target_id || '';
+
+      const withGeom    = coverage?.with_geom    ?? 0;
+      const withoutGeom = coverage?.without_geom ?? 0;
+      const br = coverage?.by_reason || {};
+
+      const overlay = _makeOverlay();
+      const reasonRows = withoutGeom > 0 ? `
+        <div style="margin-top:8px;padding:10px 12px;background:#fff8e1;border:1px solid #ffe0a0;border-radius:8px;font-size:13px">
+          <div style="font-weight:600;color:#b54708;margin-bottom:6px">⚠ 尚有 ${withoutGeom} 筆未定位</div>
+          ${(br.cellid_only > 0)         ? `<div>· ${br.cellid_only} 筆：${_REASON_LABELS.cellid_only}</div>` : ''}
+          ${(br.addr_geocode_failed > 0) ? `<div>· ${br.addr_geocode_failed} 筆：${_REASON_LABELS.addr_geocode_failed}</div>` : ''}
+          ${(br.no_signal > 0)           ? `<div>· ${br.no_signal} 筆：${_REASON_LABELS.no_signal}</div>` : ''}
+        </div>` : `
+        <div style="margin-top:8px;padding:10px 12px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:8px;font-size:13px;color:#1b5e20;font-weight:600">
+          ✓ 此 target 全部 ${withGeom} 筆皆已定位
+        </div>`;
+
+      overlay.innerHTML = `
+        <div style="background:#fff;border-radius:14px;padding:22px 24px;width:min(96vw,520px);max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25);font:14px/1.55 system-ui,-apple-system,sans-serif;">
+          <div style="font-size:16px;font-weight:700;margin-bottom:4px">✓ 上傳完成</div>
+          <div style="font-size:12px;color:#888;margin-bottom:14px"><code>${escH(filename)}</code> → target <code>${escH(tid)}</code></div>
+
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;text-align:center;margin-bottom:6px">
+            ${[
+              {n:total,    l:'原檔讀取', c:'#37474f'},
+              {n:inserted, l:'寫入 DB',  c:'#1565c0'},
+              {n:withGeom, l:'已定位',   c:'#2e7d32'},
+              {n:withoutGeom, l:'未定位', c: withoutGeom>0 ? '#b54708' : '#888'},
+            ].map(x=>`
+              <div style="padding:10px 4px;border:1px solid #e0e0e0;border-radius:8px;background:#fafafa">
+                <div style="font-size:22px;font-weight:700;color:${x.c}">${x.n}</div>
+                <div style="font-size:11px;color:#666;margin-top:2px">${x.l}</div>
+              </div>`).join('')}
+          </div>
+          <div style="font-size:11px;color:#999;margin-bottom:10px">
+            註：「已定位/未定位」為此 target_id 的目前累計值；若 target 為新建即等於本次上傳。
+          </div>
+
+          ${reasonRows}
+
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+            ${withoutGeom > 0 ? `
+              <button id="_urDetail" style="padding:8px 14px;border:1px solid #1565c0;color:#1565c0;background:#fff;border-radius:6px;cursor:pointer;font-size:13px">查看詳細</button>
+              <button id="_urCsv" style="padding:8px 14px;border:1px solid #999;background:#fff;color:#555;border-radius:6px;cursor:pointer;font-size:13px">下載未定位 CSV</button>
+            ` : ''}
+            <button id="_urClose" style="padding:8px 18px;border:none;background:#1565c0;color:#fff;border-radius:6px;cursor:pointer;font-size:13px">關閉</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('#_urClose').onclick = () => overlay.remove();
+      const dbtn = overlay.querySelector('#_urDetail');
+      if (dbtn) dbtn.onclick = () => { overlay.remove(); openUnlocatedDetailModal(projectId, coverage); };
+      const cbtn = overlay.querySelector('#_urCsv');
+      if (cbtn) cbtn.onclick = () => downloadUnlocatedCsv(projectId);
+    }
+
+    // ── L3：未定位詳細列表 modal（分原因 + 排除方式 + 下載）─────
+    async function openUnlocatedDetailModal(projectId, coverage) {
+      const overlay = _makeOverlay();
+      const br = coverage?.by_reason || {};
+      const sections = [
+        ['cellid_only',         br.cellid_only || 0],
+        ['addr_geocode_failed', br.addr_geocode_failed || 0],
+        ['no_signal',           br.no_signal || 0],
+      ].filter(([_, n]) => n > 0);
+
+      overlay.innerHTML = `
+        <div style="background:#fff;border-radius:14px;padding:22px 24px;width:min(96vw,720px);max-height:88vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.25);font:14px/1.55 system-ui,-apple-system,sans-serif">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <div style="font-size:16px;font-weight:700">未定位清單（${coverage?.without_geom ?? 0} / ${coverage?.total ?? 0} 筆）</div>
+            <button id="_ulClose" style="padding:5px 12px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px">關閉</button>
+          </div>
+          <div style="font-size:12px;color:#888;margin-bottom:14px">專案：<code>${escH(projectId)}</code></div>
+          <div style="display:flex;gap:8px;margin-bottom:14px">
+            <button id="_ulCsvAll" style="padding:6px 12px;border:1px solid #1565c0;color:#1565c0;background:#fff;border-radius:6px;cursor:pointer;font-size:12px">下載全部未定位 CSV</button>
+          </div>
+          <div id="_ulSections"></div>
+        </div>`;
+      document.body.appendChild(overlay);
+      overlay.querySelector('#_ulClose').onclick = () => overlay.remove();
+      overlay.querySelector('#_ulCsvAll').onclick = () => downloadUnlocatedCsv(projectId);
+
+      const root = overlay.querySelector('#_ulSections');
+      if (sections.length === 0) {
+        root.innerHTML = `<div style="padding:16px;text-align:center;color:#666">全部已定位 ✓</div>`;
+        return;
+      }
+      // 並行抓三段（每段最多 50 筆，避免一次塞太多到 DOM）
+      const datas = await Promise.all(sections.map(async ([reason, _n]) => {
+        const url = new URL(`${API_BASE}/projects/${encodeURIComponent(projectId)}/unlocated`);
+        url.searchParams.set('reason', reason);
+        url.searchParams.set('limit', '50');
+        try {
+          const r = await fetch(url, { headers: authHeaders() });
+          if (!r.ok) return { reason, items: [], error: 'HTTP ' + r.status };
+          const j = await r.json();
+          return { reason, items: j.items || [] };
+        } catch (e) { return { reason, items: [], error: e.message }; }
+      }));
+
+      root.innerHTML = sections.map(([reason, total], i) => {
+        const d = datas[i];
+        const items = d.items;
+        const more = total > items.length ? `<div style="font-size:11px;color:#888;padding:6px 0">… 顯示前 ${items.length} 筆，共 ${total} 筆；完整列表請下載 CSV</div>` : '';
+        const rows = items.map(it => `
+          <tr>
+            <td style="padding:4px 8px;font-size:11px;color:#888">${escH((it.start_ts||'').replace('T',' ').slice(0,16))}</td>
+            <td style="padding:4px 8px;font-size:12px"><code>${escH(it.cell_id || '—')}</code></td>
+            <td style="padding:4px 8px;font-size:12px;color:#555">${escH(it.cell_addr || '—')}</td>
+          </tr>`).join('');
+        return `
+          <details ${i===0?'open':''} style="margin-bottom:14px;border:1px solid #e0e0e0;border-radius:8px;padding:10px 14px">
+            <summary style="cursor:pointer;font-weight:600;font-size:14px;color:#37474f">
+              ${_REASON_LABELS[reason]}（${total} 筆）
+            </summary>
+            <div style="margin-top:8px;padding:10px 12px;background:#f5f5f5;border-radius:6px;font-size:12px;color:#555;line-height:1.6">
+              <b>排除方式：</b>${_REASON_FIXES[reason]}
+            </div>
+            <div style="margin-top:8px;display:flex;gap:6px">
+              <button data-reason-csv="${reason}" style="padding:4px 10px;border:1px solid #999;background:#fff;color:#555;border-radius:5px;cursor:pointer;font-size:11px">下載此段 CSV</button>
+            </div>
+            <table style="width:100%;margin-top:8px;border-collapse:collapse">
+              <thead><tr style="background:#fafafa">
+                <th style="padding:4px 8px;text-align:left;font-size:11px;color:#666;border-bottom:1px solid #e0e0e0">時間</th>
+                <th style="padding:4px 8px;text-align:left;font-size:11px;color:#666;border-bottom:1px solid #e0e0e0">cell_id</th>
+                <th style="padding:4px 8px;text-align:left;font-size:11px;color:#666;border-bottom:1px solid #e0e0e0">cell_addr</th>
+              </tr></thead>
+              <tbody>${rows || `<tr><td colspan="3" style="padding:8px;text-align:center;color:#bbb">（無資料）</td></tr>`}</tbody>
+            </table>
+            ${more}
+          </details>`;
+      }).join('');
+
+      // 事件委派：各段「下載此段 CSV」
+      root.querySelectorAll('button[data-reason-csv]').forEach(b => {
+        b.onclick = () => downloadUnlocatedCsv(projectId, b.dataset.reasonCsv);
+      });
+    }
+
+    function downloadUnlocatedCsv(projectId, reason = null) {
+      const url = new URL(`${API_BASE}/projects/${encodeURIComponent(projectId)}/unlocated.csv`);
+      if (reason) url.searchParams.set('reason', reason);
+      // 用 fetch + blob，才能帶 Authorization header（單純 <a href> 不行）
+      fetch(url, { headers: authHeaders() })
+        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+        .then(blob => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `unlocated_${projectId}${reason ? '_' + reason : ''}.csv`;
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        })
+        .catch(e => showToast(`下載失敗：${e.message}`, 'error', 2400));
     }
 
     // === 上傳（多檔＋拖放＋佇列） ===
@@ -2308,7 +2562,9 @@
             try{ const j=JSON.parse(txt); msg=j.detail || txt; }catch{ msg = txt || ('HTTP '+res.status); }
             throw new Error(msg);
           }
-          return; // 成功
+          // 回傳上傳 result（含 total / inserted / target_id / filename）給上層
+          // 用於 L1 上傳收據顯示「讀取 / 寫入 / 已定位 / 未定位」四個數字
+          try { return JSON.parse(txt); } catch { return {}; }
         }catch(e){
           console.warn('upload try failed @', url, e);
           lastErr = e;

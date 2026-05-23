@@ -1,7 +1,7 @@
-# 醒來要做的事（v12 — P7 完成 + admin 稽核/分頁化）
+# 醒來要做的事（v13 — 上傳定位透明化）
 
 > 更新時間：2026-05-23
-> 狀態：✅ 125/125 pytest passed ｜ 證據完整性 9/10
+> 狀態：✅ 131/131 pytest passed ｜ 證據完整性 9.5/10（上傳/標記數字不再沉默）
 
 ---
 
@@ -19,38 +19,34 @@
 | `7b82358` | fix：修復 bug 掃描發現的 6 項問題（map 靜默截斷 / 使用者列舉 / 權限文件等） |
 | `a72e20b` | feat：Supabase 保活機制（APScheduler 每 6h ping 一次 DB） |
 | `14499f1` | feat：欄名對照表顯示 code 預設 + 帳號申請改為使用者自訂密碼 |
+| `c059908` | feat：全 admin 操作稽核覆蓋 + 專案軟刪 API |
+| `9f13704` | feat：admin 介面分頁化 + api.js 單一來源 + XSS/401 強化 |
+| `04e7100` | test：前端 UI smoke test（playwright-core 驅動系統 Chrome） |
+| **本輪** | **feat：上傳定位透明化（coverage 端點 + L1 收據 + L2 banner + L3 詳細 modal）** |
 
 ---
 
-## ⚠️ 本輪完成、已驗證、待 commit
+## ⭐ 本輪重點：上傳定位透明化（2026-05-23 下午）
 
-> 若下次開 session 時 `git log` 已含下列兩個 commit，代表已提交，本節可略過。
+**動機**：同事反應「上傳 300 筆只跳 200 筆」。實測 `0517test` 案件
+**9129 / 9129** 寫入但 **145 筆未定位**（76 cellid_only + 69 addr 失敗）
+—— 過去使用者完全看不到這個落差，違反證據完整性原則。
 
-`git status` 有 15 個檔的未 commit 改動，是一組完整功能交付，拆兩個 commit：
+**做了**：
+- 後端 3 端點：`/coverage`（聚合）、`/unlocated`（加 reason 標籤 + filter）、
+  `/unlocated.csv`（下載；UTF-8 BOM 給 Excel）。三類 reason 純依既有欄位
+  推導，不需 migration。
+- 前端三層 UI：L1 上傳完成 receipt（4 個數字 + 3 原因 + 下載鈕）、L2 地圖
+  頂部常駐 banner（`without_geom > 0` 才顯示）、L3 詳細 modal（按原因
+  collapsible + 每段「排除方式」說明 + 列表 + CSV）。
 
-### Commit 1（後端）：全 admin 操作稽核覆蓋 + 專案軟刪 API
-- 9 個 admin 端點全補 `write_audit`（帳號建立/停用/啟用/改角色、申請核准/
-  拒絕、欄名對照表增刪、座標表匯入/清空、格式回報處理）。`update_user` 的
-  details 只記布林、絕不寫密碼明文。
-- 新增 `DELETE /api/projects/{id}`：軟刪整個案件（owner/admin），失敗也寫
-  `project.delete_failed` audit。
-- `GET /api/projects/` 回傳 `permission` 欄、並過濾已整案軟刪的案件。
+**驗證**：131/131 pytest（+6 契約）；對 0517test 真實案件實打三端點數字
+正確；playwright 驗 L2 banner 與 L3 modal 渲染（145 / 9129、76 + 69 兩段
+正確展開）。
 
-### Commit 2（前端）：admin 介面分頁化 + api.js 單一來源 + XSS/401 強化
-- `api.js` 改單一來源（`window.CT_API` / `CT_API_BASE`），7 頁統一改用。
-- `admin.html` 重組為三分頁（帳號 / 資料表 / 稽核），密碼重設與改角色改
-  per-row 操作。
-- 全面以事件委派取代 `inline onclick + JSON.stringify`，根除 onclick
-  屬性注入面（index/admin 多處 latent XSS）。
-- 新增 `apiFetch` / `handle401` 集中處理 token 過期。
-- `index.html` 下拉新增刪除專案鈕；`share.html` 改 30 秒倒數。
-- 刪除已不再使用的 `index.backup.html`。
-
-### 驗證結果（2026-05-23）
-- 後端：125/125 pytest；真實 admin token 端對端驗證 `GET /projects/`
-  permission 欄、全軟刪案件排除、`DELETE` 404/200 路徑 + audit 寫入。
-- 前端：playwright-core 驅動系統 Chrome 實跑 7 頁，admin 三分頁切換 +
-  各分頁資料載入正常、無 pageError；audit 查詢、share 倒數皆正常。
+**遺留 finding**：addr_geocode_failed 那 69 筆的 cell_addr 是 sector
+代碼（`0E2921B7` 之類），是 normalize / dialect 把錯欄位塞進 cell_addr。
+下次處理（待辦新增第 7 條）。
 
 ---
 
@@ -95,6 +91,8 @@ cd ../frontend && python3 -m http.server 5501
 | 4 | **檢警分艙 / 案件分艙細緻權限** | 目前 admin/user + project_members 三級已可用，尚無組織層隔離 |
 | 5 | **uvicorn `--reload` Python 3.13 macOS spawn bug** | 可能要改 watchmedo |
 | 6 | **前端 UI smoke test 擴充** | 已建 `frontend/tests/`（playwright-core，17 / 28 條全綠）；之後新增頁面 / 互動時補上對應 assertion |
+| **7** | **`addr_geocode_failed` 真因**（新） | 0517test 該段 69 筆的 cell_addr 是 sector 代碼（`0E2921B7`）而非地址 —— normalize 或 dialect 把錯欄位塞進了 cell_addr。找出哪個 dialect / 哪個原始欄位被誤映射。 |
+| **8** | **手動定位（L3 Phase 2）**（新） | L3 modal 加「點地圖即儲存」按鈕：使用者選未定位 row → 在地圖上點 → 寫入 raw_traces.geom + audit。背景見 CLAUDE.md 第五節 N。 |
 
 ---
 

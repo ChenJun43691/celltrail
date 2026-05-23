@@ -76,6 +76,10 @@ EXPECTED_ROUTES = [
     ("get",    "/api/projects/{project_id}/members"),
     ("post",   "/api/projects/{project_id}/members"),
     ("delete", "/api/projects/{project_id}/members/{user_id}"),
+    # 上傳定位透明化（2026-05-23）：coverage 聚合 + unlocated 列表 + CSV
+    ("get",    "/api/projects/{project_id}/coverage"),
+    ("get",    "/api/projects/{project_id}/unlocated"),
+    ("get",    "/api/projects/{project_id}/unlocated.csv"),
     # share（P7）—— 注意 share-links 為複數
     ("post",   "/api/projects/{project_id}/share-links"),
     ("get",    "/api/projects/{project_id}/share-links"),
@@ -121,6 +125,10 @@ PROTECTED_NO_BODY = [
     ("post",   "/api/projects/demo/share-links"),   # create_share_link 無 body
     ("delete", "/api/share-links/sometoken"),
     ("delete", "/api/projects/demo/members/1"),
+    # 上傳定位透明化（2026-05-23）
+    ("get",    "/api/projects/demo/coverage"),
+    ("get",    "/api/projects/demo/unlocated"),
+    ("get",    "/api/projects/demo/unlocated.csv"),
     ("patch",  "/api/users/1/deactivate"),          # 無 body
     ("patch",  "/api/users/1/reactivate"),          # 無 body
     ("get",    "/api/format-reports"),
