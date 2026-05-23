@@ -89,13 +89,16 @@ python3 -m http.server 5501
 cd backend
 source .venv/bin/activate
 
-pytest app/tests/ -v                                      # 全部（92 passed）
+pytest app/tests/ -v                                      # 全部（125 passed）
 pytest app/tests/test_ingest_match_col_idx.py -v          # 單一測試檔
 pytest app/tests/test_audit.py::test_write_audit_fields -v # 單一測試函式
 ```
 
 > smoke tests 不依賴 DB / Redis / Google，CI 可直接執行。
-> **測試涵蓋範圍偏 ingest 核心**（normalize / dialect / compound split / match_col_idx / audit / evidence / azimuth_ref）。P3–P6 的 API（auth、members、parse-only、format-reports、cell-towers）目前**靠手動驗證**，無自動化測試。
+> **涵蓋範圍**：ingest 核心（normalize / dialect / compound split / match_col_idx /
+> audit / evidence / azimuth_ref）＋ P3–P7 API 契約與 auth 守衛測試（commit
+> 1353b09 加上的 33 條）。「業務邏輯」層（members 權限變更、軟刪流程、audit
+> 寫入內容）仍偏薄。
 
 ### 端對端 smoke test（需 DB + uvicorn 已啟）
 
@@ -103,6 +106,20 @@ pytest app/tests/test_audit.py::test_write_audit_fields -v # 單一測試函式
 bash backend/scripts/smoke_audit.sh   # 最後印綠色 ✓ 表示 audit chain 完整
 bash backend/scripts/smoke_upload.sh
 ```
+
+### 前端 UI smoke test（playwright-core 驅動系統 Chrome）
+
+```bash
+cd frontend/tests
+npm install                                          # 一次性
+npm test                                             # 公開頁 + 守衛重導向（17 條）
+# 帶 token 跑完整 28 條（含 admin 三分頁、audit 查詢）
+export CT_SMOKE_TOKEN=$(bash mint-token.sh CIDadmin)
+npm test
+```
+
+需求：DB + uvicorn (8000) + 前端 http.server (5501) 已啟，系統有 Chrome。
+細節見 `frontend/tests/README.md`。
 
 ### venv 救援（套件損壞時）
 

@@ -94,7 +94,7 @@ cd ../frontend && python3 -m http.server 5501
 |---|---|---|
 | 4 | **檢警分艙 / 案件分艙細緻權限** | 目前 admin/user + project_members 三級已可用，尚無組織層隔離 |
 | 5 | **uvicorn `--reload` Python 3.13 macOS spawn bug** | 可能要改 watchmedo |
-| 6 | **前端 UI 自動化回歸** | P6 後 index.html 近乎重寫、admin.html 本輪重排；目前靠人工 / playwright 臨時腳本測試 |
+| 6 | **前端 UI smoke test 擴充** | 已建 `frontend/tests/`（playwright-core，17 / 28 條全綠）；之後新增頁面 / 互動時補上對應 assertion |
 
 ---
 

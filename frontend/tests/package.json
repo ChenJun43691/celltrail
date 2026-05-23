@@ -1,0 +1,12 @@
+{
+  "name": "celltrail-frontend-smoke",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CellTrail 前端 UI smoke test（playwright-core + 系統 Chrome）",
+  "scripts": {
+    "test": "node smoke.js"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.60.0"
+  }
+}

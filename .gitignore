@@ -5,7 +5,7 @@ backend/.venv.broken_*/
 backend/.env
 .env
 
-frontend/node_modules/
+frontend/**/node_modules/
 
 # 案件資料夾與通聯歷程檔案（含個資與偵查機密，絕不上傳）
 基地台位置範例檔案/
