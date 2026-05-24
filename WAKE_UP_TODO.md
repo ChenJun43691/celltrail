@@ -9,6 +9,7 @@
 
 | Commit | 內容 |
 |---|---|
+| `22898fa` | **chore**：backfill_hex_celladdr.py 舊資料補救 script（WAKE_UP_TODO #9 ready，等 --apply） |
 | `8e9806b` | **test**：專案層權限安全核心（assert_project_access + _PERM_LEVELS + optional auth）— +17 |
 | `101474b` | **test**：write_audit 業務邏輯（safe 合約 + 欄位組裝 + payload_hash 一致性）— +9 |
 | `a5eb683` | **fix**：ingest cell_addr 拒絕 hex 短碼（addr_geocode_failed 真因，**完成 WAKE_UP_TODO #7**）+7 守護測試 |
@@ -116,7 +117,7 @@ cd ../frontend && python3 -m http.server 5501
 | 6 | **前端 UI smoke test 擴充** | 已建 `frontend/tests/`（playwright-core，17 / 28 條全綠）；之後新增頁面 / 互動時補上對應 assertion |
 | ~~7~~ | ~~**`addr_geocode_failed` 真因**~~ | **✅ 2026-05-24 完成（`a5eb683`）** — 真因是 ≥2 欄都映 cell_addr，hex 在真地址空時殘留；`_normalize_row` Pass 1 加 hex 短碼 guard 改寫到 sector_id。+7 守護測試。既有 DB 資料未洗（需另寫 backfill script）。 |
 | **8** | **手動定位（L3 Phase 2）** | L3 modal 加「點地圖即儲存」按鈕：使用者選未定位 row → 在地圖上點 → 寫入 raw_traces.geom + audit。背景見 CLAUDE.md 第五節 N。 |
-| **9** | **舊資料 hex backfill**（新） | 既有 raw_traces 中 `cell_addr` 為 6–12 字純 hex 的列搬到 `sector_id`，順便修正既有案件 coverage 統計。需一支 one-off script + 自動寫 audit。0517test 案件預估約 69 列受影響。 |
+| **9** | **舊資料 hex backfill** | **🟡 2026-05-24 script 完成（`22898fa`），等使用者 --apply** — `backend/scripts/backfill_hex_celladdr.py`，DRY RUN 預設。對本機 DB 驗證 0517test 案件正好 69 列可搬（與 #7 預測完全吻合）、0 列 sector_id 已佔用。使用者本機需手動跑 `--apply` 才會實際更新 DB + 寫 audit（一支 audit per project，action='backfill.hex_celladdr'）。 |
 
 ---
 
