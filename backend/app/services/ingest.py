@@ -604,6 +604,18 @@ def _normalize_row(
             # 複合欄延後處理（保證直接欄都走完才填空缺）
             compound_pending.append((k, v))
             continue
+        # 內容驗證：cell_addr 不接受 hex 短碼（LAC+CI 之類，如 `0E2921B7`）。
+        # 背景：實測 0517test/台哥大-第二類.xlsx 有 ≥2 欄都映到 cell_addr
+        #   （疑為「起址」hex + 「基地台地址」文字），1866 列真地址覆蓋 hex
+        #   而 69 列真地址欄為空 → hex 殘留 → 送 geocoder 注定失敗。
+        # 策略：hex 短碼改寫到 sector_id（若仍空），保留資訊不丟、cell_addr
+        #   留空讓 coverage 把這列正確歸類為 cellid_only（需業者表）而非
+        #   addr_geocode_failed（誤以為地址查不到）。
+        if key == "cell_addr" and isinstance(v, str) \
+                and re.fullmatch(r"[0-9A-Fa-f]{6,12}", v.strip()):
+            if not out.get("sector_id"):
+                out["sector_id"] = v.strip()
+            continue
         out[key] = v
 
     # Pass 2：複合欄拆解（W2.3）— 只在對應 canonical key 仍空時填入
