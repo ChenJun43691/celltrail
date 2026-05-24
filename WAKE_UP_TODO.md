@@ -1,11 +1,34 @@
-# 醒來要做的事（v13 — 上傳定位透明化）
+# 醒來要做的事（v14 — addr 真因 + 業務邏輯測試補強）
 
-> 更新時間：2026-05-23
-> 狀態：✅ 131/131 pytest passed ｜ 證據完整性 9.5/10（上傳/標記數字不再沉默）
+> 更新時間：2026-05-24
+> 狀態：✅ 164/164 pytest passed ｜ 證據完整性 9.5/10（上傳/標記數字不再沉默）
 
 ---
 
-## 本輪（2026-05-17 ～ 05-23）大事記
+## 本輪（2026-05-24）大事記
+
+| Commit | 內容 |
+|---|---|
+| `8e9806b` | **test**：專案層權限安全核心（assert_project_access + _PERM_LEVELS + optional auth）— +17 |
+| `101474b` | **test**：write_audit 業務邏輯（safe 合約 + 欄位組裝 + payload_hash 一致性）— +9 |
+| `a5eb683` | **fix**：ingest cell_addr 拒絕 hex 短碼（addr_geocode_failed 真因，**完成 WAKE_UP_TODO #7**）+7 守護測試 |
+
+**本輪重點**：
+- WAKE_UP_TODO #7 **完成**：0517test 案件 69 筆 addr_geocode_failed 真因
+  是台哥大-第二類.xlsx 有 ≥2 欄都映 cell_addr（「起址」吐 hex、「基地台
+  位址」吐真地址），W1.5「空值不覆蓋」紀律下 1866 列被真地址覆蓋、
+  69 列真地址空 → hex 殘留。`_normalize_row` Pass 1 加 hex 短碼 guard
+  攔截 6–12 字純 hex 改寫到 sector_id，coverage 改歸 cellid_only。
+  既有資料未洗（不會回頭洗 DB）、未來上傳止血。
+- WAKE_UP_TODO #2 **部分完成**：補了 audit（write_audit）與 security
+  （assert_project_access / optional auth / anonymous admin 範本隔離）
+  兩塊業務邏輯測試（+26）。剩 members API（_require_project_owner /
+  revoke_member）、軟刪流程、format_reports 處理流程等。
+- 全套 pytest：131 → **164**（+33）。
+
+---
+
+## 上輪（2026-05-17 ～ 05-23）大事記
 
 | Commit | 內容 |
 |---|---|
@@ -81,7 +104,7 @@ cd ../frontend && python3 -m http.server 5501
 | # | Task | 說明 |
 |---|---|---|
 | 1 | **填充 cell_towers 座標表** | 架構（P4.1）就緒但表是空的；向業者取得基地台座標 CSV 匯入 |
-| 2 | **P3–P6 API 補自動化測試** | 已補 P3–P7 契約/守衛測試（125）；ingest 以外的「業務邏輯」層仍偏薄 |
+| 2 | **P3–P6 API 補自動化測試** | 已補 P3–P7 契約/守衛測試（125）+ audit + security 業務邏輯（164）；剩 members API（_require_project_owner / revoke_member / list_members）、軟刪流程、format_reports 處理流程 |
 | 3 | **carrier_profile DB 同步** | 把 `_RAW2CANON` 所有 key 補進 DB `mapping_json` |
 
 ### 長期
@@ -91,8 +114,9 @@ cd ../frontend && python3 -m http.server 5501
 | 4 | **檢警分艙 / 案件分艙細緻權限** | 目前 admin/user + project_members 三級已可用，尚無組織層隔離 |
 | 5 | **uvicorn `--reload` Python 3.13 macOS spawn bug** | 可能要改 watchmedo |
 | 6 | **前端 UI smoke test 擴充** | 已建 `frontend/tests/`（playwright-core，17 / 28 條全綠）；之後新增頁面 / 互動時補上對應 assertion |
-| **7** | **`addr_geocode_failed` 真因**（新） | 0517test 該段 69 筆的 cell_addr 是 sector 代碼（`0E2921B7`）而非地址 —— normalize 或 dialect 把錯欄位塞進了 cell_addr。找出哪個 dialect / 哪個原始欄位被誤映射。 |
-| **8** | **手動定位（L3 Phase 2）**（新） | L3 modal 加「點地圖即儲存」按鈕：使用者選未定位 row → 在地圖上點 → 寫入 raw_traces.geom + audit。背景見 CLAUDE.md 第五節 N。 |
+| ~~7~~ | ~~**`addr_geocode_failed` 真因**~~ | **✅ 2026-05-24 完成（`a5eb683`）** — 真因是 ≥2 欄都映 cell_addr，hex 在真地址空時殘留；`_normalize_row` Pass 1 加 hex 短碼 guard 改寫到 sector_id。+7 守護測試。既有 DB 資料未洗（需另寫 backfill script）。 |
+| **8** | **手動定位（L3 Phase 2）** | L3 modal 加「點地圖即儲存」按鈕：使用者選未定位 row → 在地圖上點 → 寫入 raw_traces.geom + audit。背景見 CLAUDE.md 第五節 N。 |
+| **9** | **舊資料 hex backfill**（新） | 既有 raw_traces 中 `cell_addr` 為 6–12 字純 hex 的列搬到 `sector_id`，順便修正既有案件 coverage 統計。需一支 one-off script + 自動寫 audit。0517test 案件預估約 69 列受影響。 |
 
 ---
 
