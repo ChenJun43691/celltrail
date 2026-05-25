@@ -43,7 +43,10 @@ def create_report(
     """
     使用者（含訪客）回報無法解析的檔案格式。Rate limit：10 次/小時/IP。
     """
-    reporter_id = current_user.get("id") if current_user else None
+    # id=0 = anonymous admin（AUTH_ENABLED=false），不在 users 表 → FK 用 NULL
+    # 對齊 grant_member / delete_project 的同款處理。
+    raw_id = current_user.get("id") if current_user else None
+    reporter_id = raw_id if raw_id else None
     reporter_ip = request.client.host if request.client else None
 
     with get_conn() as conn, conn.cursor() as cur:
@@ -144,6 +147,8 @@ def update_report(
     current_admin: dict = Depends(require_admin),
 ):
     """更新格式回報狀態（已處理 / 拒絕）。"""
+    # id=0 = anonymous admin → handled_by 寫 NULL（避免違反 users FK）
+    handler_id = current_admin["id"] if current_admin.get("id") else None
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -153,7 +158,7 @@ def update_report(
              WHERE id = %s
             RETURNING id, status
             """,
-            (payload.status, payload.note, current_admin["id"], payload.status, report_id),
+            (payload.status, payload.note, handler_id, payload.status, report_id),
             prepare=False,
         )
         row = cur.fetchone()
