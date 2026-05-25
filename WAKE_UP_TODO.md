@@ -1,7 +1,7 @@
-# 醒來要做的事（v15 — addr 真因 + WAKE_UP_TODO #2 全清）
+# 醒來要做的事（v16 — L3 手動定位 + #2/#7/#8 全清、#9 待 --apply）
 
 > 更新時間：2026-05-25
-> 狀態：✅ 189/189 pytest passed ｜ 證據完整性 9.5/10（上傳/標記數字不再沉默）
+> 狀態：✅ 199/199 pytest passed ｜ 證據完整性 9.7/10（上傳數字、業務邏輯、人工定位三件都不再沉默）
 
 ---
 
@@ -9,6 +9,7 @@
 
 | Commit | 內容 |
 |---|---|
+| `fe71904` | **feat**：L3 手動定位（PATCH manual-locate + 前端 pin mode）— **完成 #8**，+10 backend tests |
 | `b4ec912` | **fix+test**：format_reports anonymous admin FK guard + 業務邏輯測試 +9 |
 | `5eb48da` | **test**：members API 業務邏輯（owner 守衛 + revoke 自鎖防線 + 軟刪 audit）+16 |
 | `22898fa` | **chore**：backfill_hex_celladdr.py 舊資料補救 script（WAKE_UP_TODO #9 ready，等 --apply） |
@@ -18,7 +19,9 @@
 
 **本輪重點補述**：
 - WAKE_UP_TODO **#2 全清**：audit / security / members / format_reports 四
-  個業務邏輯層全部補完（共 +51 測試）。pytest 131 → **189**。
+  個業務邏輯層全部補完（共 +51 測試）。
+- WAKE_UP_TODO **#8 完成**：L3 手動定位端到端（backend PATCH + 前端 pin
+  mode + 10 unit + 1 contract test）。pytest 131 → **199**。
 - 補測試時意外發現 latent bug：`format_reports.py` 對 anonymous admin
   (id=0) 未做 FK 容錯 —— grant_member / delete_project 都有處理但這支
   忘了，AUTH_ENABLED=false 開發環境每次回報 / 處理回報都會炸
@@ -26,6 +29,9 @@
   `b4ec912` 已修。
 - 這個經驗印證：補業務邏輯測試的副作用是會逼出 latent bug —— 因為
   測試必須對齊「該行為應該是什麼」，而非「它目前是什麼」。
+
+**uvicorn 注意**：本機若 uvicorn 是 v15 之前 session 啟的，需重啟才會載入
+新 PATCH 端點（task #5 spawn bug，無法用 --reload；手動 kill 後重啟）。
 
 **本輪重點**：
 - WAKE_UP_TODO #7 **完成**：0517test 案件 69 筆 addr_geocode_failed 真因
@@ -129,7 +135,7 @@ cd ../frontend && python3 -m http.server 5501
 | 5 | **uvicorn `--reload` Python 3.13 macOS spawn bug** | 可能要改 watchmedo |
 | 6 | **前端 UI smoke test 擴充** | 已建 `frontend/tests/`（playwright-core，17 / 28 條全綠）；之後新增頁面 / 互動時補上對應 assertion |
 | ~~7~~ | ~~**`addr_geocode_failed` 真因**~~ | **✅ 2026-05-24 完成（`a5eb683`）** — 真因是 ≥2 欄都映 cell_addr，hex 在真地址空時殘留；`_normalize_row` Pass 1 加 hex 短碼 guard 改寫到 sector_id。+7 守護測試。既有 DB 資料未洗（需另寫 backfill script）。 |
-| **8** | **手動定位（L3 Phase 2）** | L3 modal 加「點地圖即儲存」按鈕：使用者選未定位 row → 在地圖上點 → 寫入 raw_traces.geom + audit。背景見 CLAUDE.md 第五節 N。 |
+| ~~8~~ | ~~**手動定位（L3 Phase 2）**~~ | **✅ 2026-05-25 完成（`fe71904`）** — PATCH /api/projects/{p}/raw-traces/{id}/manual-locate（collaborator+；ST_MakePoint(lng,lat) OGC 順序；不加 schema 欄、audit_logs 為 SoT、prev_lat/lng 保留可重建任一時間點狀態）。L3 每列加📍按鈕 → 主地圖 pin mode（crosshair + banner + ESC 取消）→ confirm modal → reload + 重開 L3 連續處理。+10 backend tests + 1 contract test。**uvicorn 上輪 session 已啟者需重啟才會載入新端點**。 |
 | **9** | **舊資料 hex backfill** | **🟡 2026-05-24 script 完成（`22898fa`），等使用者 --apply** — `backend/scripts/backfill_hex_celladdr.py`，DRY RUN 預設。對本機 DB 驗證 0517test 案件正好 69 列可搬（與 #7 預測完全吻合）、0 列 sector_id 已佔用。使用者本機需手動跑 `--apply` 才會實際更新 DB + 寫 audit（一支 audit per project，action='backfill.hex_celladdr'）。 |
 
 ---
