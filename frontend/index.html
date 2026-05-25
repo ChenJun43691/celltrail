@@ -4086,9 +4086,19 @@
       if (_pendingGuest) {
         sessionStorage.removeItem('ct_guest_store');
         restoreGuestData(_pendingGuest);
-      } else {
-        if (TOKEN) showModeSelectionModal(user);
+      } else if (TOKEN) {
+        // 已登入使用者直接進入專案管理模式 —— 跳過「臨時 vs 專案」選擇 modal。
+        // 理由：肯花成本登入的人就是要管理專案；硬問一次徒增點擊。
+        // 例外：若曾勾「記住我的選擇 = 臨時」(SESSION_MODE_KEY='temp')，
+        //   仍尊重該明確意願（避免靜默覆寫 user opt-in）。
+        // 想重新選擇的人可在 openProjectCreationModal 內按「← 返回」回到 modal。
+        if (localStorage.getItem(SESSION_MODE_KEY) === 'temp') {
+          applyTempMode();
+        } else {
+          openProjectCreationModal(user);
+        }
       }
+      // 未登入訪客走 initGuest()，不會走到這裡，故不必處理。
 
       loadProjectList();
 
