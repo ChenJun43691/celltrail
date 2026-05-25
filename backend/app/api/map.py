@@ -2,11 +2,13 @@
 import csv
 import io
 
-from fastapi import APIRouter, Query, Depends, HTTPException
+from fastapi import APIRouter, Query, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from typing import Optional
 from app.db.session import get_conn
 from app.security import assert_project_access, get_current_user
+from app.services.audit import write_audit
 
 router = APIRouter()
 
@@ -336,3 +338,133 @@ def project_unlocated_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+# ============================================================================
+# 手動定位（2026-05-25，WAKE_UP_TODO #8）
+#
+# 動機：unlocated 清單裡的「cellid_only」（76 列）與「addr_geocode_failed」
+# （69 列）—— 前者沒業者表查不到、後者地址模糊或塞錯欄位 —— 都得靠人工
+# 標位置。沒這個端點時偵查員只能看著清單乾瞪眼。
+#
+# 設計取捨（已與使用者對齊）:
+#   1. 不加 schema 欄位：raw_traces.manually_located_at 等欄位省下，
+#      audit_logs 為 SoT。details 含 prev_lat/prev_lng/prev_has_geom 可
+#      回追歷史（含「re-pin / undo」整條軌跡）。
+#   2. accuracy_m 保持 NULL：人為標註的精度無法量化，誠實表達「未知」
+#      比假裝有精度好（法庭可防禦性）。
+#   3. cell_addr / cell_id 不動：原始檔的證據不該被人為標位置改寫。
+#   4. 權限：collaborator 以上（owner + collaborator + admin）。
+#      理由：viewer 只讀；手動定位是「改變證據資料」（即使是補上座標
+#      也是補），collaborator 才有此能力。
+#   5. 軟刪列不能標：與 azimuth_ref 同紀律 —— 若要對軟刪列動手，必須
+#      先 restore。
+# ============================================================================
+class ManualLocateIn(BaseModel):
+    """
+    手動定位請求 body。lat/lng 走 Pydantic 範圍驗證 → 越界直接 422。
+    note 可填，但不強制 —— 不像 azimuth_ref 那樣有「書面依據」剛性需求；
+    人工 pin 的合理性由 audit_logs 的「誰、何時、prev/new」自然呈現。
+    """
+    lat:  float = Field(..., ge=-90.0,  le=90.0)
+    lng:  float = Field(..., ge=-180.0, le=180.0)
+    note: Optional[str] = Field(default=None, max_length=500,
+                                description="自由描述（如：依現場照片人工標）")
+
+
+@router.patch("/projects/{project_id}/raw-traces/{trace_id}/manual-locate")
+def manual_locate_trace(
+    project_id: str,
+    trace_id:   int,
+    request:    Request,
+    body:       ManualLocateIn,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    對單一 raw_traces 列手動指定座標。
+
+    流程：
+      1. 權限：collaborator 以上（assert_project_access）。
+      2. SELECT 既存 lat/lng/geom —— 用於 audit 的 prev 對照（forensic）。
+         同時驗證 trace_id 屬於該 project 且未軟刪（404 路徑）。
+      3. UPDATE raw_traces：lat / lng / geom 一致更新（避免三者走偏）。
+      4. write_audit：action='manual_locate'，details 含 lat/lng/note +
+         prev_lat/prev_lng/prev_has_geom（讓事後可重建任一時間點的狀態）。
+
+    Repin 行為：對已有 geom 的列再次標位置，前狀態也會落 audit；不阻擋。
+    """
+    assert_project_access(current_user, project_id, "collaborator")
+
+    # 1. 取既存狀態（同時做 ownership / 軟刪檢查；用一次 SQL 同時驗 + 取舊值）
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT lat, lng, geom IS NOT NULL AS has_geom
+              FROM raw_traces
+             WHERE id = %s AND project_id = %s AND deleted_at IS NULL
+            """,
+            (trace_id, project_id),
+            prepare=False,
+        )
+        row = cur.fetchone()
+
+    if not row:
+        # trace_id 不存在 / 不屬於此 project / 已軟刪 —— 對外統一 404
+        # （不洩漏「trace 存在但屬於別人」這種資訊）
+        raise HTTPException(status_code=404, detail="找不到該 raw_trace（不存在、不屬於此案件、或已軟刪）")
+
+    prev_lat, prev_lng, prev_has_geom = row
+
+    # 2. UPDATE —— lat / lng / geom 三欄一致；geom 用 PostGIS ST_SetSRID + ST_MakePoint
+    #    注意 ST_MakePoint(x, y) 順序是 (lng, lat)，與直覺相反，這是 OGC 規範。
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE raw_traces
+                   SET lat  = %s,
+                       lng  = %s,
+                       geom = ST_SetSRID(ST_MakePoint(%s, %s), 4326)
+                 WHERE id = %s AND project_id = %s AND deleted_at IS NULL
+                """,
+                (body.lat, body.lng, body.lng, body.lat, trace_id, project_id),
+                prepare=False,
+            )
+            updated = cur.rowcount
+    except Exception as e:
+        write_audit(
+            action="manual_locate_failed",
+            user=current_user, request=request,
+            target_type="raw_traces", target_ref=str(trace_id), project_id=project_id,
+            details={"lat": body.lat, "lng": body.lng, "note": body.note},
+            status_code=500, error_text=f"{type(e).__name__}: {e}",
+        )
+        raise HTTPException(status_code=500, detail=f"手動定位失敗：{type(e).__name__}: {e}")
+
+    if updated == 0:
+        # 罕見：SELECT 與 UPDATE 之間有並發軟刪
+        raise HTTPException(status_code=409, detail="該 raw_trace 在執行間被軟刪，請重新整理後再試")
+
+    write_audit(
+        action="manual_locate",
+        user=current_user, request=request,
+        target_type="raw_traces", target_ref=str(trace_id), project_id=project_id,
+        details={
+            "lat":            body.lat,
+            "lng":            body.lng,
+            "note":           body.note,
+            "prev_lat":       prev_lat,
+            "prev_lng":       prev_lng,
+            "prev_has_geom":  bool(prev_has_geom),  # True=repin / False=首次
+        },
+        status_code=200,
+    )
+
+    return {
+        "ok":        True,
+        "trace_id":  trace_id,
+        "project_id": project_id,
+        "lat":       body.lat,
+        "lng":       body.lng,
+        "repin":     bool(prev_has_geom),
+    }

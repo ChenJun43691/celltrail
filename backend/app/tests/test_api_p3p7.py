@@ -80,6 +80,8 @@ EXPECTED_ROUTES = [
     ("get",    "/api/projects/{project_id}/coverage"),
     ("get",    "/api/projects/{project_id}/unlocated"),
     ("get",    "/api/projects/{project_id}/unlocated.csv"),
+    # 手動定位（2026-05-25，WAKE_UP_TODO #8）
+    ("patch",  "/api/projects/{project_id}/raw-traces/{trace_id}/manual-locate"),
     # share（P7）—— 注意 share-links 為複數
     ("post",   "/api/projects/{project_id}/share-links"),
     ("get",    "/api/projects/{project_id}/share-links"),

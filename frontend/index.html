@@ -2459,6 +2459,14 @@
             <td style="padding:4px 8px;font-size:11px;color:#888">${escH((it.start_ts||'').replace('T',' ').slice(0,16))}</td>
             <td style="padding:4px 8px;font-size:12px"><code>${escH(it.cell_id || '—')}</code></td>
             <td style="padding:4px 8px;font-size:12px;color:#555">${escH(it.cell_addr || '—')}</td>
+            <td style="padding:4px 8px;text-align:right">
+              <button class="_pinBtn" data-trace-id="${it.id}"
+                      data-target-id="${escH(it.target_id || '')}"
+                      data-cell-id="${escH(it.cell_id || '')}"
+                      data-cell-addr="${escH(it.cell_addr || '')}"
+                      title="點地圖標記位置"
+                      style="padding:3px 8px;border:1px solid #1565c0;color:#1565c0;background:#fff;border-radius:5px;cursor:pointer;font-size:11px">📍 標位置</button>
+            </td>
           </tr>`).join('');
         return `
           <details ${i===0?'open':''} style="margin-bottom:14px;border:1px solid #e0e0e0;border-radius:8px;padding:10px 14px">
@@ -2476,8 +2484,9 @@
                 <th style="padding:4px 8px;text-align:left;font-size:11px;color:#666;border-bottom:1px solid #e0e0e0">時間</th>
                 <th style="padding:4px 8px;text-align:left;font-size:11px;color:#666;border-bottom:1px solid #e0e0e0">cell_id</th>
                 <th style="padding:4px 8px;text-align:left;font-size:11px;color:#666;border-bottom:1px solid #e0e0e0">cell_addr</th>
+                <th style="padding:4px 8px;text-align:right;font-size:11px;color:#666;border-bottom:1px solid #e0e0e0">操作</th>
               </tr></thead>
-              <tbody>${rows || `<tr><td colspan="3" style="padding:8px;text-align:center;color:#bbb">（無資料）</td></tr>`}</tbody>
+              <tbody>${rows || `<tr><td colspan="4" style="padding:8px;text-align:center;color:#bbb">（無資料）</td></tr>`}</tbody>
             </table>
             ${more}
           </details>`;
@@ -2487,6 +2496,169 @@
       root.querySelectorAll('button[data-reason-csv]').forEach(b => {
         b.onclick = () => downloadUnlocatedCsv(projectId, b.dataset.reasonCsv);
       });
+
+      // 事件委派：📍 標位置 —— 關 L3 → 進入 pin mode；完成後重開 L3 顯示最新數字
+      root.querySelectorAll('button._pinBtn').forEach(b => {
+        b.onclick = () => {
+          const meta = {
+            traceId:  Number(b.dataset.traceId),
+            targetId: b.dataset.targetId || '',
+            cellId:   b.dataset.cellId || '',
+            cellAddr: b.dataset.cellAddr || '',
+          };
+          overlay.remove();
+          enterManualLocateMode(projectId, meta);
+        };
+      });
+    }
+
+    // ============================================================
+    // 手動定位 pin mode（2026-05-25，WAKE_UP_TODO #8）
+    //
+    // UX：點 L3 modal 的「📍 標位置」→ 關 L3 → 主地圖進入 pin mode
+    //     （cursor 變 crosshair、頂部 banner 提示）→ 點地圖任一點 →
+    //     彈出 confirm dialog（顯示 lat/lng + 可填 note）→ 確認 →
+    //     PATCH /api/projects/{p}/raw-traces/{id}/manual-locate →
+    //     reload 地圖 + coverage banner → 重開 L3（讓使用者連續處理）。
+    //
+    // 設計取捨：
+    //   - 用主地圖（已有 zoom/cluster）而非 modal 內 mini-map：避免維護
+    //     兩個 Leaflet 實例，UX 與既有「量距」模式一致。
+    //   - 一次只能 pin 一筆：避免 race；ESC / 取消鈕 / 再點 📍 都會清狀態。
+    //   - 沒 cleanup global state：所有狀態收在 _pinState 物件內，exit 時
+    //     一次性歸 null，避免分散的 flag 各自走偏。
+    // ============================================================
+    let _pinState = null;   // { projectId, meta, banner, escHandler, clickHandler }
+
+    function enterManualLocateMode(projectId, meta) {
+      // 若已在 pin mode（例如使用者連點兩次），先收乾淨再重進
+      if (_pinState) exitManualLocateMode();
+
+      // 頂部 banner（固定在地圖上方，z-index 高於 leaflet 但低於 modal）
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#1565c0;color:#fff;padding:10px 16px;text-align:center;font:14px/1.4 system-ui,-apple-system,sans-serif;z-index:9000;box-shadow:0 2px 8px rgba(0,0,0,.2)';
+      const cellInfo = meta.cellAddr ? `位址：${escH(meta.cellAddr)}` : (meta.cellId ? `cell_id：${escH(meta.cellId)}` : '此 cell');
+      banner.innerHTML = `📍 請於地圖上點選「${cellInfo}」的位置　<span style="opacity:.85;font-size:12px">（Esc 取消）</span>
+        <button id="_pinCancel" style="margin-left:12px;padding:3px 10px;border:1px solid #fff;background:transparent;color:#fff;border-radius:5px;cursor:pointer;font-size:12px">取消</button>`;
+      document.body.appendChild(banner);
+
+      // 主地圖 cursor → crosshair（覆蓋既有 zoom/pan 行為仍可用）
+      const mapEl = map.getContainer();
+      mapEl.style.cursor = 'crosshair';
+
+      // 一次性 click handler：拿到 lat/lng → 彈確認
+      const clickHandler = (e) => {
+        // 不直接 PATCH —— 中間插確認框，讓使用者看清楚 + 可加 note
+        openManualLocateConfirm(projectId, meta, e.latlng.lat, e.latlng.lng);
+      };
+      map.on('click', clickHandler);
+
+      // ESC 取消（async：完成後重開 L3 需 await coverage）
+      const escHandler = async (e) => {
+        if (e.key === 'Escape') {
+          exitManualLocateMode();
+          const cov = await await_safe_coverage(projectId);
+          if (cov) openUnlocatedDetailModal(projectId, cov);
+        }
+      };
+      document.addEventListener('keydown', escHandler);
+
+      banner.querySelector('#_pinCancel').onclick = async () => {
+        exitManualLocateMode();
+        const cov = await await_safe_coverage(projectId);
+        if (cov) openUnlocatedDetailModal(projectId, cov);
+      };
+
+      _pinState = { projectId, meta, banner, escHandler, clickHandler };
+    }
+
+    function exitManualLocateMode() {
+      if (!_pinState) return;
+      const s = _pinState;
+      _pinState = null;   // 先清，避免重入
+
+      try { s.banner.remove(); } catch (_) {}
+      try { map.off('click', s.clickHandler); } catch (_) {}
+      try { document.removeEventListener('keydown', s.escHandler); } catch (_) {}
+      try { map.getContainer().style.cursor = ''; } catch (_) {}
+    }
+
+    // 確認 dialog（顯示 lat/lng + note + 確認/取消）
+    function openManualLocateConfirm(projectId, meta, lat, lng) {
+      const overlay = _makeOverlay();
+      overlay.innerHTML = `
+        <div style="background:#fff;border-radius:12px;padding:20px 22px;width:min(94vw,420px);box-shadow:0 8px 28px rgba(0,0,0,.25);font:14px/1.55 system-ui,-apple-system,sans-serif">
+          <div style="font-size:16px;font-weight:700;margin-bottom:8px">📍 確認手動定位</div>
+          <div style="font-size:12px;color:#888;margin-bottom:12px">
+            ${meta.cellAddr ? `位址：<code>${escH(meta.cellAddr)}</code>` : ''}
+            ${meta.cellAddr && meta.cellId ? '<br>' : ''}
+            ${meta.cellId ? `cell_id：<code>${escH(meta.cellId)}</code>` : ''}
+          </div>
+          <div style="background:#f5f7fa;border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:13px">
+            選定座標：<b>${lat.toFixed(6)}, ${lng.toFixed(6)}</b>
+          </div>
+          <div style="margin-bottom:14px">
+            <label style="font-size:12px;color:#555;display:block;margin-bottom:4px">備註（選填，最多 500 字）</label>
+            <textarea id="_pinNote" rows="3" maxlength="500" placeholder="例：依現場照片人工標"
+              style="width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid #ccc;border-radius:5px;font:13px system-ui;resize:vertical"></textarea>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button id="_pinAbort" style="padding:6px 14px;border:1px solid #ccc;background:#fff;border-radius:6px;cursor:pointer;font-size:13px">取消</button>
+            <button id="_pinOk" style="padding:6px 16px;border:1px solid #1565c0;background:#1565c0;color:#fff;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">確認標記</button>
+          </div>
+          <div id="_pinErr" style="margin-top:10px;font-size:12px;color:#c62828;display:none"></div>
+        </div>`;
+      document.body.appendChild(overlay);
+
+      const closeAndReopenL3 = async () => {
+        overlay.remove();
+        exitManualLocateMode();
+        const cov = await await_safe_coverage(projectId);
+        if (cov) openUnlocatedDetailModal(projectId, cov);
+      };
+      overlay.querySelector('#_pinAbort').onclick = closeAndReopenL3;
+
+      overlay.querySelector('#_pinOk').onclick = async () => {
+        const okBtn = overlay.querySelector('#_pinOk');
+        const errEl = overlay.querySelector('#_pinErr');
+        const note = overlay.querySelector('#_pinNote').value.trim() || null;
+        okBtn.disabled = true; okBtn.textContent = '送出中…';
+        errEl.style.display = 'none';
+        try {
+          const url = `${API_BASE}/projects/${encodeURIComponent(projectId)}/raw-traces/${meta.traceId}/manual-locate`;
+          const r = await fetch(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({ lat, lng, note }),
+          });
+          if (!r.ok) {
+            const txt = await r.text();
+            throw new Error(`HTTP ${r.status}: ${txt.slice(0, 200)}`);
+          }
+          const j = await r.json();
+          overlay.remove();
+          exitManualLocateMode();
+          showToast(`✓ 已標記（${j.repin ? '重新標位置' : '首次標位置'}）`, 'success', 2200);
+          // reload 地圖（新點會出現）+ refresh coverage banner（由 load() 內呼叫）
+          await load();
+          // 重開 L3 讓使用者連續處理
+          const cov = await await_safe_coverage(projectId);
+          if (cov) openUnlocatedDetailModal(projectId, cov);
+        } catch (e) {
+          errEl.textContent = `送出失敗：${e.message}`;
+          errEl.style.display = '';
+          okBtn.disabled = false; okBtn.textContent = '確認標記';
+        }
+      };
+    }
+
+    // 抓 coverage 的 helper（給 cancel / 完成後重開 L3 用）
+    async function await_safe_coverage(projectId) {
+      try {
+        const r = await fetch(`${API_BASE}/projects/${encodeURIComponent(projectId)}/coverage`, { headers: authHeaders() });
+        if (!r.ok) return null;
+        return await r.json();
+      } catch (_) { return null; }
     }
 
     function downloadUnlocatedCsv(projectId, reason = null) {
