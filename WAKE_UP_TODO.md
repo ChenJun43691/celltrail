@@ -1,18 +1,31 @@
-# 醒來要做的事（v14 — addr 真因 + 業務邏輯測試補強）
+# 醒來要做的事（v15 — addr 真因 + WAKE_UP_TODO #2 全清）
 
-> 更新時間：2026-05-24
-> 狀態：✅ 164/164 pytest passed ｜ 證據完整性 9.5/10（上傳/標記數字不再沉默）
+> 更新時間：2026-05-25
+> 狀態：✅ 189/189 pytest passed ｜ 證據完整性 9.5/10（上傳/標記數字不再沉默）
 
 ---
 
-## 本輪（2026-05-24）大事記
+## 本輪（2026-05-24 ～ 05-25）大事記
 
 | Commit | 內容 |
 |---|---|
+| `b4ec912` | **fix+test**：format_reports anonymous admin FK guard + 業務邏輯測試 +9 |
+| `5eb48da` | **test**：members API 業務邏輯（owner 守衛 + revoke 自鎖防線 + 軟刪 audit）+16 |
 | `22898fa` | **chore**：backfill_hex_celladdr.py 舊資料補救 script（WAKE_UP_TODO #9 ready，等 --apply） |
 | `8e9806b` | **test**：專案層權限安全核心（assert_project_access + _PERM_LEVELS + optional auth）— +17 |
 | `101474b` | **test**：write_audit 業務邏輯（safe 合約 + 欄位組裝 + payload_hash 一致性）— +9 |
 | `a5eb683` | **fix**：ingest cell_addr 拒絕 hex 短碼（addr_geocode_failed 真因，**完成 WAKE_UP_TODO #7**）+7 守護測試 |
+
+**本輪重點補述**：
+- WAKE_UP_TODO **#2 全清**：audit / security / members / format_reports 四
+  個業務邏輯層全部補完（共 +51 測試）。pytest 131 → **189**。
+- 補測試時意外發現 latent bug：`format_reports.py` 對 anonymous admin
+  (id=0) 未做 FK 容錯 —— grant_member / delete_project 都有處理但這支
+  忘了，AUTH_ENABLED=false 開發環境每次回報 / 處理回報都會炸
+  IntegrityError。production AUTH_ENABLED=true 不受影響。同 commit
+  `b4ec912` 已修。
+- 這個經驗印證：補業務邏輯測試的副作用是會逼出 latent bug —— 因為
+  測試必須對齊「該行為應該是什麼」，而非「它目前是什麼」。
 
 **本輪重點**：
 - WAKE_UP_TODO #7 **完成**：0517test 案件 69 筆 addr_geocode_failed 真因
@@ -105,7 +118,7 @@ cd ../frontend && python3 -m http.server 5501
 | # | Task | 說明 |
 |---|---|---|
 | 1 | **填充 cell_towers 座標表** | 架構（P4.1）就緒但表是空的；向業者取得基地台座標 CSV 匯入 |
-| 2 | **P3–P6 API 補自動化測試** | 已補 P3–P7 契約/守衛測試（125）+ audit + security 業務邏輯（164）；剩 members API（_require_project_owner / revoke_member / list_members）、軟刪流程、format_reports 處理流程 |
+| ~~2~~ | ~~**P3–P6 API 補自動化測試**~~ | **✅ 2026-05-25 全清** — audit + security + members + format_reports 四塊業務邏輯全補（共 +51 測試，pytest 131 → 189）。剩 list_members / list_reports 等純查詢端點（業務邏輯薄、回歸風險低，不急著補）。 |
 | 3 | **carrier_profile DB 同步** | 把 `_RAW2CANON` 所有 key 補進 DB `mapping_json` |
 
 ### 長期
