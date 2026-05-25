@@ -1191,6 +1191,7 @@
       });
       for (const s of seriesMap.values()) s.records.sort((a,b) => (a.start||0) - (b.start||0));
       _initTimeSlider();
+      updateAdvancedSummary();
     }
 
     // ── 專案模式：upload → 正常 API ──
@@ -1891,6 +1892,27 @@
 
       _initTimeSlider();
       shouldFit = true;
+      updateAdvancedSummary();
+    }
+
+    // ── 進階設定標題：依本批資料是否含方位角，加掛「✦ 含方位角資料」hint ──
+    // 為何用 summary 而不另開 badge：summary 是 details 的原生 click target，
+    // 改文字最直接、不會干擾既有 CSS 與展開行為。掃 seriesMap 一次即可（短路）。
+    // 為何放 parseAndGroup / appendGeoJsonToSeries 內部尾端：所有改 seriesMap
+    // 的入口（專案 load / temp parse / guest 拖檔）都會自動觸發，避免散在
+    // 各呼叫點漏掉。
+    function updateAdvancedSummary() {
+      const sum = document.querySelector('#advancedSection > summary');
+      if (!sum) return;
+      let hasAz = false;
+      outer: for (const s of seriesMap.values()) {
+        for (const r of s.records) {
+          if (r.az != null) { hasAz = true; break outer; }
+        }
+      }
+      sum.innerHTML = hasAz
+        ? '⚙️ 進階設定 <span style="color:#1565c0;font-size:12px;font-weight:500;margin-left:2px">✦ 含方位角資料</span>'
+        : '⚙️ 進階設定';
     }
 
     // 短日期格式（時間軸標籤用）
