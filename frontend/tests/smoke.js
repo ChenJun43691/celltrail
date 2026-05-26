@@ -160,6 +160,36 @@ async function openPage(ctx, url, { token } = {}) {
         pageErrors.length === 0, pageErrors.join(' | '));
       await page.close();
     }
+
+    // index.html 帶 token：跳過「請選擇使用模式」modal，自動進「建立新專案」（commit a713d38）
+    // 為什麼測這個：commit a713d38 移除登入後的模式選擇 modal、改成自動進 project modal。
+    // 若未來有人不小心把舊邏輯加回來，會直接破壞登入者預期。
+    {
+      const { page, pageErrors } = await openPage(ctx, `${FE_BASE}/index.html`, { token: TOKEN });
+      // 確保不被「記住 = 臨時」的 SESSION_MODE_KEY 干擾（測「預設行為」）
+      await page.evaluate(() => localStorage.removeItem('ct_session_mode'));
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      // initAuth → /auth/me → initAfterLogin → openProjectCreationModal
+      await page.waitForTimeout(3500);
+
+      const hasModeSelect = await page.locator('text=請選擇使用模式').count();
+      assert('index.html 帶 token: 不彈出「請選擇使用模式」modal',
+        hasModeSelect === 0, `count=${hasModeSelect}`);
+
+      // 用帶 emoji 的「📁 建立新專案」精確比對 modal 標題（dropdown 的版本是「＋ 建立新專案」）
+      const hasProjModal = await page.locator('text=📁 建立新專案').count();
+      assert('index.html 帶 token: 自動進入「📁 建立新專案」modal',
+        hasProjModal >= 1, `count=${hasProjModal}`);
+
+      // 進階設定 summary 預設文字（無資料時不該已掛 ✦；commit 7d657aa）
+      const sumText = ((await page.locator('#advancedSection > summary').textContent()) || '').trim();
+      assert('index.html: 進階設定 summary 預設不含 ✦（無資料時）',
+        sumText.length > 0 && !sumText.includes('✦'), sumText);
+
+      assert('index.html 帶 token: 無 pageerror',
+        pageErrors.length === 0, pageErrors.join(' | '));
+      await page.close();
+    }
   } else {
     console.log('ℹ️  CT_SMOKE_TOKEN 未設 — 跳過 admin/audit 深度檢查');
     console.log('   要啟用：export CT_SMOKE_TOKEN=$(bash mint-token.sh <admin-username>)');

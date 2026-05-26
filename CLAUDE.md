@@ -113,7 +113,7 @@ bash backend/scripts/smoke_upload.sh
 cd frontend/tests
 npm install                                          # 一次性
 npm test                                             # 公開頁 + 守衛重導向（17 條）
-# 帶 token 跑完整 28 條（含 admin 三分頁、audit 查詢）
+# 帶 token 跑完整 32 條（含 admin 三分頁、audit 查詢、登入後 UX 驗證）
 export CT_SMOKE_TOKEN=$(bash mint-token.sh CIDadmin)
 npm test
 ```
