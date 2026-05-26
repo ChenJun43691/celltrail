@@ -1,14 +1,18 @@
-# 醒來要做的事（v16 — L3 手動定位 + #2/#7/#8 全清、#9 待 --apply）
+# 醒來要做的事（v17 — #2/#3/#7/#8 全清、UI smoke 32 條、drift 守護就位）
 
-> 更新時間：2026-05-25
-> 狀態：✅ 199/199 pytest passed ｜ 證據完整性 9.7/10（上傳數字、業務邏輯、人工定位三件都不再沉默）
+> 更新時間：2026-05-26
+> 狀態：✅ 203/203 pytest ｜ 32/32 frontend smoke ｜ 證據完整性 9.7/10
 
 ---
 
-## 本輪（2026-05-24 ～ 05-25）大事記
+## 本輪（2026-05-24 ～ 05-26）大事記
 
 | Commit | 內容 |
 |---|---|
+| `3db9696` | **test**：carrier_profile seed/code drift CI 守護 — **完成 #3**（+4 條，方向轉成防 drift） |
+| `798f553` | **test**：frontend smoke +4 守護登入後 UX（跳模式 modal + 進階設定 hint） |
+| `7d657aa` | **feat**：進階設定標題依資料動態加掛「✦ 含方位角資料」提示 |
+| `a713d38` | **fix**：已登入使用者跳過「請選擇使用模式」modal，自動進專案管理 |
 | `fe71904` | **feat**：L3 手動定位（PATCH manual-locate + 前端 pin mode）— **完成 #8**，+10 backend tests |
 | `b4ec912` | **fix+test**：format_reports anonymous admin FK guard + 業務邏輯測試 +9 |
 | `5eb48da` | **test**：members API 業務邏輯（owner 守衛 + revoke 自鎖防線 + 軟刪 audit）+16 |
@@ -20,8 +24,15 @@
 **本輪重點補述**：
 - WAKE_UP_TODO **#2 全清**：audit / security / members / format_reports 四
   個業務邏輯層全部補完（共 +51 測試）。
+- WAKE_UP_TODO **#3 完成**（方向轉換）：實測 47=47 已同步，重點改為**防
+  未來 drift** —— 加 4 條 CI test 守住 `_RAW2CANON` 與 schema.sql seed
+  的雙向一致 + canonical typo 白名單檢查。
+- WAKE_UP_TODO **#7 完成**：ingest cell_addr hex 短碼防呆（`a5eb683`）。
 - WAKE_UP_TODO **#8 完成**：L3 手動定位端到端（backend PATCH + 前端 pin
-  mode + 10 unit + 1 contract test）。pytest 131 → **199**。
+  mode + 10 unit + 1 contract test）。
+- 前端兩件 UX 改良：跳模式選擇 modal (`a713d38`)、進階設定動態 hint
+  (`7d657aa`)；同步補 4 條 playwright smoke 守住。
+- pytest 131 → **203**（+72）；frontend smoke 28 → **32**（+4）。
 - 補測試時意外發現 latent bug：`format_reports.py` 對 anonymous admin
   (id=0) 未做 FK 容錯 —— grant_member / delete_project 都有處理但這支
   忘了，AUTH_ENABLED=false 開發環境每次回報 / 處理回報都會炸
@@ -31,7 +42,8 @@
   測試必須對齊「該行為應該是什麼」，而非「它目前是什麼」。
 
 **uvicorn 注意**：本機若 uvicorn 是 v15 之前 session 啟的，需重啟才會載入
-新 PATCH 端點（task #5 spawn bug，無法用 --reload；手動 kill 後重啟）。
+新 PATCH 端點 manual-locate（task #5 spawn bug，無法用 --reload；手動 kill
+後重啟）。
 
 **本輪重點**：
 - WAKE_UP_TODO #7 **完成**：0517test 案件 69 筆 addr_geocode_failed 真因

@@ -89,16 +89,19 @@ python3 -m http.server 5501
 cd backend
 source .venv/bin/activate
 
-pytest app/tests/ -v                                      # 全部（125 passed）
+pytest app/tests/ -v                                      # 全部（203 passed）
 pytest app/tests/test_ingest_match_col_idx.py -v          # 單一測試檔
 pytest app/tests/test_audit.py::test_write_audit_fields -v # 單一測試函式
 ```
 
 > smoke tests 不依賴 DB / Redis / Google，CI 可直接執行。
-> **涵蓋範圍**：ingest 核心（normalize / dialect / compound split / match_col_idx /
-> audit / evidence / azimuth_ref）＋ P3–P7 API 契約與 auth 守衛測試（commit
-> 1353b09 加上的 33 條）。「業務邏輯」層（members 權限變更、軟刪流程、audit
-> 寫入內容）仍偏薄。
+> **涵蓋範圍**（2026-05-26 已大幅補強，131 → 203）：
+> - ingest 核心（normalize / dialect / compound split / match_col_idx /
+>   audit / evidence / azimuth_ref / addr hex guard / manual_locate）
+> - P3–P7 API 契約與 auth 守衛測試（`1353b09` 33 條 + 後續擴充）
+> - 業務邏輯層補完（`101474b` write_audit / `8e9806b` security 權限核心 /
+>   `5eb48da` members API / `b4ec912` format_reports / `fe71904` manual_locate）
+> - drift 守護：`3db9696` carrier_profile seed ↔ _RAW2CANON 同步
 
 ### 端對端 smoke test（需 DB + uvicorn 已啟）
 
