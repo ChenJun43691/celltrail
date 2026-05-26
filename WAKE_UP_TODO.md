@@ -125,7 +125,7 @@ cd ../frontend && python3 -m http.server 5501
 |---|---|---|
 | 1 | **填充 cell_towers 座標表** | 架構（P4.1）就緒但表是空的；向業者取得基地台座標 CSV 匯入 |
 | ~~2~~ | ~~**P3–P6 API 補自動化測試**~~ | **✅ 2026-05-25 全清** — audit + security + members + format_reports 四塊業務邏輯全補（共 +51 測試，pytest 131 → 189）。剩 list_members / list_reports 等純查詢端點（業務邏輯薄、回歸風險低，不急著補）。 |
-| 3 | **carrier_profile DB 同步** | 把 `_RAW2CANON` 所有 key 補進 DB `mapping_json` |
+| ~~3~~ | ~~**carrier_profile DB 同步**~~ | **✅ 2026-05-26** — 實測 `_RAW2CANON` 與 schema.sql seed 已 47=47 完全同步。重點轉成**防未來 drift**：新增 `test_carrier_profile_seed_sync.py`（4 條 CI 守護：key set 相等 / 同 key 同值 / count 對齊 / canonical 值在已知 schema 欄位內），未來改一邊忘了改另一邊就會在 CI 被擋。 |
 
 ### 長期
 
