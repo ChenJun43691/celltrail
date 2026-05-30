@@ -242,6 +242,24 @@ def _fetch_map_points(project_id: str, target_id: Optional[str], limit: int = 20
 
 # ── 格式化工具 ─────────────────────────────────────────────────
 
+def _fit_image_dims(w_px: int, h_px: int, max_w: float, max_h: float):
+    """
+    等比縮放圖片（像素 w_px×h_px）至「寬不超過 max_w 且高不超過 max_h」，
+    回傳 reportlab 用的 (width, height)（單位 pt）。
+
+    為什麼要同時鎖寬與高（2026-05-30 修）：
+      地圖截圖的 aspect ratio 由 bbox 決定，可能是高瘦的直式圖。若只鎖寬度、
+      高度任由 aspect ratio 放大，會超出 A4 頁框可用高度，reportlab 在
+      Flowable 排版時拋 LayoutError，導致整份證物報告產不出來（500）。
+    """
+    map_w = max_w
+    map_h = max_w * h_px / w_px
+    if map_h > max_h:
+        map_h = max_h
+        map_w = max_h * w_px / h_px
+    return map_w, map_h
+
+
 def _fmt_ts(ts: Optional[datetime]) -> str:
     if not ts: return ""
     try:
@@ -334,11 +352,12 @@ def build_evidence_report(
             from app.services.staticmap import build_map_image, color_legend
             png_bytes = build_map_image(map_points, output_w=760, max_side=4)
             if png_bytes:
-                # 計算實際圖片 aspect ratio 以正確設定 reportlab Image 高度
+                # 等比縮放，但同時受限於頁框「寬」與「高」（見 _fit_image_dims）。
+                # max_w/max_h 取略小於 A4 頁框可用區（約 481×728pt），並為圖說
+                # 與圖例保留同頁空間。
                 pil = PILImage.open(io.BytesIO(png_bytes))
                 w_px, h_px = pil.size
-                map_w = 170 * mm
-                map_h = map_w * h_px / w_px
+                map_w, map_h = _fit_image_dims(w_px, h_px, 168 * mm, 200 * mm)
                 story.append(RLImage(io.BytesIO(png_bytes), width=map_w, height=map_h))
                 story.append(Spacer(1, 4))
                 # 圖例 Table（避免中文在 PIL 預設字型顯示不佳，改用 reportlab 繪製）
