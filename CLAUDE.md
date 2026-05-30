@@ -89,19 +89,23 @@ python3 -m http.server 5501
 cd backend
 source .venv/bin/activate
 
-pytest app/tests/ -v                                      # 全部（203 passed）
+pytest app/tests/ -v                                      # 全部（212 passed）
 pytest app/tests/test_ingest_match_col_idx.py -v          # 單一測試檔
 pytest app/tests/test_audit.py::test_write_audit_fields -v # 單一測試函式
 ```
 
 > smoke tests 不依賴 DB / Redis / Google，CI 可直接執行。
-> **涵蓋範圍**（2026-05-26 已大幅補強，131 → 203）：
+> **CI**：`.github/workflows/ci.yml`（push/PR to main 自動跑全套 pytest，Python 3.13）。
+> **涵蓋範圍**（2026-05-26 已大幅補強，131 → 203；2026-05-30 → 212）：
 > - ingest 核心（normalize / dialect / compound split / match_col_idx /
 >   audit / evidence / azimuth_ref / addr hex guard / manual_locate）
 > - P3–P7 API 契約與 auth 守衛測試（`1353b09` 33 條 + 後續擴充）
 > - 業務邏輯層補完（`101474b` write_audit / `8e9806b` security 權限核心 /
 >   `5eb48da` members API / `b4ec912` format_reports / `fe71904` manual_locate）
 > - drift 守護：`3db9696` carrier_profile seed ↔ _RAW2CANON 同步
+> - P7 分享連結（`test_share_links.py`）：`_require_project_owner` 只認 owner
+>   守衛（collaborator 也擋）+ GET /share/{token} 四態狀態機（404 / 410 撤銷 /
+>   410 過期 / 200）
 
 ### 端對端 smoke test（需 DB + uvicorn 已啟）
 

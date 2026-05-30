@@ -86,3 +86,6 @@ pydantic_core==2.23.4
 # 且 CellTrail 既有測試基於 8 系列穩定版，無遷移到 9 的迫切需求。
 # pygments / pluggy / iniconfig 由 pytest 自動帶入，不需顯式列出。
 pytest==8.3.3
+# httpx：fastapi.testclient.TestClient 的底層 HTTP client。fastapi 不會自動帶入，
+# 但 test_api_p3p7 / test_share_links 走 TestClient，CI 沒它會 import 失敗。
+httpx==0.28.1

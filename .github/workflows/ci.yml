@@ -1,0 +1,46 @@
+name: backend-tests
+
+# CellTrail 後端測試 CI
+# - 觸發：push 到 main / 任何對 main 的 PR
+# - 範圍：backend/app/tests（全套 DB-free，不需 PostGIS / Redis / Google，
+#   見 CLAUDE.md 第三節「smoke tests 不依賴 DB / Redis / Google」）
+# - 目的：守住 ingest 正規化、auth/權限守衛、分享連結狀態機等回歸破壞。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      # 測試檔本身會 os.environ.setdefault 這些值；在此再設一次，避免
+      # 任何 import-time 對環境變數的依賴因 collection 順序而踩雷。
+      DATABASE_URL: postgresql://user:pass@localhost:5432/fakedb
+      REDIS_URL: redis://localhost:6379/0
+      SECRET_KEY: ci-secret-key-only-for-pytest
+      CORS_ORIGINS: http://localhost:5500
+      AUTH_ENABLED: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        run: pytest app/tests/ -v
