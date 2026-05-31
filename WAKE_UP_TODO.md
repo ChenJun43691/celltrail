@@ -144,7 +144,7 @@ cd ../frontend && python3 -m http.server 5501
 | # | Task | 說明 |
 |---|---|---|
 | 4 | **檢警分艙 / 案件分艙細緻權限** | 目前 admin/user + project_members 三級已可用，尚無組織層隔離 |
-| 5 | **uvicorn `--reload` Python 3.13 macOS spawn bug** | 可能要改 watchmedo |
+| ~~5~~ | ~~uvicorn `--reload` Python 3.13 macOS spawn bug~~ | **✅ 2026-05-31 已解** — `uvicorn==0.30.6` + `watchfiles==1.1.0` 改用 watchfiles，spawn bug 不復現，`--reload` 實測可正常熱重載 |
 | 6 | **前端 UI smoke test 擴充** | 已建 `frontend/tests/`（playwright-core，17 / 32 條全綠）；新加 4 條守護 `a713d38` 跳模式 modal + `7d657aa` 進階設定 hint。之後新增頁面 / 互動時補上對應 assertion |
 | ~~7~~ | ~~**`addr_geocode_failed` 真因**~~ | **✅ 2026-05-24 完成（`a5eb683`）** — 真因是 ≥2 欄都映 cell_addr，hex 在真地址空時殘留；`_normalize_row` Pass 1 加 hex 短碼 guard 改寫到 sector_id。+7 守護測試。既有 DB 資料未洗（需另寫 backfill script）。 |
 | ~~8~~ | ~~**手動定位（L3 Phase 2）**~~ | **✅ 2026-05-25 完成（`fe71904`）** — PATCH /api/projects/{p}/raw-traces/{id}/manual-locate（collaborator+；ST_MakePoint(lng,lat) OGC 順序；不加 schema 欄、audit_logs 為 SoT、prev_lat/lng 保留可重建任一時間點狀態）。L3 每列加📍按鈕 → 主地圖 pin mode（crosshair + banner + ESC 取消）→ confirm modal → reload + 重開 L3 連續處理。+10 backend tests + 1 contract test。**uvicorn 上輪 session 已啟者需重啟才會載入新端點**。 |
