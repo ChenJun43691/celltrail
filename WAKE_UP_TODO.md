@@ -145,7 +145,7 @@ cd ../frontend && python3 -m http.server 5501
 |---|---|---|
 | 4 | **檢警分艙 / 案件分艙細緻權限** | 目前 admin/user + project_members 三級已可用，尚無組織層隔離 |
 | ~~5~~ | ~~uvicorn `--reload` Python 3.13 macOS spawn bug~~ | **✅ 2026-05-31 已解** — `uvicorn==0.30.6` + `watchfiles==1.1.0` 改用 watchfiles，spawn bug 不復現，`--reload` 實測可正常熱重載 |
-| 6 | **前端 UI smoke test 擴充** | 已建 `frontend/tests/`（playwright-core，17 / 32 條全綠）；新加 4 條守護 `a713d38` 跳模式 modal + `7d657aa` 進階設定 hint。之後新增頁面 / 互動時補上對應 assertion |
+| ~~6~~ | ~~前端 UI smoke test 擴充~~ | **✅ 2026-06-02 擴充** — `frontend/tests/smoke.js` 達 **40 條**（不帶 token 25 / 帶 token 40）。新增地圖互動深度覆蓋：訪客 parse-only 上傳→渲染 marker、marker popup 內容（cell_id/精度）、測距工具開關、訪客/登入按鈕群組可見性（走 parse-only 不寫 DB，靠 `window.__ctTest` seam 讀 popup 內容）。之後新增頁面/互動時補上對應 assertion |
 | ~~7~~ | ~~**`addr_geocode_failed` 真因**~~ | **✅ 2026-05-24 完成（`a5eb683`）** — 真因是 ≥2 欄都映 cell_addr，hex 在真地址空時殘留；`_normalize_row` Pass 1 加 hex 短碼 guard 改寫到 sector_id。+7 守護測試。既有 DB 資料未洗（需另寫 backfill script）。 |
 | ~~8~~ | ~~**手動定位（L3 Phase 2）**~~ | **✅ 2026-05-25 完成（`fe71904`）** — PATCH /api/projects/{p}/raw-traces/{id}/manual-locate（collaborator+；ST_MakePoint(lng,lat) OGC 順序；不加 schema 欄、audit_logs 為 SoT、prev_lat/lng 保留可重建任一時間點狀態）。L3 每列加📍按鈕 → 主地圖 pin mode（crosshair + banner + ESC 取消）→ confirm modal → reload + 重開 L3 連續處理。+10 backend tests + 1 contract test。**uvicorn 上輪 session 已啟者需重啟才會載入新端點**。 |
 | **9** | **舊資料 hex backfill** | **🟡 2026-05-24 script 完成（`22898fa`），等使用者 --apply** — `backend/scripts/backfill_hex_celladdr.py`，DRY RUN 預設。對本機 DB 驗證 0517test 案件正好 69 列可搬（與 #7 預測完全吻合）、0 列 sector_id 已佔用。使用者本機需手動跑 `--apply` 才會實際更新 DB + 寫 audit（一支 audit per project，action='backfill.hex_celladdr'）。 |

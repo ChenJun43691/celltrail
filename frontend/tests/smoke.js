@@ -108,6 +108,90 @@ async function openPage(ctx, url, { token } = {}) {
     await page.close();
   }
 
+  // ── E. 地圖互動深度檢查（guest parse-only，不寫 DB）─────────────
+  // 為什麼用 guest 模式：parse-only API 只解析不落 DB，既符合「smoke 不寫 DB」
+  // 原則，又能把真實點位渲染到地圖上，驗證 上傳→解析→render→popup 管線
+  // 與測距工具 —— 這些是 P6 後幾乎重寫、先前只靠人工測的互動。
+  // 不需 token（訪客即走 parse-only），故 CI 無 token 也能跑到。
+  {
+    const path = require('path');
+    const SAMPLE = path.resolve(__dirname, '..', '..', '基地台位置範例檔案', '網路歷程.xlsx');
+    const { page, consoleMsgs, pageErrors, badResponses } =
+      await openPage(ctx, `${FE_BASE}/index.html`);
+    // 跳過新手導覽 overlay（會蓋住互動），再重載讓設定生效
+    await page.evaluate(() => localStorage.setItem('ct_tour_done_v1', '1'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1500);
+    await page.keyboard.press('Escape'); // 收掉任何殘留 overlay（計數器等）
+
+    // E1. 訪客/登入按鈕群組可見性（直接讀 computed display，不受側選單收合影響）
+    //     —— 分享連結 / 授權成員鈕都在 #loggedInBtns 內，訪客模式必須整組隱藏。
+    const grp = await page.evaluate(() => ({
+      loggedIn: getComputedStyle(document.getElementById('loggedInBtns')).display,
+      guest:    getComputedStyle(document.getElementById('guestBtns')).display,
+    }));
+    assert('index(guest): loggedInBtns（含分享/成員鈕）整組隱藏',
+      grp.loggedIn === 'none', grp.loggedIn);
+    assert('index(guest): guestBtns（登入/申請）顯示',
+      grp.guest !== 'none', grp.guest);
+
+    // E2. 測距工具：點 📏 → 結果框顯示；取消 → 隱藏
+    await page.locator('#measureBtn').click();
+    await page.waitForTimeout(400);
+    assert('index(guest): 測距工具開啟 → 結果框顯示',
+      await page.locator('#measurePanel').isVisible());
+    await page.locator('#measureCancel').click();
+    await page.waitForTimeout(300);
+    assert('index(guest): 取消測距 → 結果框隱藏',
+      !(await page.locator('#measurePanel').isVisible()));
+
+    // E3. parse-only 上傳 → 地圖渲染 marker（#upl 為 hidden input，setInputFiles 直接設）
+    await page.setInputFiles('#upl', SAMPLE);
+    await page.waitForTimeout(400);
+    await page.locator('#btnUpload').click();
+    // 輪詢等 marker 出現（parse-only + geocode + render；最多 ~18s）
+    let markerCount = 0;
+    for (let i = 0; i < 36; i++) {
+      markerCount = await page.locator('.leaflet-marker-icon').count();
+      if (markerCount > 0) break;
+      await page.waitForTimeout(500);
+    }
+    assert('index(guest): parse-only 上傳後地圖渲染 marker',
+      markerCount > 0, `markers=${markerCount}`);
+
+    // E4. 驗證 marker 綁定的 popup 內容正確渲染（含真實資料欄位）。
+    //     直接讀 marker.getPopup().getContent()（透過 window.__ctTest seam）—— 這
+    //     驗的是 popup 模板有正確帶入資料，比「在地圖上開 popup」更貼近本質且
+    //     不受 markercluster 去叢集 / spiderfy 動畫時機影響（100% 確定性）。
+    const popupHtml = await page.evaluate(() => {
+      const t = window.__ctTest;
+      if (!t || !t.seriesMap) return null;
+      for (const s of t.seriesMap.values()) {
+        const cl = s.layers && s.layers.cluster;
+        const layers = (cl && cl.getLayers) ? cl.getLayers() : [];
+        for (const m of layers) {
+          const pu = m.getPopup && m.getPopup();
+          if (pu) {
+            const c = pu.getContent();
+            return typeof c === 'string' ? c : (c && c.outerHTML) || '';
+          }
+        }
+      }
+      return '';
+    });
+    assert('index(guest): marker 綁定 popup 內容含預期欄位（cell_id / 精度）',
+      popupHtml != null && /cell_id/.test(popupHtml) && /精度/.test(popupHtml),
+      String(popupHtml).slice(0, 80));
+
+    // E5. 整段互動流程無 JS 例外
+    const { consoleClean } = filterNoise(consoleMsgs, badResponses);
+    assert('index(guest) 地圖互動: 無 pageerror',
+      pageErrors.length === 0, pageErrors.join(' | '));
+    assert('index(guest) 地圖互動: 無非預期 console error',
+      consoleClean.length === 0, consoleClean.join(' | '));
+    await page.close();
+  }
+
   // ── D. 深度檢查（需 CT_SMOKE_TOKEN）────────────────────────────
   // 不帶 token 也能跑 A/B/C；帶 token 才能驗 admin 三分頁與 audit 查詢。
   if (TOKEN) {

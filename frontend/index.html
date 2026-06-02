@@ -1720,6 +1720,9 @@
 
     // ===== Series 結構 =====
     const seriesMap = new Map(); // key=target_id
+    // 測試 seam：唯讀引用 map / seriesMap，供 frontend/tests/smoke.js 程式化
+    // 開啟 marker popup 驗證渲染（production 無害，僅掛兩個既有物件的參照）。
+    window.__ctTest = { map, seriesMap };
     function getSeriesColor(id){
       if (colorMap[id]) return colorMap[id];
       const used = new Set(Object.values(colorMap));
