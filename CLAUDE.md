@@ -94,7 +94,7 @@ python3 -m http.server 5501
 cd backend
 source .venv/bin/activate
 
-pytest app/tests/ -v                                      # 全部（229 passed）
+pytest app/tests/ -v                                      # 全部（232 passed）
 pytest app/tests/test_ingest_match_col_idx.py -v          # 單一測試檔
 pytest app/tests/test_audit.py::test_write_audit_fields -v # 單一測試函式
 ```

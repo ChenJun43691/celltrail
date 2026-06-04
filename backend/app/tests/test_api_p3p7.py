@@ -131,6 +131,7 @@ PROTECTED_NO_BODY = [
     ("get",    "/api/projects/demo/coverage"),
     ("get",    "/api/projects/demo/unlocated"),
     ("get",    "/api/projects/demo/unlocated.csv"),
+    ("get",    "/api/projects/demo/evidence-files"),  # 證物清單（含 SHA-256）須驗證
     ("patch",  "/api/users/1/deactivate"),          # 無 body
     ("patch",  "/api/users/1/reactivate"),          # 無 body
     ("get",    "/api/format-reports"),
@@ -174,3 +175,56 @@ def test_parse_only_is_public(client):
     """POST /parse-only 不需 token（訪客免登入預覽）；缺檔案 → 422，不是 401。"""
     r = client.post("/api/parse-only")
     assert r.status_code == 422
+
+
+# ============================================================
+# ④ 專案分艙守衛：非成員不得跨案讀 evidence-files（2026-06-05 修補漏洞）
+# ============================================================
+def test_evidence_files_rejects_non_member(client, monkeypatch):
+    """
+    背景：list_evidence_files 原本只掛 Depends(get_current_user)、漏了
+    assert_project_access —— 任何登入者都能讀任意專案的證物清單（含檔名、
+    完整 SHA-256、上傳者身分），跨案外洩。修補後須與 /map-layers 同樣擋下
+    非成員。
+
+    本測試 DB-free：mock 一般 user 的 token 解析 + project_members 查無 row
+    （非成員）→ 期望 403。
+    """
+    from contextlib import contextmanager
+
+    import app.security as sec
+    from app.security import create_access_token
+
+    fake_user = {
+        "id": 99, "username": "outsider", "role": "user", "is_active": True,
+        "must_change_password": False, "real_name": None, "unit": None,
+        "badge_number": None, "email": None,
+    }
+    monkeypatch.setattr(
+        sec, "get_user_by_username",
+        lambda u: fake_user if u == "outsider" else None,
+    )
+
+    class _Cur:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a, **k): pass
+        def fetchone(self): return None  # project_members 查無 → 非成員
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    @contextmanager
+    def fake_get_conn():
+        yield _Conn()
+    monkeypatch.setattr(sec, "get_conn", fake_get_conn)
+
+    token = create_access_token({"sub": "outsider"})
+    r = client.get(
+        "/api/projects/somecase/evidence-files",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 403, (
+        f"非成員讀 evidence-files 應 403（專案分艙），實得 {r.status_code} "
+        "—— assert_project_access 可能又被拿掉了"
+    )

@@ -13,7 +13,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, Query
 
 from app.db.session import get_conn
-from app.security import get_current_user, require_admin
+from app.security import assert_project_access, get_current_user, require_admin
 
 router = APIRouter()
 
@@ -126,20 +126,24 @@ def list_audit_actions() -> Dict[str, Any]:
 # ============================================================
 # Evidence Files 查詢（P2 證物指紋）
 # ============================================================
-@router.get(
-    "/projects/{project_id}/evidence-files",
-    dependencies=[Depends(get_current_user)],
-)
+@router.get("/projects/{project_id}/evidence-files")
 def list_evidence_files(
     project_id: str,
     target_id: Optional[str] = None,
     page:      int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
+    current_user: dict = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
     列出 project / target 的證物檔案清單（含全 SHA-256）。
     供「證物清單」與「事後比對」使用。
+
+    權限：viewer 以上（須為該案件成員或系統 admin）。證物清單含檔名、
+    完整 SHA-256、上傳者身分等敏感案件中繼資料 —— 與 /map-layers、
+    /evidence-report 同樣走專案分艙守衛，非成員不得跨案讀取。
     """
+    assert_project_access(current_user, project_id, "viewer")
+
     where: List[str] = ["project_id = %s"]
     params: List[Any] = [project_id]
     if target_id:
