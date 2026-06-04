@@ -22,6 +22,33 @@ from app.services import geocode
 NA_TOKENS = {"#N/A", "", "NA", "N/A", None}
 TPE_TZ = timezone(timedelta(hours=8))  # Asia/Taipei
 
+# OLE2 / CDFV2 compound document magic：密碼保護的 OOXML（加密 xlsx）會把
+# 真正的 zip 包在 OLE2 容器的 EncryptedPackage 串流裡，檔頭即為此 8 bytes。
+# （一般未加密的 xlsx 是 zip，檔頭為 PK\x03\x04，不會命中。）
+_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+class EncryptedFileError(Exception):
+    """上傳的檔案為密碼保護（加密）的 Office 檔，系統無法解析。
+
+    刻意不做解密：要求使用者先在 Excel 移除密碼、另存為一般 .xlsx 再上傳
+    （證據完整性考量 —— 系統不持有/處理密碼，避免成為密碼處理的一環）。
+    """
+    pass
+
+
+def _reject_if_encrypted(file_bytes: bytes) -> None:
+    """
+    上傳前置檢查：若檔案是加密 / 密碼保護的 Office 檔（OLE2 容器），直接
+    拋 EncryptedFileError，由端點轉成清楚的錯誤提醒，而非讓 openpyxl 在
+    下游拋出難懂的「File is not a zip file」。
+    """
+    if file_bytes[:8] == _OLE2_MAGIC:
+        raise EncryptedFileError(
+            "此檔案有密碼保護（加密），系統無法讀取。"
+            "請在 Excel 中移除密碼後，另存為一般 .xlsx 再重新上傳。"
+        )
+
 
 class ParseDiagnosisError(Exception):
     """
@@ -86,6 +113,11 @@ def _parse_ts(s: Any) -> Optional[datetime]:
         # "2023-01-12T00:48:02.000" 不會誤 match "%Y-%m-%dT%H:%M:%S"
         "%Y-%m-%dT%H:%M:%S.%f",  # W2.4：中華上網方言 12869 列實測 100% 命中
         "%Y-%m-%dT%H:%M:%S",     # W2.4：ISO 8601 無毫秒備援（其他 carrier 可能用）
+        # ── GPS 軌跡格式：M/D/YYYY 12 小時制 + AM/PM（如 "4/18/2026 3:51:09 AM"）──
+        # 來源：車機 / GPS 軌跡匯出（RFL-8271軌跡.xlsx）。%m/%d/%I 在 CPython
+        # strptime 接受非零填補（"4" 等同 "04"），故單位數月/日/時皆可命中。
+        "%m/%d/%Y %I:%M:%S %p",
+        "%m/%d/%Y %I:%M %p",
     ):
         try:
             dt = datetime.strptime(s, fmt)
@@ -130,6 +162,37 @@ def _guess_accuracy(addr: str | None) -> int:
     if ("鄉" in a) or ("村" in a):
         return 800
     return 300
+
+# GPS / 經緯度直給座標的誤差圈：車機定位精度通常 < 30m，遠小於基地台
+GPS_ACCURACY_M = 30
+
+def _resolve_latlng(r: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    """
+    從 normalize 後的 row 取「檔案自帶」的經緯度（GPS 軌跡 / 已含座標格式）。
+
+    回傳 (lat, lng) 或 None（無有效座標）。
+
+    穩健性設計（為什麼不單純信任標頭）：
+      實務上電信 / 車機匯出檔常把「經度」「緯度」欄位標反（值對調）。
+      例 RFL-8271軌跡.xlsx：標「經度」的欄裝 22.59、標「緯度」的欄裝 120.32，
+      但台灣 lat≈22-25、lng≈120-122 —— 緯度物理上必落在 [-90, 90]。
+      故以「緯度必在 [-90,90]、經度必在 [-180,180]」做範圍校正：
+        - 若 lat 超出 [-90,90] 而 lng 在 [-90,90] → 判定標反，對調。
+      仍無法落入合理範圍（兩者皆超界 / 皆 0）→ 視為無效座標回 None，
+      讓該列走原本的 cell_id/addr geocode 路徑（forensic「不亂猜」紀律）。
+    """
+    lat = _to_float(r.get("lat"))
+    lng = _to_float(r.get("lng"))
+    if lat is None or lng is None:
+        return None
+    # 範圍自動校正：緯度必在 [-90,90]
+    if abs(lat) > 90 and abs(lng) <= 90:
+        lat, lng = lng, lat
+    if abs(lat) > 90 or abs(lng) > 180:
+        return None
+    if lat == 0 and lng == 0:
+        return None
+    return (lat, lng)
 
 # ---- 欄位名標準化 ----
 def _canon(s: str) -> str:
@@ -406,6 +469,22 @@ _RAW2CANON = {
     "方位": "azimuth",
     "方位角": "azimuth",
     "azimuth": "azimuth",
+    # ── 經緯度直給格式（GPS 軌跡 / 已含座標的檔；無 cell_id/地址，免 geocode）──
+    # 例：RFL-8271軌跡.xlsx（車號 / GPS時間 / 經度 / 緯度）。
+    # 注意：實務上「經度」「緯度」欄常被標反（值對調），故 _resolve_latlng 會
+    # 再用「緯度必落在 [-90,90]」做範圍自動校正，不單純信任標頭。
+    "GPS時間": "start_ts",
+    "gps時間": "start_ts",
+    "定位時間": "start_ts",
+    "經度": "lng",
+    "緯度": "lat",
+    "經度(wgs84)": "lng",
+    "緯度(wgs84)": "lat",
+    "longitude": "lng",
+    "latitude": "lat",
+    "lng": "lng",
+    "lat": "lat",
+    "lon": "lng",
 }
 # 注意：HEADER_MAP 保留為 module-level 物件以維持向後相容
 # （任何外部模組若直接 import HEADER_MAP 不會壞），
@@ -702,7 +781,10 @@ def ingest_auto(project_id: str, target_id: str, filename: str, file_bytes: byte
     - .csv/.txt/.tsv → 文字表格
     - .xlsx → Excel
     - .pdf → 走 PDF 解析（手機拍來的 PDF 也可）
+
+    加密（密碼保護）的 Office 檔會在此被擋下並回清楚錯誤（不嘗試解密）。
     """
+    _reject_if_encrypted(file_bytes)
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext in {"csv", "txt", "tsv"}:
         return _ingest_rows_stream(project_id, target_id, _iter_rows_csv(file_bytes))
@@ -741,26 +823,33 @@ def _ingest_rows_stream(project_id: str, target_id: str, rows_iter: Iterable[Dic
         sector_id = (str(r.get("sector_id") or "").strip() or None)
         azimuth = _to_int(r.get("azimuth"))
 
-        if not cell_addr and not cell_id:
+        # 檔案自帶座標（GPS 軌跡 / 經緯度格式）優先；無則走 cell_id/addr geocode
+        direct_ll = _resolve_latlng(r)
+
+        if not cell_addr and not cell_id and not direct_ll:
             skipped += 1
-            errors.append(f"row{idx}: 地址與 cell_id 皆空，無法定位")
+            errors.append(f"row{idx}: 地址、cell_id、經緯度皆空，無法定位")
             continue
 
         lat = lng = None
-        geo_key = (cell_id, cell_addr)
-        if geo_key in _geo_cache:
-            ll = _geo_cache[geo_key]
-        else:
-            ll = None
-            try:
-                ll = geocode.lookup(cell_id, cell_addr)
-            except Exception as e:
-                errors.append(f"row{idx}: geocode 失敗：{e}")
-            _geo_cache[geo_key] = ll
-        if ll:
-            lat, lng = ll
-
         accuracy_m = _guess_accuracy(cell_addr)
+        if direct_ll:
+            # 檔案已含座標 → 直接採用，免 geocode（GPS 定位精度高）
+            lat, lng = direct_ll
+            accuracy_m = GPS_ACCURACY_M
+        else:
+            geo_key = (cell_id, cell_addr)
+            if geo_key in _geo_cache:
+                ll = _geo_cache[geo_key]
+            else:
+                ll = None
+                try:
+                    ll = geocode.lookup(cell_id, cell_addr)
+                except Exception as e:
+                    errors.append(f"row{idx}: geocode 失敗：{e}")
+                _geo_cache[geo_key] = ll
+            if ll:
+                lat, lng = ll
 
         to_insert.append(
             dict(
@@ -1069,7 +1158,9 @@ def parse_file_only(
               system_field 會在 ingest 內部 rename 為 _RAW2CANON 認識的 alias。
 
     解析後若 records 為空 → raise ParseDiagnosisError（供前端展示診斷 + 回報入口）。
+    加密（密碼保護）檔會先被 _reject_if_encrypted 擋下並回清楚錯誤。
     """
+    _reject_if_encrypted(file_bytes)
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
     # 先取得 rows iterator（PDF 走另一條：mapping 對 PDF 不適用，因為它有專用 table 流程）
@@ -1130,7 +1221,9 @@ def _parse_rows_to_records(target_id: str, rows_iter: Iterable[Dict[str, Any]]) 
 
         cell_id   = (str(r.get("cell_id")   or "").strip() or None)
         cell_addr = (str(r.get("cell_addr") or "").strip() or None)
-        if not cell_addr and not cell_id:
+        # 檔案自帶座標（GPS 軌跡 / 經緯度格式）優先
+        direct_ll = _resolve_latlng(r)
+        if not cell_addr and not cell_id and not direct_ll:
             continue
 
         parsed.append({
@@ -1139,12 +1232,13 @@ def _parse_rows_to_records(target_id: str, rows_iter: Iterable[Dict[str, Any]]) 
             "end_ts":    end_ts,
             "cell_id":   cell_id,
             "cell_addr": cell_addr,
+            "direct_ll": direct_ll,
         })
     _t_phase1_elapsed = _time.perf_counter() - _t_phase1
 
-    # ── Phase 2：批次 geocode ──────────────────────────────────────
+    # ── Phase 2：批次 geocode（只查無自帶座標的列）────────────────
     _t_phase2 = _time.perf_counter()
-    unique_keys = list({(p["cell_id"], p["cell_addr"]) for p in parsed})
+    unique_keys = list({(p["cell_id"], p["cell_addr"]) for p in parsed if not p["direct_ll"]})
     try:
         bulk = geocode.lookup_bulk(unique_keys)
     except Exception as e:
@@ -1157,11 +1251,18 @@ def _parse_rows_to_records(target_id: str, rows_iter: Iterable[Dict[str, Any]]) 
     result: List[Dict[str, Any]] = []
     _n_geo_ok = 0
     for p in parsed:
-        ll = bulk.get((p["cell_id"], p["cell_addr"]))
         lat = lng = None
-        if ll:
-            lat, lng = ll
+        accuracy_m = _guess_accuracy(p["cell_addr"])
+        if p["direct_ll"]:
+            # 檔案已含座標 → 直接採用，免 geocode（GPS 精度高）
+            lat, lng = p["direct_ll"]
+            accuracy_m = GPS_ACCURACY_M
             _n_geo_ok += 1
+        else:
+            ll = bulk.get((p["cell_id"], p["cell_addr"]))
+            if ll:
+                lat, lng = ll
+                _n_geo_ok += 1
         r = p["r"]
         result.append({
             "target_id":   target_id,
@@ -1175,7 +1276,7 @@ def _parse_rows_to_records(target_id: str, rows_iter: Iterable[Dict[str, Any]]) 
             "azimuth":     _to_int(r.get("azimuth")),
             "lat":         _to_float(lat),
             "lng":         _to_float(lng),
-            "accuracy_m":  _to_int(_guess_accuracy(p["cell_addr"])),
+            "accuracy_m":  _to_int(accuracy_m),
             "azimuth_ref": "unknown",
         })
     _t_phase3_elapsed = _time.perf_counter() - _t_phase3

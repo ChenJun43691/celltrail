@@ -192,6 +192,41 @@ async function openPage(ctx, url, { token } = {}) {
     await page.close();
   }
 
+  // ── F. 加密 / 密碼保護檔上傳 → 跳出清楚錯誤提醒（不寫 DB）─────────
+  // 合成一個 OLE2/CDFV2 檔頭（密碼保護 xlsx 的容器 magic）的假檔，上傳後
+  // 後端應回 422 + 清楚訊息，前端以 toast 提示「請移除密碼」。
+  {
+    const { page, pageErrors } = await openPage(ctx, `${FE_BASE}/index.html`);
+    await page.evaluate(() => localStorage.setItem('ct_tour_done_v1', '1'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1200);
+    await page.keyboard.press('Escape');
+
+    const OLE2 = Buffer.concat([
+      Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
+      Buffer.alloc(600),
+    ]);
+    await page.setInputFiles('#upl', {
+      name: '密碼保護.xlsx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      buffer: OLE2,
+    });
+    await page.waitForTimeout(300);
+    await page.locator('#btnUpload').click();
+    // 等錯誤 toast 出現（toast 文字即訊息；error toast 預設顯示 6s）
+    let toastText = '';
+    for (let i = 0; i < 16; i++) {
+      toastText = ((await page.locator('.toast').textContent().catch(() => '')) || '');
+      if (/密碼|加密/.test(toastText)) break;
+      await page.waitForTimeout(400);
+    }
+    assert('index(guest): 加密檔上傳 → 跳出「密碼/加密」錯誤提醒',
+      /密碼|加密/.test(toastText), `toast=${toastText.slice(0, 50)}`);
+    assert('index(guest): 加密檔上傳無 pageerror',
+      pageErrors.length === 0, pageErrors.join(' | '));
+    await page.close();
+  }
+
   // ── D. 深度檢查（需 CT_SMOKE_TOKEN）────────────────────────────
   // 不帶 token 也能跑 A/B/C；帶 token 才能驗 admin 三分頁與 audit 查詢。
   if (TOKEN) {

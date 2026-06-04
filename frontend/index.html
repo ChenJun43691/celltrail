@@ -1142,13 +1142,21 @@
           );
           if (res.status === 422) {
             const j = await res.json().catch(() => ({}));
-            setUploadState('error', '無法解析此檔案，請查看診斷結果');
-            showDiagnosisModal({
-              filename: file.name,
-              file,
-              headers: (j.diagnosis || {}).available_columns || [],
-              diagnosis: j.diagnosis || {},
-            });
+            if (j.diagnosis) {
+              // 格式無法辨識 → 智慧診斷 modal
+              setUploadState('error', '無法解析此檔案，請查看診斷結果');
+              showDiagnosisModal({
+                filename: file.name,
+                file,
+                headers: (j.diagnosis || {}).available_columns || [],
+                diagnosis: j.diagnosis || {},
+              });
+            } else {
+              // 其他 422（如加密 / 密碼保護檔）→ 直接顯示後端清楚訊息
+              const msg = j.detail || '此檔案無法解析';
+              setUploadState('error', msg);
+              showToast(msg, 'error', 6000);
+            }
             continue;
           }
           if (!res.ok) {
@@ -3664,8 +3672,14 @@
         const res = await fetch(url, { method:'POST', headers, body: fd });
         if (res.status === 422) {
           const j = await res.json().catch(() => ({}));
-          setUploadState('error', '即使手動對應仍無法解析');
-          showDiagnosisModal({ ...info, headers: (j.diagnosis||{}).available_columns || info.headers, diagnosis: j.diagnosis });
+          if (j.diagnosis) {
+            setUploadState('error', '即使手動對應仍無法解析');
+            showDiagnosisModal({ ...info, headers: (j.diagnosis||{}).available_columns || info.headers, diagnosis: j.diagnosis });
+          } else {
+            const msg = j.detail || '此檔案無法解析';
+            setUploadState('error', msg);
+            showToast(msg, 'error', 6000);
+          }
           return;
         }
         if (!res.ok) {
@@ -3961,15 +3975,22 @@
         try {
           const res = await fetch(`${API_BASE}/parse-only/`, { method:'POST', body: fd });
           if (res.status === 422) {
-            // 智慧診斷：開 diagnosis modal
             const j = await res.json().catch(() => ({}));
-            setUploadState('error', '無法解析此檔案，請查看診斷結果');
-            showDiagnosisModal({
-              filename: file.name,
-              file,
-              headers: (j.diagnosis || {}).available_columns || [],
-              diagnosis: j.diagnosis || {},
-            });
+            if (j.diagnosis) {
+              // 智慧診斷：開 diagnosis modal
+              setUploadState('error', '無法解析此檔案，請查看診斷結果');
+              showDiagnosisModal({
+                filename: file.name,
+                file,
+                headers: (j.diagnosis || {}).available_columns || [],
+                diagnosis: j.diagnosis || {},
+              });
+            } else {
+              // 其他 422（如加密 / 密碼保護檔）→ 直接顯示後端清楚訊息
+              const msg = j.detail || '此檔案無法解析';
+              setUploadState('error', msg);
+              showToast(msg, 'error', 6000);
+            }
             continue;
           }
           if (!res.ok) {

@@ -142,6 +142,7 @@ def test_all_canonical_values_in_known_set():
         "cell_id", "cell_addr", "sector_name", "site_code", "sector_id",
         "azimuth",
         "cell_id_compound",  # W2.3 dispatch tag（_normalize_row 拆解後分填）
+        "lat", "lng",        # GPS 軌跡/經緯度直給格式（建 geom；免 geocode）
     }
     for src, mapping in [("_RAW2CANON", _RAW2CANON), ("schema.sql seed", seed)]:
         bad = {k: v for k, v in mapping.items() if v not in KNOWN}

@@ -18,7 +18,7 @@ import traceback
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
-from app.services.ingest import parse_file_only, ParseDiagnosisError
+from app.services.ingest import parse_file_only, ParseDiagnosisError, EncryptedFileError
 from app.services.limiter import limiter
 
 router = APIRouter()
@@ -72,6 +72,8 @@ async def parse_only(
         records = parse_file_only(target_id, filename, content, mapping=user_mapping)
         t_parse = time.perf_counter() - t1
         print(f"[parse-only][timing] parse_total={t_parse*1000:.0f}ms records={len(records)} file={filename}")
+    except EncryptedFileError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ParseDiagnosisError as e:
         # 智慧診斷：回 422 + diagnosis 結構，前端展示「無法解析」UI
         return JSONResponse(

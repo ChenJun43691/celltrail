@@ -342,10 +342,24 @@ SELECT
       "cell":       "sector_id",
       "方位":       "azimuth",
       "方位角":     "azimuth",
-      "azimuth":    "azimuth"
+      "azimuth":    "azimuth",
+
+      "GPS時間":      "start_ts",
+      "gps時間":      "start_ts",
+      "定位時間":     "start_ts",
+      "經度":         "lng",
+      "緯度":         "lat",
+      "經度(wgs84)":  "lng",
+      "緯度(wgs84)":  "lat",
+      "longitude":    "lng",
+      "latitude":     "lat",
+      "lng":          "lng",
+      "lat":          "lat",
+      "lon":          "lng"
     }$$::jsonb,
     TRUE,
     '系統預設 fallback profile：搬遷自 ingest.py:_RAW2CANON（36 個別名）+ 4 個真實樣本檔新增別名（時間/始話時間/通聯時間/基地台/基地台-斜線-交換機/起台/起址）+ W2.2 網路歷程方言（手機連到基地台的時間/連到internet的時間/基地台代碼）+ W2.3 複合欄（迄基地台/終話基地台 → cell_id_compound，由 _normalize_row 拆解）+ W2.4 dialect 系統（中華上網方言由 ingest.py:_DIALECT_HEADER_MAPS 接管，「起台→start_ts、起址→cell_id、通話對象→cell_addr」此處 alias 保留為 header detection 訊號）。'
+    || E'\n+ GPS 軌跡/經緯度直給格式（2026-06-04）：GPS時間/定位時間→start_ts、經度→lng、緯度→lat（含 wgs84 後綴與英文 longitude/latitude/lng/lat/lon）。此類檔無 cell_id/地址，ingest 直接採用座標免 geocode；經緯度欄常被標反，由 _resolve_latlng 以「緯度必在 [-90,90]」範圍自動校正。'
     || E'\n暫不收的別名（待未來 milestone）：迄台、迄址（單純迄話端，需先補 cell_id_end / cell_addr_end 欄位）；始話日期（需與始話時間合併規則）。',
     NULL, NULL, NULL
 WHERE NOT EXISTS (

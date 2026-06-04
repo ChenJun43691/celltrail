@@ -24,7 +24,10 @@ from app.services.evidence import register_evidence, update_evidence_stats
 import json as _json
 import time as _time
 from fastapi.responses import JSONResponse
-from app.services.ingest import ingest_auto, ingest_pdf, parse_file_only, ParseDiagnosisError
+from app.services.ingest import (
+    ingest_auto, ingest_pdf, parse_file_only,
+    ParseDiagnosisError, EncryptedFileError,
+)
 
 router = APIRouter()
 
@@ -151,6 +154,22 @@ async def upload_file(
             **(result or {}),
         }
 
+    except EncryptedFileError as e:
+        # 加密 / 密碼保護檔：回清楚的錯誤提醒（不嘗試解密）
+        write_audit(
+            action="upload_failed",
+            user=current_user, request=request,
+            target_type="raw_traces", target_ref=target_id, project_id=project_id,
+            details={
+                "filename": filename, "stage": "ingest",
+                "evidence_id": evidence["id"],
+                "sha256_full": evidence["sha256_full"],
+                "exc_type": "EncryptedFileError",
+            },
+            status_code=422, error_text=str(e),
+        )
+        raise HTTPException(status_code=422, detail=str(e))
+
     except HTTPException as he:
         write_audit(
             action="upload_failed",
@@ -224,6 +243,8 @@ async def parse_temp(
         _t1 = _time.perf_counter()
         records = parse_file_only(target_id, filename, content, mapping=user_mapping)
         print(f"[parse-temp][timing] parse_total={(_time.perf_counter()-_t1)*1000:.0f}ms records={len(records)} file={filename}")
+    except EncryptedFileError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ParseDiagnosisError as e:
         return JSONResponse(
             status_code=422,
