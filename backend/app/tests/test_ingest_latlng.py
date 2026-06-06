@@ -20,6 +20,7 @@ import pytest
 from app.services.ingest import (
     _resolve_latlng, _parse_ts, _RAW2CANON,
     _reject_if_encrypted, EncryptedFileError, _OLE2_MAGIC,
+    _match_col_idx, _pdf_cols_useful,
 )
 
 
@@ -106,3 +107,25 @@ def test_normal_xlsx_zip_not_rejected():
 def test_csv_bytes_not_rejected():
     """CSV 純文字 → 不報錯。"""
     _reject_if_encrypted("時間,基地台\n2026-01-01,001\n".encode("utf-8"))
+
+
+# ── PDF 經緯度欄識別 + 多頁表頭判別（RFX-6179.pdf）─────────────
+def test_pdf_match_col_idx_recognizes_gps_columns():
+    """PDF _match_col_idx 認得 GPS時間/經度/緯度。"""
+    col = _match_col_idx(["車號", "GPS時間", "經度", "緯度"])
+    assert col["start"] == 1   # GPS時間
+    assert col["lng"] == 2     # 經度
+    assert col["lat"] == 3     # 緯度
+
+
+def test_pdf_cols_useful_distinguishes_header_vs_data():
+    """
+    _pdf_cols_useful 用來判別某頁第一列是表頭還是資料 ——「表頭只印在首頁」
+    的多頁 PDF 靠它沿用上頁欄位對應，不漏掉後續頁。
+    """
+    # 真表頭 → 比得出欄位 → True
+    assert _pdf_cols_useful(_match_col_idx(["車號", "GPS時間", "經度", "緯度"])) is True
+    # 資料列被當表頭 → 比不出任何欄位 → False（呼叫端據此沿用上頁表頭）
+    assert _pdf_cols_useful(
+        _match_col_idx(["RFX-6179", "5/7/2026 10:13:26 PM", "22.63127", "120.37156"])
+    ) is False

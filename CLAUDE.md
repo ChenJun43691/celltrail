@@ -94,14 +94,14 @@ python3 -m http.server 5501
 cd backend
 source .venv/bin/activate
 
-pytest app/tests/ -v                                      # 全部（232 passed）
+pytest app/tests/ -v                                      # 全部（234 passed）
 pytest app/tests/test_ingest_match_col_idx.py -v          # 單一測試檔
 pytest app/tests/test_audit.py::test_write_audit_fields -v # 單一測試函式
 ```
 
 > smoke tests 不依賴 DB / Redis / Google，CI 可直接執行。
 > **CI**：`.github/workflows/ci.yml`（push/PR to main 自動跑全套 pytest，Python 3.13）。
-> **涵蓋範圍**（2026-05-26 已大幅補強，131 → 203；2026-05-30 → 216；2026-06-04 → 229）：
+> **涵蓋範圍**（2026-05-26 已大幅補強，131 → 203；2026-05-30 → 216；2026-06-04 → 229；2026-06-06 → 234）：
 > - ingest 核心（normalize / dialect / compound split / match_col_idx /
 >   audit / evidence / azimuth_ref / addr hex guard / manual_locate）
 > - P3–P7 API 契約與 auth 守衛測試（`1353b09` 33 條 + 後續擴充）
@@ -114,9 +114,11 @@ pytest app/tests/test_audit.py::test_write_audit_fields -v # 單一測試函式
 > - 證物報告地圖截圖尺寸（`test_report_image_fit.py`）：`_fit_image_dims` 同時
 >   鎖頁框寬高，守住「高瘦地圖致 reportlab LayoutError → evidence-report 500」
 >   的回歸（2026-05-30 修）
-> - GPS 軌跡 / 經緯度直給格式 + 加密檔偵測（`test_ingest_latlng.py`，2026-06-04）：
+> - GPS 軌跡 / 經緯度直給格式 + 加密檔偵測（`test_ingest_latlng.py`，2026-06-04/06-06）：
 >   `_resolve_latlng` 範圍自動校正（緯度必在 [-90,90]，修正標反的經緯度欄）、
->   `_parse_ts` 支援 M/D/YYYY AM/PM、`_reject_if_encrypted` 偵測密碼保護檔回清楚錯誤
+>   `_parse_ts` 支援 M/D/YYYY AM/PM、`_reject_if_encrypted` 偵測密碼保護檔回清楚錯誤、
+>   PDF 版經緯度欄識別（`_match_col_idx` 加 lat/lng）+ 多頁「表頭只印首頁」沿用
+>   上頁對應（`_pdf_cols_useful`，RFX-6179.pdf 354 列實測）
 
 ### 端對端 smoke test（需 DB + uvicorn 已啟）
 

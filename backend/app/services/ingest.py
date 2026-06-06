@@ -893,7 +893,7 @@ def _match_col_idx(headers: List[str]) -> Dict[str, int]:
     """
     h = [_canon(x) for x in headers]
     cands = {
-        "start": [_canon(x) for x in ["開始連線時間", "開始時間", "起始時間"]],
+        "start": [_canon(x) for x in ["開始連線時間", "開始時間", "起始時間", "GPS時間", "定位時間"]],
         "end":   [_canon(x) for x in ["結束連線時間", "結束時間", "終止時間"]],
         "cellid":[_canon(x) for x in ["基地台編號", "基地臺編號", "站台編號", "站碼", "cell_id"]],
         "addr":  [_canon(x) for x in ["基地台地址", "基地臺地址", "站台地址", "地址"]],
@@ -901,6 +901,9 @@ def _match_col_idx(headers: List[str]) -> Dict[str, int]:
         "site":  [_canon(x) for x in ["台號", "站號", "站名"]],
         "cid":   [_canon(x) for x in ["細胞", "小區", "cell"]],
         "az":    [_canon(x) for x in ["方位", "方位角", "azimuth"]],
+        # GPS 軌跡 / 經緯度直給格式（PDF 版，如 RFX-6179.pdf）
+        "lat":   [_canon(x) for x in ["緯度", "latitude", "lat"]],
+        "lng":   [_canon(x) for x in ["經度", "longitude", "lng", "lon"]],
     }
     got: Dict[str, int] = {key: -1 for key in cands}
     claimed: set = set()
@@ -928,6 +931,18 @@ def _match_col_idx(headers: List[str]) -> Dict[str, int]:
                 break
 
     return got
+
+def _pdf_cols_useful(col: Dict[str, int]) -> bool:
+    """
+    判斷 _match_col_idx 的結果是否含「至少一個可用欄位」，用來辨別某頁表格的
+    第一列究竟是真表頭、還是資料列。
+
+    為什麼需要：部分多頁 PDF 的表頭只印在第一頁，後續頁直接接資料。原本
+    每頁都把第一列當表頭去比對 → 後續頁拿資料列當表頭、全數比對失敗被丟。
+    遇到「第一列比不出任何欄位」時，呼叫端會沿用上一頁的表頭/欄位對應、
+    並把這一列也視為資料（見 ingest_pdf / _parse_pdf_to_records）。
+    """
+    return any(col.get(k, -1) >= 0 for k in ("start", "cellid", "addr", "lat", "lng"))
 
 def _split_columns_fallback(lines: List[str]) -> List[List[str]]:
     """無表格線時，以多空白或 tab 嘗試切欄"""
@@ -980,15 +995,27 @@ def ingest_pdf(project_id: str, target_id: str, file_bytes: bytes) -> Dict[str, 
     errors: List[str] = []
     rows: List[Dict[str, Any]] = []
 
+    last_header: Optional[List[str]] = None
+    last_col: Optional[Dict[str, int]] = None
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for pno, page in enumerate(pdf.pages, start=1):
             tables = _extract_tables_from_page(page)
             for t in tables:
                 if not t:
                     continue
-                header = [(c or "").strip() for c in t[0]]
-                col = _match_col_idx(header)
-                for ridx, row in enumerate(t[1:], start=2):
+                header0 = [(c or "").strip() for c in t[0]]
+                col0 = _match_col_idx(header0)
+                if _pdf_cols_useful(col0):
+                    header, col = header0, col0
+                    last_header, last_col = header, col
+                    data_rows = t[1:]
+                elif last_col is not None:
+                    # 此頁無表頭（接續上頁，表頭只印在首頁）→ 沿用上頁對應，t[0] 也是資料
+                    header, col = last_header, last_col
+                    data_rows = t
+                else:
+                    continue  # 尚未遇到任何表頭，無法解析此表
+                for ridx, row in enumerate(data_rows, start=2):
                     total += 1
                     rr = [(row[i] if i < len(row) else "") for i in range(len(header))]
 
@@ -1003,24 +1030,34 @@ def ingest_pdf(project_id: str, target_id: str, file_bytes: bytes) -> Dict[str, 
                     sector_id = (rr[col["cid"]].strip()    if col.get("cid", -1)    >= 0 and rr[col["cid"]]    else None)
                     azimuth = _to_int(rr[col["az"]]) if col.get("az", -1) >= 0 else None
 
+                    # GPS 軌跡 / 經緯度直給格式（PDF 版）：取檔案自帶座標
+                    direct_ll = None
+                    if col.get("lat", -1) >= 0 and col.get("lng", -1) >= 0:
+                        direct_ll = _resolve_latlng({
+                            "lat": rr[col["lat"]], "lng": rr[col["lng"]],
+                        })
+
                     if not start_ts:
                         skipped += 1
                         errors.append(f"page{pno} row{ridx}: 缺少開始連線時間")
                         continue
-                    if not cell_addr and not cell_id:
+                    if not cell_addr and not cell_id and not direct_ll:
                         skipped += 1
-                        errors.append(f"page{pno} row{ridx}: 地址與 cell_id 皆空，無法定位")
+                        errors.append(f"page{pno} row{ridx}: 地址、cell_id、經緯度皆空，無法定位")
                         continue
 
                     lat = lng = None
-                    try:
-                        ll = geocode.lookup(cell_id, cell_addr)
-                        if ll:
-                            lat, lng = ll
-                    except Exception as e:
-                        errors.append(f"page{pno} row{ridx}: geocode 失敗：{e}")
-
                     accuracy_m = _guess_accuracy(cell_addr)
+                    if direct_ll:
+                        lat, lng = direct_ll
+                        accuracy_m = GPS_ACCURACY_M
+                    else:
+                        try:
+                            ll = geocode.lookup(cell_id, cell_addr)
+                            if ll:
+                                lat, lng = ll
+                        except Exception as e:
+                            errors.append(f"page{pno} row{ridx}: geocode 失敗：{e}")
 
                     rows.append(
                         dict(
@@ -1314,6 +1351,8 @@ def _parse_pdf_to_records(target_id: str, file_bytes: bytes) -> List[Dict[str, A
     _t0 = _time.perf_counter()
     pdf = pdfplumber.open(io.BytesIO(file_bytes))
     _t_pdf_open = _time.perf_counter() - _t0
+    last_header: Optional[List[str]] = None
+    last_col: Optional[Dict[str, int]] = None
     with pdf:
         for pno, page in enumerate(pdf.pages, start=1):
             _t1 = _time.perf_counter()
@@ -1322,9 +1361,19 @@ def _parse_pdf_to_records(target_id: str, file_bytes: bytes) -> List[Dict[str, A
             for t in tables:
                 if not t:
                     continue
-                header = [(c or "").strip() for c in t[0]]
-                col = _match_col_idx(header)
-                for row in t[1:]:
+                header0 = [(c or "").strip() for c in t[0]]
+                col0 = _match_col_idx(header0)
+                if _pdf_cols_useful(col0):
+                    header, col = header0, col0
+                    last_header, last_col = header, col
+                    data_rows = t[1:]
+                elif last_col is not None:
+                    # 此頁無表頭（接續上頁）→ 沿用上頁對應，t[0] 也是資料
+                    header, col = last_header, last_col
+                    data_rows = t
+                else:
+                    continue
+                for row in data_rows:
                     _rows_read += 1
                     rr = [(row[i] if i < len(row) else "") for i in range(len(header))]
                     start_ts = _parse_ts(rr[col["start"]]) if col.get("start", -1) >= 0 else None
@@ -1333,13 +1382,20 @@ def _parse_pdf_to_records(target_id: str, file_bytes: bytes) -> List[Dict[str, A
                     end_ts = _parse_ts(rr[col["end"]]) if col.get("end", -1) >= 0 else start_ts
                     cell_id   = (rr[col["cellid"]].strip() if col.get("cellid", -1) >= 0 and rr[col["cellid"]] else None)
                     cell_addr = (rr[col["addr"]].strip()   if col.get("addr", -1)   >= 0 and rr[col["addr"]]   else None)
-                    if not cell_addr and not cell_id:
+                    # GPS 軌跡 / 經緯度直給格式（PDF 版）：取檔案自帶座標
+                    direct_ll = None
+                    if col.get("lat", -1) >= 0 and col.get("lng", -1) >= 0:
+                        direct_ll = _resolve_latlng({
+                            "lat": rr[col["lat"]], "lng": rr[col["lng"]],
+                        })
+                    if not cell_addr and not cell_id and not direct_ll:
                         continue
                     parsed.append({
                         "start_ts":    start_ts,
                         "end_ts":      end_ts,
                         "cell_id":     cell_id,
                         "cell_addr":   cell_addr,
+                        "direct_ll":   direct_ll,
                         "sector_name": (rr[col["sector"]].strip() if col.get("sector", -1) >= 0 and rr[col["sector"]] else None),
                         "site_code":   (rr[col["site"]].strip()   if col.get("site",   -1) >= 0 and rr[col["site"]]   else None),
                         "sector_id":   (rr[col["cid"]].strip()    if col.get("cid",    -1) >= 0 and rr[col["cid"]]    else None),
@@ -1347,9 +1403,9 @@ def _parse_pdf_to_records(target_id: str, file_bytes: bytes) -> List[Dict[str, A
                     })
     _t_phase1_elapsed = _time.perf_counter() - _t_phase1
 
-    # ── Phase 2：批次 geocode ──────────────────────────────────────
+    # ── Phase 2：批次 geocode（只查無自帶座標的列）────────────────
     _t_phase2 = _time.perf_counter()
-    unique_keys = list({(p["cell_id"], p["cell_addr"]) for p in parsed})
+    unique_keys = list({(p["cell_id"], p["cell_addr"]) for p in parsed if not p["direct_ll"]})
     try:
         bulk = geocode.lookup_bulk(unique_keys)
     except Exception as e:
@@ -1362,11 +1418,17 @@ def _parse_pdf_to_records(target_id: str, file_bytes: bytes) -> List[Dict[str, A
     result: List[Dict[str, Any]] = []
     _n_geo_ok = 0
     for p in parsed:
-        ll = bulk.get((p["cell_id"], p["cell_addr"]))
         lat = lng = None
-        if ll:
-            lat, lng = ll
+        accuracy_m = _guess_accuracy(p["cell_addr"])
+        if p["direct_ll"]:
+            lat, lng = p["direct_ll"]
+            accuracy_m = GPS_ACCURACY_M
             _n_geo_ok += 1
+        else:
+            ll = bulk.get((p["cell_id"], p["cell_addr"]))
+            if ll:
+                lat, lng = ll
+                _n_geo_ok += 1
         result.append({
             "target_id":   target_id,
             "start_ts":    p["start_ts"].isoformat(),
@@ -1379,7 +1441,7 @@ def _parse_pdf_to_records(target_id: str, file_bytes: bytes) -> List[Dict[str, A
             "azimuth":     p["azimuth"],
             "lat":         _to_float(lat),
             "lng":         _to_float(lng),
-            "accuracy_m":  _to_int(_guess_accuracy(p["cell_addr"])),
+            "accuracy_m":  _to_int(accuracy_m),
             "azimuth_ref": "unknown",
         })
     _t_phase3_elapsed = _time.perf_counter() - _t_phase3
