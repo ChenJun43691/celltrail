@@ -21,6 +21,7 @@ from app.services.ingest import (
     _resolve_latlng, _parse_ts, _RAW2CANON,
     _reject_if_encrypted, EncryptedFileError, _OLE2_MAGIC,
     _match_col_idx, _pdf_cols_useful,
+    _peek_sample_rows, _build_diagnosis,
 )
 
 
@@ -129,3 +130,32 @@ def test_pdf_cols_useful_distinguishes_header_vs_data():
     assert _pdf_cols_useful(
         _match_col_idx(["RFX-6179", "5/7/2026 10:13:26 PM", "22.63127", "120.37156"])
     ) is False
+
+
+# ── 手動對應問答式：診斷附範例值（讓使用者靠內容指認欄位）─────────
+def test_peek_sample_rows_csv():
+    """CSV 抓表頭後前 n 列範例值。"""
+    csv = (
+        "代號,啟用時刻,所在位置\n"
+        "A001,2026-01-15 08:30:00,高雄市苓雅區四維三路2號\n"
+        "A002,2026-01-15 09:15:00,高雄市前鎮區中山二路5號\n"
+    ).encode("utf-8")
+    rows = _peek_sample_rows("怪格式.csv", csv, n=3)
+    assert len(rows) == 2
+    assert rows[0] == ["A001", "2026-01-15 08:30:00", "高雄市苓雅區四維三路2號"]
+
+
+def test_build_diagnosis_includes_sample_rows():
+    """診斷結果帶 sample_rows，供前端問答式 modal 顯示範例值。"""
+    headers = ["代號", "啟用時刻", "所在位置"]
+    samples = [["A001", "2026-01-15 08:30:00", "高雄市苓雅區四維三路2號"]]
+    diag = _build_diagnosis(headers, samples)
+    assert diag["sample_rows"] == samples
+    # 系統認不得這些欄名 → found_*_col 皆 False（正是觸發問答式對應的情境）
+    assert diag["found_time_col"] is False
+    assert diag["found_addr_col"] is False
+
+
+def test_build_diagnosis_sample_rows_defaults_empty():
+    """未傳 sample_rows → 預設空 list（向後相容）。"""
+    assert _build_diagnosis(["時間", "基地台地址"])["sample_rows"] == []

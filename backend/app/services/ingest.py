@@ -1134,7 +1134,45 @@ def _peek_headers(filename: str, file_bytes: bytes) -> List[str]:
     return []
 
 
-def _build_diagnosis(headers: List[str]) -> Dict[str, Any]:
+def _peek_sample_rows(filename: str, file_bytes: bytes, n: int = 3) -> List[List[str]]:
+    """
+    抓「表頭之後」的前 n 列資料，供手動對應 UI 顯示範例值。
+
+    為什麼需要：欄名各家業者用語不一、甚至空白；讓使用者靠「看欄位內容」
+    （如看到 2026-01-01 12:00 → 這是時間欄）而非「看欄名」來指認時間/地點，
+    比硬猜欄名穩健得多。每格截斷 40 字避免過長。
+    """
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    out: List[List[str]] = []
+    clip = lambda v: ("" if v is None else str(v)).strip()[:40]
+    try:
+        if ext in {"csv", "txt", "tsv"}:
+            lines = [ln for ln in file_bytes.decode("utf-8-sig", errors="replace").splitlines() if ln.strip()]
+            delim = next((d for d in [",", "\t", ";"] if lines and d in lines[0]), ",")
+            for ln in lines[1:1 + n]:
+                out.append([clip(c) for c in ln.split(delim)])
+        elif ext in {"xlsx", "xltx", "xlsm", "xltm"}:
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+            ws = wb.active
+            for row in ws.iter_rows(min_row=2, max_row=1 + n, values_only=True):
+                out.append([clip(c) for c in row])
+        elif ext == "pdf":
+            if pdfplumber is not None:
+                with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                    for page in pdf.pages:
+                        for t in _extract_tables_from_page(page):
+                            if t and len(t) > 1:
+                                for r in t[1:1 + n]:
+                                    out.append([clip(c) for c in r])
+                                return out
+                        break
+    except Exception as e:
+        print(f"[peek_sample_rows] failed: {type(e).__name__}: {e}")
+    return out
+
+
+def _build_diagnosis(headers: List[str], sample_rows: Optional[List[List[str]]] = None) -> Dict[str, Any]:
     """根據 _match_col_idx 結果產出前端可讀的診斷。"""
     if not headers:
         return {
@@ -1145,6 +1183,7 @@ def _build_diagnosis(headers: List[str]) -> Dict[str, Any]:
             "found_addr_col": False,
             "found_addr_col_name": None,
             "available_columns": [],
+            "sample_rows": sample_rows or [],
         }
     col = _match_col_idx(headers)
     def name_at(i): return headers[i] if 0 <= i < len(headers) else None
@@ -1157,6 +1196,8 @@ def _build_diagnosis(headers: List[str]) -> Dict[str, Any]:
         "found_addr_col":          col.get("addr", -1) >= 0,
         "found_addr_col_name":     name_at(col.get("addr", -1)),
         "available_columns":       headers,
+        # 前幾列範例值（對齊 available_columns），供「問哪欄是時間/地點」UI 顯示
+        "sample_rows":             sample_rows or [],
     }
 
 
@@ -1219,12 +1260,13 @@ def parse_file_only(
     else:
         raise ValueError("不支援的檔案格式：請使用 CSV / TXT / XLSX / XLTX / PDF")
 
-    # 解析後 0 筆 → 觸發智慧診斷
+    # 解析後 0 筆 → 觸發智慧診斷（附前幾列範例值供「問哪欄是時間/地點」UI）
     if not records:
         headers = _peek_headers(filename, file_bytes)
+        sample_rows = _peek_sample_rows(filename, file_bytes)
         raise ParseDiagnosisError(
             "無法從此檔案解析出任何有效記錄",
-            _build_diagnosis(headers),
+            _build_diagnosis(headers, sample_rows),
         )
 
     return records

@@ -227,6 +227,51 @@ async function openPage(ctx, url, { token } = {}) {
     await page.close();
   }
 
+  // ── G. 怪欄名 → 問答式手動對應（「時間在哪一欄？」+ 依範例值自動猜）─────
+  // 欄名各家業者用語不一，解不出來時不該逼使用者看懂欄名 —— 改問「哪一欄是
+  // 時間/地點」並秀範例值。本測試：上傳系統認不得欄名的 CSV → 診斷 modal →
+  // 點手動對應 → 驗證問答式 modal 出現、且依範例值自動猜對時間欄。
+  {
+    const { page, pageErrors } = await openPage(ctx, `${FE_BASE}/index.html`);
+    await page.evaluate(() => localStorage.setItem('ct_tour_done_v1', '1'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1200);
+    await page.keyboard.press('Escape');
+
+    const csv =
+      '代號,啟用時刻,所在位置,訊號強度\n' +
+      'A001,2026-01-15 08:30:00,高雄市苓雅區四維三路2號,-75\n' +
+      'A002,2026-01-15 09:15:00,高雄市前鎮區中山二路5號,-80\n';
+    await page.setInputFiles('#upl', {
+      name: '怪格式.csv', mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf8'),
+    });
+    await page.waitForTimeout(300);
+    await page.locator('#btnUpload').click();
+
+    // 等診斷 modal（系統認不得這些欄名）
+    await page.locator('text=無法解析此檔案').first().waitFor({ timeout: 15000 }).catch(() => {});
+    await page.locator('#__diagManual').click();
+    await page.waitForTimeout(500);
+
+    // 問答式 modal：應出現「時間在哪一欄？」
+    const hasQuestion = await page.locator('text=時間在哪一欄').count();
+    assert('index(guest): 手動對應為問答式（「時間在哪一欄？」）',
+      hasQuestion >= 1, `count=${hasQuestion}`);
+
+    // 依範例值（2026-01-15 08:30:00）自動猜：時間欄應預選「啟用時刻」
+    const timeSel = await page.locator('select[data-field="time"]').inputValue().catch(() => '');
+    assert('index(guest): 依範例值自動猜時間欄=啟用時刻',
+      timeSel === '啟用時刻', `selected=${timeSel}`);
+    // 依範例值（高雄市…路…號）自動猜：地址欄應預選「所在位置」
+    const addrSel = await page.locator('select[data-field="addr"]').inputValue().catch(() => '');
+    assert('index(guest): 依範例值自動猜地址欄=所在位置',
+      addrSel === '所在位置', `selected=${addrSel}`);
+
+    assert('index(guest): 問答式對應無 pageerror',
+      pageErrors.length === 0, pageErrors.join(' | '));
+    await page.close();
+  }
+
   // ── D. 深度檢查（需 CT_SMOKE_TOKEN）────────────────────────────
   // 不帶 token 也能跑 A/B/C；帶 token 才能驗 admin 三分頁與 audit 查詢。
   if (TOKEN) {

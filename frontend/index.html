@@ -3567,63 +3567,96 @@
     }
 
     /**
-     * 手動欄位對應 modal（第二層）：使用者把檔案欄對應到系統欄位後重新上傳。
+     * 手動對應 modal（第二層，問答式）：不要求使用者看懂欄名，而是直接問
+     * 「哪一欄是時間？哪一欄是地點？」並秀出每欄的範例值供判斷 —— 因為各家
+     * 業者欄名用語不一，靠『看內容』比『猜欄名』穩健。
+     * 產出的 mapping 仍是 {欄名: 系統欄位}，後端 _apply_user_mapping 不變。
      */
     function showManualMappingModal(info) {
-      const headers = (info.diagnosis && info.diagnosis.available_columns) || info.headers || [];
+      const d = (info && info.diagnosis) || {};
+      const headers = d.available_columns || info.headers || [];
+      const sampleRows = d.sample_rows || [];
       if (!headers.length) {
         showToast('找不到欄位清單，無法手動對應', 'error', 2200);
         return;
       }
-      const sysOptions = [
-        ['ignore',  '忽略'],
-        ['time',    '時間戳記（必填）'],
-        ['cell_id', '基地台 ID'],
-        ['addr',    '地址'],
-        ['lat',     '緯度'],
-        ['lng',     '經度'],
-      ];
-
-      // 預設依名稱字串猜：含「時間」→ time、含「基地台/cell」→ cell_id、含「地址」→ addr
-      const guess = (name) => {
-        const s = String(name);
-        if (/時間|date|time/i.test(s)) return 'time';
-        if (/基地台|站|cell|細胞/i.test(s)) return 'cell_id';
-        if (/地址|address/i.test(s)) return 'addr';
-        if (/緯度|lat/i.test(s)) return 'lat';
-        if (/經度|lng|lon/i.test(s)) return 'lng';
-        return 'ignore';
+      // 每欄取第一列範例值（對齊 headers）
+      const sampleOf = (i) => {
+        for (const r of sampleRows) {
+          if (Array.isArray(r) && r[i] != null && String(r[i]).trim() !== '') return String(r[i]).trim();
+        }
+        return '';
+      };
+      const colLabel = (i) => {
+        const name = (headers[i] || '').trim() || `第 ${i + 1} 欄`;
+        const ex = sampleOf(i);
+        return ex ? `${name}（例：${ex}）` : name;
       };
 
-      const rows = headers.map((h, i) => {
-        const g = guess(h);
-        const opts = sysOptions.map(([v, l]) =>
-          `<option value="${v}"${v === g ? ' selected' : ''}>${escH(l)}</option>`).join('');
-        return `<tr>
-          <td style="padding:6px 8px;font-size:13px;border-bottom:1px solid #eee">${escH(h || '(空欄位 ' + (i+1) + ')')}</td>
-          <td style="padding:6px 8px;border-bottom:1px solid #eee">→</td>
-          <td style="padding:6px 8px;border-bottom:1px solid #eee">
-            <select data-raw="${escH(h)}" class="__mmSel" style="padding:5px 8px;border:1px solid #ccc;border-radius:5px;font-size:13px;width:100%">${opts}</select>
-          </td>
-        </tr>`;
-      }).join('');
+      // 依「範例值 + 欄名」自動猜預設欄（值優先：靠內容比靠欄名準）
+      const looksTime = (v) => /\d{1,4}[\/\-]\d{1,2}[\/\-]\d{1,2}|\d{1,2}:\d{2}|am|pm/i.test(v);
+      const looksNum  = (v) => /^-?\d+(\.\d+)?$/.test(v.replace(/[^\d.\-]/g, '') || 'x') && /^-?\d/.test(v);
+      const guessCol = (field) => {
+        for (let i = 0; i < headers.length; i++) {
+          const h = String(headers[i] || ''), ex = sampleOf(i);
+          if (field === 'time' && (/時間|date|time/i.test(h) || looksTime(ex))) return headers[i];
+          if (field === 'addr' && (/地址|位址|address/i.test(h) || /[縣市區鄉鎮路街號]/.test(ex))) return headers[i];
+          if (field === 'cell_id' && /基地台|站|cell|細胞|cgi|eci/i.test(h)) return headers[i];
+          if (field === 'lat') {
+            const n = parseFloat(ex);
+            if (/緯度|lat/i.test(h) || (looksNum(ex) && n >= 20 && n <= 26)) return headers[i];
+          }
+          if (field === 'lng') {
+            const n = parseFloat(ex);
+            if (/經度|lng|lon/i.test(h) || (looksNum(ex) && n >= 118 && n <= 124)) return headers[i];
+          }
+        }
+        return '';
+      };
+
+      // 要問的欄位（時間必填；地點擇一：地址 / 基地台ID / 經緯度）
+      const FIELDS = [
+        { key: 'time',    icon: '🕐', label: '時間',      required: true },
+        { key: 'addr',    icon: '📍', label: '地址',      required: false },
+        { key: 'cell_id', icon: '📡', label: '基地台 ID', required: false },
+        { key: 'lat',     icon: '🧭', label: '緯度',      required: false },
+        { key: 'lng',     icon: '🧭', label: '經度',      required: false },
+      ];
+      const optionsHtml = (selKey) => {
+        const sel = guessCol(selKey);
+        let html = `<option value="">（無 / 不適用）</option>`;
+        headers.forEach((h, i) => {
+          const v = h || '';
+          html += `<option value="${escH(v)}"${v === sel && sel !== '' ? ' selected' : ''}>${escH(colLabel(i))}</option>`;
+        });
+        return html;
+      };
+      const fieldRows = FIELDS.map(f => `
+        <div style="display:flex;align-items:center;gap:10px;padding:7px 0">
+          <div style="flex:0 0 130px;font-size:14px;font-weight:600">${f.icon} ${f.label}在哪一欄？${f.required ? '<span style="color:#c00">*</span>' : ''}</div>
+          <select data-field="${f.key}" class="__mmField" style="flex:1;padding:7px 9px;border:1px solid #ccc;border-radius:6px;font-size:13px">${optionsHtml(f.key)}</select>
+        </div>`).join('');
+
+      // 範例值預覽（前幾列），讓使用者一眼看出哪欄是什麼
+      const previewHtml = sampleRows.length ? `
+        <details style="margin:6px 0 14px"><summary style="cursor:pointer;font-size:12px;color:#1565c0">👁 看檔案前幾列範例</summary>
+          <div style="max-height:160px;overflow:auto;border:1px solid #eee;border-radius:6px;margin-top:6px">
+            <table style="border-collapse:collapse;font-size:11px;white-space:nowrap">
+              <thead><tr style="background:#f5f7fa">${headers.map((h,i)=>`<th style="padding:4px 8px;text-align:left;border-bottom:1px solid #e3e3e3">${escH((h||'').trim()||('第'+(i+1)+'欄'))}</th>`).join('')}</tr></thead>
+              <tbody>${sampleRows.map(r=>`<tr>${headers.map((_,i)=>`<td style="padding:4px 8px;border-bottom:1px solid #f0f0f0">${escH((r&&r[i]!=null?String(r[i]):''))}</td>`).join('')}</tr>`).join('')}</tbody>
+            </table>
+          </div>
+        </details>` : '';
 
       const overlay = _makeOverlay();
       const card = document.createElement('div');
       card.style.cssText = 'background:#fff;padding:24px;border-radius:12px;width:min(96vw,560px);max-height:88vh;overflow-y:auto;box-shadow:0 8px 36px rgba(0,0,0,.28);font:14px/1.55 system-ui,-apple-system,sans-serif;';
       card.innerHTML = `
-        <div style="font-size:17px;font-weight:700;margin-bottom:4px">🔧 手動對應欄位</div>
-        <div style="font-size:12px;color:#666;margin-bottom:14px">把你的檔案欄位對應到系統欄位。<b>時間</b>必選；<b>基地台 ID</b> 與 <b>地址</b> 至少一個必選（用於 geocode 取座標）。</div>
-        <div style="max-height:50vh;overflow-y:auto;border:1px solid #eee;border-radius:6px">
-          <table style="width:100%;border-collapse:collapse;font-size:13px">
-            <thead><tr style="background:#f5f7fa;color:#555;font-size:11px">
-              <th style="padding:6px 8px;text-align:left">你的檔案欄位</th>
-              <th></th>
-              <th style="padding:6px 8px;text-align:left">對應到系統欄位</th>
-            </tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
+        <div style="font-size:17px;font-weight:700;margin-bottom:4px">🔧 告訴我哪一欄是什麼</div>
+        <div style="font-size:12px;color:#666;margin-bottom:10px">系統認不得欄名沒關係。請依下方範例值，告訴我哪一欄是時間、哪一欄是地點即可。</div>
+        ${previewHtml}
+        <div style="border:1px solid #eee;border-radius:8px;padding:6px 14px;margin-bottom:6px">${fieldRows}</div>
+        <div style="font-size:11px;color:#888;margin-top:6px">※ <b>時間</b>必填；地點請至少給一種：<b>地址</b>、<b>基地台 ID</b>、或<b>經緯度</b>（緯+經都要）。</div>
         <div id="__mmErr" style="color:#c00;font-size:12px;min-height:16px;margin-top:8px"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">
           <button id="__mmCancel" style="padding:8px 14px;border:1px solid #ccc;border-radius:6px;cursor:pointer;background:#fff;font-size:13px">取消</button>
@@ -3637,17 +3670,20 @@
       overlay.addEventListener('click', e => { if (e.target === overlay) dispose(); });
 
       card.querySelector('#__mmOk').onclick = async () => {
-        const sels = card.querySelectorAll('.__mmSel');
-        const mapping = {};
-        let timeOk = false, cellOk = false, addrOk = false;
-        sels.forEach(s => {
-          mapping[s.dataset.raw] = s.value;
-          if (s.value === 'time') timeOk = true;
-          if (s.value === 'cell_id') cellOk = true;
-          if (s.value === 'addr') addrOk = true;
+        const picks = {};  // field → 欄名
+        card.querySelectorAll('.__mmField').forEach(s => {
+          if (s.value) picks[s.dataset.field] = s.value;
         });
-        if (!timeOk) { card.querySelector('#__mmErr').textContent = '請至少對應一個「時間戳記」欄位'; return; }
-        if (!cellOk && !addrOk) { card.querySelector('#__mmErr').textContent = '請至少對應一個「基地台 ID」或「地址」欄位'; return; }
+        const err = card.querySelector('#__mmErr');
+        if (!picks.time) { err.textContent = '請選擇「時間」在哪一欄'; return; }
+        const hasLoc = picks.addr || picks.cell_id || (picks.lat && picks.lng);
+        if (!hasLoc) { err.textContent = '請至少指定一種地點：地址、基地台 ID、或「緯度＋經度」'; return; }
+        if ((picks.lat && !picks.lng) || (picks.lng && !picks.lat)) {
+          err.textContent = '經緯度需「緯度」與「經度」都指定'; return;
+        }
+        // 反轉成後端要的 {欄名: 系統欄位}
+        const mapping = {};
+        for (const [field, col] of Object.entries(picks)) mapping[col] = field;
         dispose();
         await retryUploadWithMapping(info, mapping);
       };
