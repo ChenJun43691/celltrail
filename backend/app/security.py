@@ -14,7 +14,12 @@ from fastapi.security import OAuth2PasswordBearer
 from app.db.session import get_conn
 
 # ===== JWT =====
-SECRET_KEY = os.getenv("SECRET_KEY", "change-me-please")
+# JWT 簽章金鑰。同時接受 SECRET_KEY 與 JWT_SECRET 兩種環境變數名 —— 雲端
+# （Render）部署慣用 JWT_SECRET，若程式只讀 SECRET_KEY 會 fallback 到下方公開
+# 預設值，導致任何人都能用該預設值偽造 admin token（2026-06-13 實測雲端中招）。
+# 保留 fallback 字串只為本機開發；main.py 啟動自檢會在 AUTH_ENABLED 下以此為
+# 預設值時 fail-fast，拒絕以可偽造的密鑰對外服務。
+SECRET_KEY = os.getenv("SECRET_KEY") or os.getenv("JWT_SECRET") or "change-me-please"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 12 * 60  # 12 小時（一個工作天）
 

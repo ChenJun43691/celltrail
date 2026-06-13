@@ -141,13 +141,25 @@ def _config_safety_audit() -> None:
 
     if warnings:
         print("=" * 70)
-        print("[CONFIG WARNING] 偵測到不適合正式環境的設定（僅警告，不影響啟動）：")
+        print("[CONFIG WARNING] 偵測到不適合正式環境的設定：")
         for w in warnings:
             print(f"  ⚠  {w}")
         print("  完整檢查項目見 docs/部署檢查清單.md")
         print("=" * 70)
     else:
         print("[CONFIG] 設定安全自檢通過")
+
+    # ── production fail-fast：拒絕用可偽造的公開預設密鑰對外服務 ──────────
+    # 僅警告擋不住 —— 雲端曾因未設 SECRET_KEY、fallback 到公開預設值，導致任何
+    # 人都能偽造 admin token（2026-06-13 實測）。AUTH_ENABLED（疑似正式環境）下
+    # 若簽章金鑰仍是預設值，直接拒絕啟動，逼正確設定強隨機金鑰。
+    if AUTH_ENABLED and SECRET_KEY in ("change-me-please", ""):
+        raise RuntimeError(
+            "🔴 SECRET_KEY 未設定（或仍是公開預設值）且 AUTH_ENABLED=true —— "
+            "此金鑰用於 JWT 簽章，使用預設值等於任何人都能偽造 admin token。"
+            "請將環境變數 SECRET_KEY（或 JWT_SECRET）設為 `openssl rand -hex 32` "
+            "產生的強隨機值後再啟動。"
+        )
 
 
 # ---------- Supabase 保活（APScheduler）----------
