@@ -768,7 +768,11 @@
     });
 
     const $ = id => document.getElementById(id);
-    const fmt = v => v==null ? '' : String(v);
+    // fmt：轉字串並跳脫 HTML。popup / tooltip 內容皆以 innerHTML 注入，未跳脫的
+    // 上傳資料（如 cell_addr 塞 <img src=x onerror=偷token>）會造成 stored XSS
+    // —— 任何人開該點 popup 即中招（2026-06-13 資安檢視修補）。fmt 全數用於
+    // HTML context（無 textContent 用法），故在此統一跳脫最穩妥。
+    const fmt = v => v==null ? '' : String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const toDate = s => s ? new Date(s) : null;
     // 嚴格解析 azimuth：null/undefined/空字串 → null（不畫扇形）；其他轉 Number
     // 必要：Number(null) === 0 會被誤判為「方位角 0°」畫出指向正北的扇形

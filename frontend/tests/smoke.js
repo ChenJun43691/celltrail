@@ -272,6 +272,55 @@ async function openPage(ctx, url, { token } = {}) {
     await page.close();
   }
 
+  // ── H. Stored XSS 防護：惡意地址不得在 popup 以原始 HTML 注入 ─────────
+  // 上傳一筆 cell_addr 含 <img onerror> 的點（用經緯度直給免 geocode），
+  // 驗證 marker 綁定的 popup 內容已跳脫（&lt;img 而非可執行的 <img）。
+  {
+    const { page, pageErrors } = await openPage(ctx, `${FE_BASE}/index.html`);
+    await page.evaluate(() => localStorage.setItem('ct_tour_done_v1', '1'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1200);
+    await page.keyboard.press('Escape');
+
+    const csv =
+      '時間,緯度,經度,基地台地址\n' +
+      '2026-01-01 10:00:00,22.63,120.37,"<img src=x onerror=window.__xss=1>惡意地址"\n';
+    await page.setInputFiles('#upl', {
+      name: 'xss.csv', mimeType: 'text/csv', buffer: Buffer.from(csv, 'utf8'),
+    });
+    await page.waitForTimeout(300);
+    await page.locator('#btnUpload').click();
+    let markerCount = 0;
+    for (let i = 0; i < 30; i++) {
+      markerCount = await page.locator('.leaflet-marker-icon').count();
+      if (markerCount > 0) break;
+      await page.waitForTimeout(400);
+    }
+    // 讀第一個 marker 綁定的 popup 內容（透過 __ctTest seam）
+    const popupHtml = await page.evaluate(() => {
+      const t = window.__ctTest;
+      if (!t || !t.seriesMap) return null;
+      for (const s of t.seriesMap.values()) {
+        const cl = s.layers && s.layers.cluster;
+        const layers = (cl && cl.getLayers) ? cl.getLayers() : [];
+        for (const m of layers) {
+          const pu = m.getPopup && m.getPopup();
+          if (pu) { const c = pu.getContent(); return typeof c === 'string' ? c : (c && c.outerHTML) || ''; }
+        }
+      }
+      return '';
+    });
+    assert('index(guest): popup 跳脫惡意 HTML（無原始 <img onerror）',
+      popupHtml != null && !/<img\s+src=x\s+onerror/i.test(popupHtml), `html=${String(popupHtml).slice(0,80)}`);
+    assert('index(guest): popup 含跳脫後的 &lt;img（確認有渲染到該欄）',
+      popupHtml != null && /&lt;img/i.test(popupHtml), `html=${String(popupHtml).slice(0,80)}`);
+    // onerror 不該真的觸發
+    const xssFired = await page.evaluate(() => window.__xss === 1);
+    assert('index(guest): 惡意 onerror 未被執行', xssFired !== true, `__xss=${xssFired}`);
+    assert('index(guest): XSS 測試無 pageerror', pageErrors.length === 0, pageErrors.join(' | '));
+    await page.close();
+  }
+
   // ── D. 深度檢查（需 CT_SMOKE_TOKEN）────────────────────────────
   // 不帶 token 也能跑 A/B/C；帶 token 才能驗 admin 三分頁與 audit 查詢。
   if (TOKEN) {
