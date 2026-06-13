@@ -422,13 +422,21 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS real_name            TEXT    NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active            BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
 
--- ---------- Seed：初始管理員 ----------
--- 系統管理員帳號：CIDadmin / 436910619（must_change_password=FALSE，正式環境請定期修改密碼）
--- 測試用舊帳號：admin / admin123（僅開發用，正式環境應停用）
+-- ---------- Seed：初始管理員（防禦縱深，2026-06-13）----------
+-- 安全原則：刻意「不」在公開 repo 放真實密碼。兩個種子帳號都用一次性 placeholder
+-- 密碼 + must_change_password=TRUE，新部署首次登入即被導向強制改密碼。
+--   ⚠ 正式部署完成後務必：(1) 立即以 placeholder 登入並改成強密碼；
+--     (2) 視情況停用內建帳號、另建專屬帳號（docs/部署檢查清單.md A 區）。
+--   背景：舊版種子把真實密碼（CIDadmin/436910619、admin/admin123）明寫在公開
+--     repo 且 must_change_password=FALSE → 任何人讀 repo 即可登入 admin
+--     （2026-06-13 資安檢視於雲端實測命中，已修；雲端帳號密碼亦已輪替）。
+-- placeholder 密碼（首次登入即須更換）：
+--   CIDadmin → 'CellTrail-SetMe-OnFirstLogin'
+--   admin    → 'CellTrail-Dev-Only-ChangeMe'（僅本機開發用，正式環境停用）
 INSERT INTO users (username, password_hash, role, real_name, is_active, must_change_password)
-SELECT 'CIDadmin', crypt('436910619', gen_salt('bf', 12)), 'admin', '系統管理員', TRUE, FALSE
+SELECT 'CIDadmin', crypt('CellTrail-SetMe-OnFirstLogin', gen_salt('bf', 12)), 'admin', '系統管理員', TRUE, TRUE
 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username='CIDadmin');
 
 INSERT INTO users (username, password_hash, role, is_active, must_change_password)
-SELECT 'admin', crypt('admin123', gen_salt('bf', 12)), 'admin', TRUE, FALSE
+SELECT 'admin', crypt('CellTrail-Dev-Only-ChangeMe', gen_salt('bf', 12)), 'admin', TRUE, TRUE
 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username='admin');
