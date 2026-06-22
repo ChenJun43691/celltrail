@@ -5,7 +5,7 @@ W2.1 多 sheet 支援單元測試（2026-04-29）
 驗證 _iter_rows_excel 在多 sheet xlsx 上的新行為：
   1. 單 sheet → 行為與舊版一致（向後相容）
   2. 多 sheet 且皆為資料 → 全部讀到
-  3. 規則 A：sheet 行數 < 5 → 跳過
+  3. 規則 A：sheet 行數 < 2（連 1 表頭 + 1 資料都湊不齊）→ 跳過
   4. 規則 B：sheet 欄名全不在 carrier dialect → 跳過（人資 sheet）
   5. A + B 同時觸發 → 只跳過一次（不重複處理）
   6. 假表頭偵測「每 sheet 獨立」（一個 sheet 真表頭 row 0、另一個 row 1）
@@ -147,7 +147,12 @@ def test_multi_sheet_all_data(monkeypatch):
 # 3. 規則 A：sheet 太短被跳過
 # ─────────────────────────────────────────────────────────────
 def test_skip_short_sheet(monkeypatch, caplog):
-    """資料 sheet（10 列）+ 摘要 sheet（2 列）→ 只讀資料 sheet"""
+    """
+    資料 sheet（10 列）+ 摘要 sheet（1 列）→ 只讀資料 sheet。
+
+    2026-06-22：規則 A 門檻從 < 5 放寬到 < 2，故「短 sheet」測試改用
+    單列 sheet（連表頭都湊不齊資料列）才會觸發 row<2。
+    """
     _patch_active_map_to_default(monkeypatch)
     from app.services.ingest import _iter_rows_excel
 
@@ -157,17 +162,39 @@ def test_skip_short_sheet(monkeypatch, caplog):
             *[[f"2026-01-01 10:0{i}:00", f"CELL_{i}", "0911111111"] for i in range(10)],
         ]),
         ("摘要", [
-            ["時間", "基地台"],
-            ["2026-01-01", "TOTAL_5"],   # 只有 1 列資料 → len(df)=1 < 5
+            ["本報表共 10 筆"],   # 只有 1 列 → len(df_raw)=1 < 2 → 規則 A
         ]),
     ])
     with caplog.at_level(logging.INFO, logger="app.services.ingest"):
         rows = list(_iter_rows_excel(blob))
     assert len(rows) == 10
     # 跳過資訊應寫進 log
-    assert any("摘要" in m and "row<5" in m for m in caplog.messages), (
+    assert any("摘要" in m and "row<2" in m for m in caplog.messages), (
         f"未在 log 看到「摘要」被跳過的紀錄；實際 log：{caplog.messages}"
     )
+
+
+def test_small_data_sheet_is_read(monkeypatch):
+    """
+    2026-06-22 放寬守門回歸：表頭 + 1 列資料（共 2 列）的小檔應被讀到。
+
+    背景：偵查實務上「某對象調閱期間只有 1～2 筆通聯」是真實且關鍵資料，
+    舊的 < 5 列門檻會整檔沉默跳過。放寬後此類小檔須能正常解析。
+    """
+    _patch_active_map_to_default(monkeypatch)
+    from app.services.ingest import _iter_rows_excel, _normalize_row
+
+    blob = _make_xlsx([
+        ("通聯", [
+            ["時間", "基地台", "通話對象"],
+            ["2026-01-01 10:00:00", "CELL_ONLY", "0912345678"],
+        ]),
+    ])
+    rows = list(_iter_rows_excel(blob))
+    assert len(rows) == 1, f"小檔（表頭+1 列）應被讀到 1 列，實際 {len(rows)}"
+    norm = _normalize_row(rows[0])
+    assert norm.get("start_ts") == "2026-01-01 10:00:00"
+    assert norm.get("cell_id") == "CELL_ONLY"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -213,6 +240,9 @@ def test_skip_short_takes_precedence(monkeypatch, caplog):
     """
     既短又無命中的 sheet：規則 A 先觸發（短路），不會重複記錄。
     這個測試確保不會因為兩條規則都觸發而造成 log 噪音或邏輯錯誤。
+
+    2026-06-22：規則 A 門檻放寬到 < 2，故封面改為單列（既觸發 row<2、
+    欄名又不命中）以維持「A 先短路、B 不該再記」的測試意圖。
     """
     _patch_active_map_to_default(monkeypatch)
     from app.services.ingest import _iter_rows_excel
@@ -223,8 +253,7 @@ def test_skip_short_takes_precedence(monkeypatch, caplog):
             *[[f"2026-01-01 10:0{i}:00", f"CELL_{i}", "0911111111"] for i in range(10)],
         ]),
         ("封面", [
-            ["專案名稱", "承辦人"],
-            ["XX分局通聯紀錄", "陳警官"],
+            ["XX分局通聯紀錄"],   # 單列 → 規則 A 短路（row<2），不進規則 B
         ]),
     ])
     with caplog.at_level(logging.INFO, logger="app.services.ingest"):
@@ -233,9 +262,9 @@ def test_skip_short_takes_precedence(monkeypatch, caplog):
     # 規則 A 短路 → log 應只出現一次「封面」
     封面_logs = [m for m in caplog.messages if "封面" in m]
     assert len(封面_logs) == 1, f"應該只有一筆 log；實際：{封面_logs}"
-    # 短路規則為 A（行<5），不該看到規則 B 的字串
+    # 短路規則為 A（行<2），不該看到規則 B 的字串
     # W2.2：規則 B 訊息從「no header match」改為「header matches」
-    assert "row<5" in 封面_logs[0]
+    assert "row<2" in 封面_logs[0]
     assert "header matches" not in 封面_logs[0]
 
 

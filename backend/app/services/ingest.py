@@ -299,9 +299,15 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
         # 整張 raw 讀（無 header），讓我們可以掃任意列當 header
         df_raw = pd.read_excel(xls, sheet_name=sheet_name, header=None)
 
-        # 規則 A：總列數 < 5（含潛在 header），不算資料表
-        if len(df_raw) < 5:
-            skipped_sheets.append((sheet_name, f"row<5 ({len(df_raw)} rows)"))
+        # 規則 A：總列數 < 2（連「1 表頭 + 1 資料」都湊不齊）才當非資料表。
+        # 為什麼從舊的 < 5 放寬到 < 2（2026-06-22）：
+        #   偵查實務上「某對象在調閱期間只有 1～2 筆通聯」是真實且關鍵的資料，
+        #   舊門檻會把這種小檔整個跳過 → 沉默丟證據，違反證據完整性原則。
+        #   擋「封面頁／統計頁／說明頁」這類非資料 sheet 的真正防線是規則 B
+        #   （表頭必須命中 ≥2 個 canonical 別名）＋ line 350（去表頭後須 ≥1 列），
+        #   不是列數本身；故安全地把列數門檻降到「資料表的物理下限」= 2 列。
+        if len(df_raw) < 2:
+            skipped_sheets.append((sheet_name, f"row<2 ({len(df_raw)} rows)"))
             continue
 
         # W2.2 核心：scan 前 SCAN_WINDOW 列，找命中 header_map 最多的列
