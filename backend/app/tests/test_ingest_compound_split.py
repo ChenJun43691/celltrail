@@ -96,6 +96,66 @@ def test_split_multiple_spaces():
 
 
 # ─────────────────────────────────────────────────────────────
+# A2. 斜線分隔複合欄（雙向通聯「基地台編號N/位置N」，2026-06-22）
+# ─────────────────────────────────────────────────────────────
+def test_split_slash_id_addr():
+    """雙向通聯實測格式：'cell_id/地址' 用半形斜線分隔 → 拆對"""
+    from app.services.ingest import _split_compound_cell
+
+    cid, addr = _split_compound_cell("26634353/台北市中山區長春路31號9樓頂")
+    assert cid == "26634353"
+    assert addr == "台北市中山區長春路31號9樓頂"
+
+
+def test_split_fullwidth_slash():
+    """全形「／」分隔也要支援（業者輸入習慣不一）"""
+    from app.services.ingest import _split_compound_cell
+
+    cid, addr = _split_compound_cell("26634353／台北市中山區")
+    assert cid == "26634353"
+    assert addr == "台北市中山區"
+
+
+def test_split_slash_inside_address_not_misparsed():
+    """
+    地址內部本身帶 '/'（如樓層 3/4樓）且無 ID 左段 → 不可誤切。
+    左段含中文（非 ID-like）時應落回原邏輯，視為純地址。
+    """
+    from app.services.ingest import _split_compound_cell
+
+    cid, addr = _split_compound_cell("台北市XX路3/4樓")
+    assert cid is None
+    assert addr == "台北市XX路3/4樓"
+
+
+def test_split_space_format_unaffected_by_slash_branch():
+    """原空白分隔格式（彭奕翔）不受斜線分支影響"""
+    from app.services.ingest import _split_compound_cell
+
+    cid, addr = _split_compound_cell("46601493130200051012 新北市中和區(4G)")
+    assert cid == "46601493130200051012"
+    assert addr == "新北市中和區(4G)"
+
+
+def test_normalize_bidirectional_call_columns(monkeypatch):
+    """
+    雙向通聯整列：'始話日期時間' → start_ts、'基地台編號1/位置1' 斜線複合欄
+    → 拆出 cell_id + cell_addr。對應 11501-11505(雙向).xlsx 實測。
+    """
+    _patch_active_map_to_default(monkeypatch)
+    from app.services.ingest import _normalize_row
+
+    out = _normalize_row({
+        "通話類別": "發話",
+        "始話日期時間": "2026-01-01T12:11:38",
+        "基地台編號1/位置1": "26634353/台北市中山區長春路31號9樓頂",
+    })
+    assert out.get("start_ts") == "2026-01-01T12:11:38"
+    assert out.get("cell_id") == "26634353"
+    assert out.get("cell_addr") == "台北市中山區長春路31號9樓頂"
+
+
+# ─────────────────────────────────────────────────────────────
 # B. _normalize_row 整合：W2.3 + W1.5 共存
 # ─────────────────────────────────────────────────────────────
 def test_normalize_compound_alone(monkeypatch):

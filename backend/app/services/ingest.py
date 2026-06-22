@@ -425,6 +425,7 @@ _RAW2CANON = {
     "終止時間": "end_ts",
     "時間": "start_ts",          # W1 新增：「0801-0903彭奕翔網路歷程.xlsx」
     "始話時間": "start_ts",      # W1 新增：「電話通聯+歷程.xlsx」
+    "始話日期時間": "start_ts",  # 雙向通聯：「11501-11505(雙向).xlsx」始話日期+時間合併欄
     "通聯時間": "start_ts",      # W1 新增：常見通聯紀錄欄名
     "手機連到基地台的時間": "start_ts",  # W2.2：「電話通聯+歷程.xlsx」網路歷程 sheet 方言（此 carrier 常空，留作保險）
     "連到internet的時間":   "start_ts",  # W2.2：同上，此 carrier 真正帶值的時間欄
@@ -457,6 +458,11 @@ _RAW2CANON = {
     # 直接 mapping 到 cell_id 會誤觸其他 carrier 的純 ID 欄，破壞既有行為。
     "迄基地台":   "cell_id_compound",   # W2.3：「彭奕翔網路歷程.xlsx」迄話端複合欄
     "終話基地台": "cell_id_compound",   # W2.3：同義別名，預留其他 carrier
+    # 雙向通聯「基地台編號N/位置N」：cell_id 與地址用 "/" 合併，由
+    # _split_compound_cell 的斜線分隔分支拆解。"基地台編號1/位置1" 為起話端、
+    # "基地台編號2/位置2" 為迄話端（複合欄走 fallback 語意，前者先填即優先）。
+    "基地台編號1/位置1": "cell_id_compound",
+    "基地台編號2/位置2": "cell_id_compound",
     # 其他
     "細胞名稱": "sector_name",
     "小區名稱": "sector_name",
@@ -583,6 +589,13 @@ def _split_compound_cell(v: Any) -> Tuple[Optional[str], Optional[str]]:
     標籤）視為 cell_addr。代次標籤 `(4G)` / `(5G)` 等保留在 cell_addr
     內，符合 forensic「保留原始」原則（將來分析需要可再 regex 抽出）。
 
+    斜線分隔擴充（雙向通聯）：
+      部分業者把 cell_id 與地址用 "/"（或全形「／」）合併在同一欄，
+      如「基地台編號1/位置1」欄值 `26634353/台北市中山區長春路31號9樓頂`。
+      規則：以第一個 "/" 切兩段，僅在「左段不含中文（ID-like）且右段含
+      中文（地址）」時採用，避免誤切地址內部本身帶 "/" 的情況（如
+      樓層「3/4樓」）。不符合此特徵者落回原空白分隔邏輯。
+
     邊界處理：
       - 空 / None → (None, None)
       - 只有單一 token 且含中文 → 視為純地址：(None, addr)
@@ -594,6 +607,14 @@ def _split_compound_cell(v: Any) -> Tuple[Optional[str], Optional[str]]:
     s = str(v).strip()
     if not s:
         return (None, None)
+    # 斜線分隔：cell_id/地址（雙向通聯「基地台編號N/位置N」欄）
+    slash = re.split(r"[/／]", s, maxsplit=1)
+    if len(slash) == 2:
+        left, right = slash[0].strip(), slash[1].strip()
+        left_has_cjk = any('一' <= c <= '鿿' for c in left)
+        right_has_cjk = any('一' <= c <= '鿿' for c in right)
+        if left and right and not left_has_cjk and right_has_cjk:
+            return (left, right)
     parts = s.split(None, 1)  # 任意空白切，最多切 1 次
     if len(parts) == 2:
         return (parts[0], parts[1].strip())

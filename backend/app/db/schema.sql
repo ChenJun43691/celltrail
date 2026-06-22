@@ -301,6 +301,7 @@ SELECT
       "終止時間":     "end_ts",
       "時間":         "start_ts",
       "始話時間":     "start_ts",
+      "始話日期時間": "start_ts",
       "通聯時間":     "start_ts",
       "手機連到基地台的時間": "start_ts",
       "連到internet的時間":   "start_ts",
@@ -331,6 +332,8 @@ SELECT
 
       "迄基地台":   "cell_id_compound",
       "終話基地台": "cell_id_compound",
+      "基地台編號1/位置1": "cell_id_compound",
+      "基地台編號2/位置2": "cell_id_compound",
 
       "細胞名稱":   "sector_name",
       "小區名稱":   "sector_name",
@@ -360,6 +363,7 @@ SELECT
     TRUE,
     '系統預設 fallback profile：搬遷自 ingest.py:_RAW2CANON（36 個別名）+ 4 個真實樣本檔新增別名（時間/始話時間/通聯時間/基地台/基地台-斜線-交換機/起台/起址）+ W2.2 網路歷程方言（手機連到基地台的時間/連到internet的時間/基地台代碼）+ W2.3 複合欄（迄基地台/終話基地台 → cell_id_compound，由 _normalize_row 拆解）+ W2.4 dialect 系統（中華上網方言由 ingest.py:_DIALECT_HEADER_MAPS 接管，「起台→start_ts、起址→cell_id、通話對象→cell_addr」此處 alias 保留為 header detection 訊號）。'
     || E'\n+ GPS 軌跡/經緯度直給格式（2026-06-04）：GPS時間/定位時間→start_ts、經度→lng、緯度→lat（含 wgs84 後綴與英文 longitude/latitude/lng/lat/lon）。此類檔無 cell_id/地址，ingest 直接採用座標免 geocode；經緯度欄常被標反，由 _resolve_latlng 以「緯度必在 [-90,90]」範圍自動校正。'
+    || E'\n+ 雙向通聯格式（2026-06-22）：始話日期時間→start_ts；基地台編號1/位置1、基地台編號2/位置2→cell_id_compound（cell_id 與地址用 "/" 或全形「／」合併，由 _split_compound_cell 斜線分支拆解）。'
     || E'\n暫不收的別名（待未來 milestone）：迄台、迄址（單純迄話端，需先補 cell_id_end / cell_addr_end 欄位）；始話日期（需與始話時間合併規則）。',
     NULL, NULL, NULL
 WHERE NOT EXISTS (
