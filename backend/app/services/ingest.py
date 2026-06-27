@@ -10,7 +10,7 @@
 # ------------------------------------------------------------
 
 from __future__ import annotations
-import csv, io, re
+import csv, io, os, re
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Iterable, Tuple
 
@@ -849,15 +849,78 @@ def ingest_auto(project_id: str, target_id: str, filename: str, file_bytes: byte
     else:
         raise ValueError("不支援的檔案格式：請使用 CSV / TXT / XLSX / XLTX / PDF")
 
+def _ingest_chunk_size() -> int:
+    """每塊處理的列數（env `INGEST_CHUNK_SIZE` 可調，預設 800，合理 100~5000，非法 fallback 800）。
+
+    為什麼分塊（見 CLAUDE.md 五-R / 七-8）：整檔 hold records + 逐筆 geocode 會在
+    Render 小實例 OOM/逾時。分塊讓記憶體峰值限於一塊，且每塊走 geocode.lookup_bulk
+    （並行 Google + SQL geocode_cache + 去重），不再逐筆序列。
+    """
+    raw = os.getenv("INGEST_CHUNK_SIZE", "800")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return 800
+    return n if 100 <= n <= 5000 else 800
+
+
 def _ingest_rows_stream(project_id: str, target_id: str, rows_iter: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    """chunk-based 串流匯入（P8.1，2026-06-28）：每塊 normalize → bulk geocode → insert → 釋放。
+
+    與舊版（整檔 hold to_insert + 逐筆 geocode.lookup）對比：
+      - 記憶體峰值限於一塊（INGEST_CHUNK_SIZE，預設 800），不再整檔累積 → 解 OOM（七-8）。
+      - geocode 每塊走 lookup_bulk（並行 + SQL 快取 + 去重）→ 解 H1（存檔路徑原本沒並行）。
+      - 統計 total/inserted/skipped 語意與舊版一致；errors 仍保留 [:50] 上限。
+      - 原子性「方案 A」：每塊 _insert_records 後即 commit（autocommit）。某塊寫入失敗即
+        **停止後續、誠實回報「部分匯入」**（errors 首列標明 + inserted < total），由上層
+        以真實 inserted/skipped 回填 evidence_stats/audit，不假裝整檔成功。
+
+    刻意不動 _normalize_row / _parse_ts / _resolve_latlng / _guess_accuracy 的語意。
+    """
+    chunk_size = _ingest_chunk_size()
     total = inserted = skipped = 0
     errors: List[str] = []
-    to_insert: List[Dict[str, Any]] = []
-    # request-scope geocode 快取：同一 upload 內相同地址只查一次。
-    # 解決「11246 列但只有 119 個唯一地址」造成的 API timeout 問題。
-    # key=(cell_id, cell_addr)，value=Optional[Tuple[lat, lng]]
-    _geo_cache: Dict[tuple, Optional[tuple]] = {}
+    # 一塊內待 geocode/寫入的暫存；每塊 flush 後清空（記憶體不累積整檔）。
+    # 每筆多帶一個 reserved key `_geo_key`：(cell_id, cell_addr) 或 None（已有直給座標）。
+    pending: List[Dict[str, Any]] = []
 
+    def _flush() -> bool:
+        """處理 pending 一塊：bulk geocode → 填座標 → insert。
+        回傳 True=成功；False=寫入失敗（部分匯入，呼叫端應停止後續）。"""
+        nonlocal inserted
+        if not pending:
+            return True
+        # 收集本塊需 geocode 的 unique (cell_id, cell_addr)；
+        # 直給座標者（_geo_key=None）不查 → 同址在同塊內只進 lookup_bulk 一次（set 去重）。
+        keys = list({p["_geo_key"] for p in pending if p["_geo_key"] is not None})
+        bulk = geocode.lookup_bulk(keys) if keys else {}
+        records: List[Dict[str, Any]] = []
+        for p in pending:
+            gk = p.pop("_geo_key")
+            lat, lng = p["lat"], p["lng"]
+            if gk is not None:
+                ll = bulk.get(gk)
+                if ll:
+                    lat, lng = ll
+            p["lat"] = _to_float(lat)
+            p["lng"] = _to_float(lng)
+            records.append(p)
+        try:
+            inserted += _insert_records(records)
+        except HTTPException as e:
+            # 方案 A：誠實回報部分匯入。插在 errors 首列以 survive [:50] 截斷。
+            detail = getattr(e, "detail", str(e))
+            errors.insert(0, (
+                f"⚠ 部分匯入（未完全成功）：寫入資料庫時失敗，已成功寫入 {inserted} 筆、"
+                f"其餘未寫入（原因：{detail}）。請排除問題後，建議用新案件重新上傳整檔，"
+                f"避免與已寫入資料重複。"
+            ))
+            pending.clear()
+            return False
+        pending.clear()
+        return True
+
+    aborted = False
     for idx, raw in enumerate(rows_iter, start=1):
         total += 1
         r = _normalize_row(raw)
@@ -886,25 +949,16 @@ def _ingest_rows_stream(project_id: str, target_id: str, rows_iter: Iterable[Dic
 
         lat = lng = None
         accuracy_m = _guess_accuracy(cell_addr)
+        geo_key: Optional[tuple] = None
         if direct_ll:
             # 檔案已含座標 → 直接採用，免 geocode（GPS 定位精度高）
             lat, lng = direct_ll
             accuracy_m = GPS_ACCURACY_M
         else:
+            # 延後到 _flush 用 lookup_bulk 一次解析整塊（含 SQL 快取 + 並行）
             geo_key = (cell_id, cell_addr)
-            if geo_key in _geo_cache:
-                ll = _geo_cache[geo_key]
-            else:
-                ll = None
-                try:
-                    ll = geocode.lookup(cell_id, cell_addr)
-                except Exception as e:
-                    errors.append(f"row{idx}: geocode 失敗：{e}")
-                _geo_cache[geo_key] = ll
-            if ll:
-                lat, lng = ll
 
-        to_insert.append(
+        pending.append(
             dict(
                 project_id=project_id,
                 target_id=target_id,
@@ -916,14 +970,20 @@ def _ingest_rows_stream(project_id: str, target_id: str, rows_iter: Iterable[Dic
                 site_code=site_code,
                 sector_id=sector_id,
                 azimuth=azimuth,
-                lat=_to_float(lat),
-                lng=_to_float(lng),
+                lat=lat,
+                lng=lng,
                 accuracy_m=_to_int(accuracy_m),
+                _geo_key=geo_key,
             )
         )
 
-    if to_insert:
-        inserted = _insert_records(to_insert)
+        if len(pending) >= chunk_size:
+            if not _flush():
+                aborted = True
+                break
+
+    if not aborted:
+        _flush()  # 收尾剩餘（若此塊也失敗，_flush 內已記 errors）
 
     return {"total": total, "inserted": inserted, "skipped": skipped, "errors": errors[:50]}
 

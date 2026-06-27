@@ -2723,7 +2723,7 @@
     }
     function refreshUploadList(){
       const ul = $('uploadList');
-      ul.innerHTML = queuedFiles.map(f => `<li>${f.name}（${human(f.size)}）</li>`).join('');
+      ul.innerHTML = queuedFiles.map(f => `<li>${escH(f.name)}（${human(f.size)}）</li>`).join('');
       const btn = $('btnUpload'); if (btn) btn.disabled = queuedFiles.length === 0;
       // 上傳中／顯示結果中不覆蓋狀態
       if (dz.classList.contains('uploading') || dz.classList.contains('success') || dz.classList.contains('error')) return;
