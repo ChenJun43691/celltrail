@@ -54,6 +54,11 @@ GMAPS_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 GMAPS_ENDPOINT = os.getenv("GOOGLE_GEOCODE_ENDPOINT", "https://maps.googleapis.com/maps/api/geocode/json")
 GMAPS_REGION = os.getenv("GOOGLE_REGION", "tw")
 GMAPS_LANG = os.getenv("GOOGLE_LANGUAGE", "zh-TW")
+# bulk geocode 對「未命中快取的唯一地址」並行打 Google 的併發數。
+# Google Geocoding 預設配額約 50 QPS；10 個 worker × 每個約 4 req/s ≈ 40 QPS，留安全邊際。
+# 為什麼要並行：雲端無 Redis 快取 + cell_towers 空時，大檔（如 test3 ~2400 唯一地址）
+# 序列逐筆打 Google 累積 >110s → 超過 Render 請求上限 502。並行把它壓進請求窗口。
+GEO_GOOGLE_CONCURRENCY = max(1, int(os.getenv("GEO_GOOGLE_CONCURRENCY", "10") or "10"))
 
 def _google_geocode(addr: str) -> Optional[Tuple[float, float]]:
     """
@@ -290,19 +295,50 @@ def lookup_bulk(
         else:
             miss_for_google.append((orig_key, simplified))
 
-    # ── Step 5: Google（無法批次，序列）+ 寫回 Redis cache ──────
+    # ── Step 5: 未命中 → Google（並行）→ 仍失敗者 OSM（序列）+ 寫回 cache ──
+    # 去重：不同 orig_key 可能清洗成同一 simplified（同址不同 cell_id）→ 只打一次。
+    uniq_simplified = list({s for _, s in miss_for_google})
+    geo_map: Dict[str, Optional[Tuple[float, float]]] = {}
+    n_osm_call = 0
+
+    if uniq_simplified:
+        import concurrent.futures as _cf
+
+        # Google：I/O bound，並行大幅縮短總時間（thread-safe：requests + 唯讀 GMAPS_KEY）
+        workers = min(GEO_GOOGLE_CONCURRENCY, len(uniq_simplified))
+        with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(_google_geocode, s): s for s in uniq_simplified}
+            for fut in _cf.as_completed(futs):
+                s = futs[fut]
+                try:
+                    geo_map[s] = fut.result()
+                except Exception as e:
+                    print(f"[bulk_geocode] google parallel error: {type(e).__name__}: {e} addr={s!r}")
+                    geo_map[s] = None
+        n_google_call = len(uniq_simplified)
+
+        # Google 失敗者 → OSM 備援。**刻意序列**：Nominatim 政策 1 req/s（_osm_geocode
+        # 內含 sleep），並行會違規且可能被 429 封；Google 命中率高時這串通常很短。
+        osm_targets = [s for s in uniq_simplified if geo_map.get(s) is None]
+        for s in osm_targets:
+            geo_map[s] = _osm_geocode(s)
+        n_osm_call = len(osm_targets)
+
+        # 寫回快取（_cache_set 在無 Redis 時安全早退）
+        for s, ll in geo_map.items():
+            if ll:
+                _cache_set(s, ll[0], ll[1])
+
+    # 對應回所有 orig_key（含去重前的重複）
     for orig_key, simplified in miss_for_google:
-        ll = _google_geocode(simplified) or _osm_geocode(simplified)
-        result[orig_key] = ll
-        n_google_call += 1
-        if ll:
-            _cache_set(simplified, ll[0], ll[1])
+        result[orig_key] = geo_map.get(simplified)
 
     _total = _time.perf_counter() - _t_start
     print(
         f"[bulk_geocode][timing] total={_total*1000:.0f}ms "
         f"unique_keys={len(unique_keys)} "
         f"local_hit={n_local_hit} redis_hit={n_redis_hit} "
-        f"google_calls={n_google_call} no_addr={n_no_addr}"
+        f"google_calls={n_google_call} osm_calls={n_osm_call} "
+        f"google_workers={GEO_GOOGLE_CONCURRENCY} no_addr={n_no_addr}"
     )
     return result
