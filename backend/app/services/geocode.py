@@ -39,6 +39,75 @@ def _cache_set(addr: str, lat: float, lng: float) -> None:
     except Exception:
         pass
 
+# ---------- SQL 持久快取（Supabase 無 Redis 時的跨請求快取） ----------
+# 為什麼：雲端移除 Redis 後 geocode 結果不跨請求保存 → 每次大檔上傳都重打 Google，
+# 易超過 Render 120s 請求上限回 502。SQL 快取讓結果持久化：首次上傳分批灌、之後
+# （含逾時重傳）跳過已快取者 → 漸進變快、最終必然成功。
+# 表用 CREATE TABLE IF NOT EXISTS 自動建立（冪等），不需手動在 Supabase 跑 migration。
+# 所有 cur.execute 帶 prepare=False（pooler 不支援 server-side prepared statements）。
+_sql_cache_ready = False
+
+def _ensure_sql_cache() -> bool:
+    global _sql_cache_ready
+    if _sql_cache_ready:
+        return True
+    try:
+        from app.db.session import get_conn
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS geocode_cache ("
+                "  addr TEXT PRIMARY KEY,"
+                "  lat DOUBLE PRECISION NOT NULL,"
+                "  lng DOUBLE PRECISION NOT NULL,"
+                "  created_at TIMESTAMPTZ NOT NULL DEFAULT now())",
+                prepare=False,
+            )
+            conn.commit()
+        _sql_cache_ready = True
+    except Exception as e:
+        print(f"[geocode] ensure sql cache table failed: {type(e).__name__}: {e}")
+    return _sql_cache_ready
+
+def _sql_cache_get_bulk(addrs: List[str]) -> Dict[str, Tuple[float, float]]:
+    out: Dict[str, Tuple[float, float]] = {}
+    if not addrs or not _ensure_sql_cache():
+        return out
+    try:
+        from app.db.session import get_conn
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT addr, lat, lng FROM geocode_cache WHERE addr = ANY(%s)",
+                (list(addrs),),
+                prepare=False,
+            )
+            for r in cur.fetchall():
+                out[str(r[0])] = (float(r[1]), float(r[2]))
+    except Exception as e:
+        print(f"[geocode] sql cache get error: {type(e).__name__}: {e}")
+    return out
+
+def _sql_cache_set_bulk(items: List[Tuple[str, float, float]]) -> None:
+    if not items or not _ensure_sql_cache():
+        return
+    try:
+        from app.db.session import get_conn
+        # 單一多列 INSERT（一次 round-trip），ON CONFLICT 冪等
+        placeholders = ",".join(["(%s,%s,%s)"] * len(items))
+        args: List[object] = []
+        for a, lat, lng in items:
+            args.extend([a, lat, lng])
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO geocode_cache(addr,lat,lng) VALUES "
+                + placeholders
+                + " ON CONFLICT(addr) DO NOTHING",
+                args,
+                prepare=False,
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"[geocode] sql cache set error: {type(e).__name__}: {e}")
+
 # ---------- 地址清洗 ----------
 def _simplify_addr(addr: str) -> str:
     if not addr:
@@ -116,7 +185,9 @@ def _osm_geocode(addr: str) -> Optional[Tuple[float, float]]:
                 OSM_URL,
                 params=params,
                 headers={"User-Agent": "celltrail/1.0", "Accept-Language": GMAPS_LANG},
-                timeout=15,
+                # 6s（原 15s）：OSM 是序列備援，逾時太長會讓「Google 查不到」的尾巴
+                # 累積爆掉請求窗口（雲端 502 的元兇之一）。縮短以限制單筆最壞耗時。
+                timeout=6,
             )
             r.raise_for_status()
             data = r.json()
@@ -198,10 +269,16 @@ def lookup(cell_id: Optional[str], cell_addr: Optional[str]) -> Optional[Tuple[f
     ll = _cache_get(addr)
     if ll:
         return ll
+    # SQL 持久快取（無 Redis 時的後盾）
+    sql = _sql_cache_get_bulk([addr])
+    if addr in sql:
+        _cache_set(addr, *sql[addr])
+        return sql[addr]
 
     ll = _google_geocode(addr) or _osm_geocode(addr)
     if ll:
         _cache_set(addr, ll[0], ll[1])
+        _sql_cache_set_bulk([(addr, ll[0], ll[1])])
     else:
         # 兩個來源都敗：印一條彙總訊息，對照前面 Google/OSM 個別的錯誤
         print(f"[geocode] 所有來源均無結果 addr={addr!r}")
@@ -214,10 +291,12 @@ def lookup_bulk(
 ) -> Dict[Tuple[Optional[str], Optional[str]], Optional[Tuple[float, float]]]:
     """
     批次解析 (cell_id, cell_addr) → (lat, lng)。
-    優化重點：
+    優化重點（查詢順序，逐層收斂）：
       1. 本地 cell_towers 一次 SQL `ANY()` 全撈
-      2. Redis 一次 MGET 批次（避免 3000+ round-trip）
-      3. 剩下 cache miss 才打 Google（這個無法批次，仍序列）
+      2. Redis 一次 MGET 批次（雲端通常無 Redis，視為選配）
+      3. SQL geocode_cache 一次 `ANY()` 批次讀（跨請求持久快取）
+      4. 仍未命中 → 並行打 Google（ThreadPool），失敗者序列 OSM 備援
+      5. 成功結果增量寫回 SQL 快取（逾時被切也保住已完成的）
 
     回傳 dict：key 為原始 (cell_id, cell_addr)，值為 (lat, lng) 或 None。
     """
@@ -285,15 +364,29 @@ def lookup_bulk(
         except Exception as e:
             print(f"[bulk_geocode] redis mget error: {type(e).__name__}: {e}")
 
-    # ── Step 4: 解析 pending：Redis 有就用、沒有的丟給 Google ────
-    miss_for_google: List[Tuple[Tuple[Optional[str], Optional[str]], str]] = []
+    # ── Step 4: 解析 pending：Redis 有就用、沒有的進下一關 ────
+    after_redis: List[Tuple[Tuple[Optional[str], Optional[str]], str]] = []
     for orig_key, simplified in pending:
         ak = f"addr:{simplified}"
         if ak in redis_hits:
             result[orig_key] = redis_hits[ak]
             n_redis_hit += 1
         else:
-            miss_for_google.append((orig_key, simplified))
+            after_redis.append((orig_key, simplified))
+
+    # ── Step 4.5: SQL 持久快取批次讀（取代失效的雲端 Redis）──────
+    n_sql_hit = 0
+    miss_for_google: List[Tuple[Tuple[Optional[str], Optional[str]], str]] = []
+    if after_redis:
+        sql_hits = _sql_cache_get_bulk(list({s for _, s in after_redis}))
+        for orig_key, simplified in after_redis:
+            if simplified in sql_hits:
+                result[orig_key] = sql_hits[simplified]
+                n_sql_hit += 1
+                # 順手回填 Redis（若有），下次更快
+                _cache_set(simplified, *sql_hits[simplified])
+            else:
+                miss_for_google.append((orig_key, simplified))
 
     # ── Step 5: 未命中 → Google（並行）→ 仍失敗者 OSM（序列）+ 寫回 cache ──
     # 去重：不同 orig_key 可能清洗成同一 simplified（同址不同 cell_id）→ 只打一次。
@@ -304,6 +397,22 @@ def lookup_bulk(
     if uniq_simplified:
         import concurrent.futures as _cf
 
+        # 增量持久化：每累積 N 筆成功就寫一次 SQL 快取。為什麼不留到最後一次寫——
+        # 若 Render 在 120s 把請求切斷（大檔仍可能），最後的單次寫永遠跑不到 →
+        # 整批白做、重傳從零開始。增量 flush 讓「已完成的地址」確實落地，重傳跳過、
+        # 漸進收斂至成功。
+        _FLUSH_EVERY = 100
+        pending_writes: List[Tuple[str, float, float]] = []
+
+        def _record(s: str, ll: Optional[Tuple[float, float]]):
+            geo_map[s] = ll
+            if ll:
+                _cache_set(s, ll[0], ll[1])
+                pending_writes.append((s, ll[0], ll[1]))
+                if len(pending_writes) >= _FLUSH_EVERY:
+                    _sql_cache_set_bulk(pending_writes)
+                    pending_writes.clear()
+
         # Google：I/O bound，並行大幅縮短總時間（thread-safe：requests + 唯讀 GMAPS_KEY）
         workers = min(GEO_GOOGLE_CONCURRENCY, len(uniq_simplified))
         with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
@@ -311,23 +420,22 @@ def lookup_bulk(
             for fut in _cf.as_completed(futs):
                 s = futs[fut]
                 try:
-                    geo_map[s] = fut.result()
+                    ll = fut.result()
                 except Exception as e:
                     print(f"[bulk_geocode] google parallel error: {type(e).__name__}: {e} addr={s!r}")
-                    geo_map[s] = None
+                    ll = None
+                _record(s, ll)
         n_google_call = len(uniq_simplified)
 
         # Google 失敗者 → OSM 備援。**刻意序列**：Nominatim 政策 1 req/s（_osm_geocode
         # 內含 sleep），並行會違規且可能被 429 封；Google 命中率高時這串通常很短。
         osm_targets = [s for s in uniq_simplified if geo_map.get(s) is None]
         for s in osm_targets:
-            geo_map[s] = _osm_geocode(s)
+            _record(s, _osm_geocode(s))
         n_osm_call = len(osm_targets)
 
-        # 寫回快取（_cache_set 在無 Redis 時安全早退）
-        for s, ll in geo_map.items():
-            if ll:
-                _cache_set(s, ll[0], ll[1])
+        if pending_writes:
+            _sql_cache_set_bulk(pending_writes)
 
     # 對應回所有 orig_key（含去重前的重複）
     for orig_key, simplified in miss_for_google:
@@ -337,7 +445,7 @@ def lookup_bulk(
     print(
         f"[bulk_geocode][timing] total={_total*1000:.0f}ms "
         f"unique_keys={len(unique_keys)} "
-        f"local_hit={n_local_hit} redis_hit={n_redis_hit} "
+        f"local_hit={n_local_hit} redis_hit={n_redis_hit} sql_hit={n_sql_hit} "
         f"google_calls={n_google_call} osm_calls={n_osm_call} "
         f"google_workers={GEO_GOOGLE_CONCURRENCY} no_addr={n_no_addr}"
     )

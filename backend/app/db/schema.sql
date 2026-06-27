@@ -375,6 +375,20 @@ WHERE NOT EXISTS (
     SELECT 1 FROM carrier_profiles WHERE is_default = TRUE
 );
 
+-- ---------- Geocode 持久快取（2026-06-27） ----------
+-- 地址 → 座標的跨請求快取，取代雲端失效的 Redis。
+--   - 用途：大檔上傳時 geocode 結果持久化，首傳分批灌、重傳跳過已快取者，
+--     避免每次都重打 Google 而超過 Render 120s 請求上限 502。
+--   - addr 為「清洗後」地址（_simplify_addr 結果）；ON CONFLICT 冪等。
+--   - geocode.py 內 _ensure_sql_cache() 也會 CREATE TABLE IF NOT EXISTS 自動建立，
+--     此處列入 schema 供新環境完整建立與文件化。
+CREATE TABLE IF NOT EXISTS geocode_cache (
+    addr        TEXT PRIMARY KEY,
+    lat         DOUBLE PRECISION NOT NULL,
+    lng         DOUBLE PRECISION NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ---------- Cell Tower Reference Table（P4.1） ----------
 -- 本地基地台座標對照表：cell_id → lat/lng
 -- 用途：geocode 前置查詢，命中即直接用，不打 Google/OSM API

@@ -17,9 +17,20 @@ import os
 import threading
 import time
 
+import pytest
+
 os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/fakedb")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-only-for-pytest")
 os.environ.setdefault("AUTH_ENABLED", "true")
+
+
+@pytest.fixture(autouse=True)
+def _no_sql_cache(monkeypatch):
+    """預設停用 SQL 快取（避免測試碰 DB / pool 逾時）；個別測試可自行覆寫。"""
+    import app.services.geocode as geo
+
+    monkeypatch.setattr(geo, "_sql_cache_get_bulk", lambda addrs: {})
+    monkeypatch.setattr(geo, "_sql_cache_set_bulk", lambda items: None)
 
 
 def test_bulk_parallel_dedup_and_mapping(monkeypatch):
@@ -112,3 +123,43 @@ def test_concurrency_env_default():
     import app.services.geocode as geo
 
     assert geo.GEO_GOOGLE_CONCURRENCY >= 1
+
+
+def test_sql_cache_hit_skips_google(monkeypatch):
+    """SQL 持久快取命中的地址不應再打 Google（跨請求快取的核心價值）。"""
+    import app.services.geocode as geo
+
+    # B 路已在 SQL 快取
+    monkeypatch.setattr(
+        geo, "_sql_cache_get_bulk",
+        lambda addrs: {"台北市B路2號": (24.5, 120.5)} if "台北市B路2號" in addrs else {},
+    )
+    monkeypatch.setattr(geo, "_sql_cache_set_bulk", lambda items: None)
+
+    google_calls = []
+    monkeypatch.setattr(geo, "_google_geocode", lambda a: google_calls.append(a) or (25.0, 121.5))
+    monkeypatch.setattr(geo, "_osm_geocode", lambda a: None)
+
+    keys = [(None, "台北市A路1號"), (None, "台北市B路2號")]
+    out = geo.lookup_bulk(keys)
+
+    assert out[(None, "台北市B路2號")] == (24.5, 120.5)   # 來自 SQL 快取
+    assert out[(None, "台北市A路1號")] == (25.0, 121.5)   # 打 Google
+    assert google_calls == ["台北市A路1號"], "B 路命中 SQL 快取不應打 Google"
+
+
+def test_sql_cache_writes_new_geocodes(monkeypatch):
+    """新 geocode 成功者應批次寫入 SQL 快取。"""
+    import app.services.geocode as geo
+
+    written = []
+    monkeypatch.setattr(geo, "_sql_cache_get_bulk", lambda addrs: {})
+    monkeypatch.setattr(geo, "_sql_cache_set_bulk", lambda items: written.extend(items))
+    monkeypatch.setattr(geo, "_google_geocode", lambda a: (25.0, 121.5))
+    monkeypatch.setattr(geo, "_osm_geocode", lambda a: None)
+
+    geo.lookup_bulk([(None, "台北市A路1號"), (None, "台北市C路3號")])
+
+    addrs_written = sorted(w[0] for w in written)
+    assert addrs_written == ["台北市A路1號", "台北市C路3號"]
+    assert all(w[1:] == (25.0, 121.5) for w in written)
