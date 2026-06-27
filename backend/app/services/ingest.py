@@ -217,6 +217,150 @@ def _iter_rows_csv(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
     for r in rdr:
         yield {(k or "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in (r or {}).items()}
 
+# ====== simple_time_location 極簡格式（P8.2-fmt，2026-06-28）======
+# A 欄=時間、B 欄=位置（地址或經緯度）、A/B 以外忽略、可能有/無表頭。
+# 不靠檔名、靠結構與內容判斷；僅在 _iter_rows_excel 規則 B 失敗時作為 fallback。
+def _parse_simple_time(s: Any) -> Optional[datetime]:
+    """simple_time_location 時間解析：先處理民國年（115/06/28 13:20 → 2026/06/28 13:20），
+    其餘一律交給既有 _parse_ts。**刻意不改 _parse_ts**，民國年隔離於此，避免影響電信格式。
+
+    民國年守門：pattern 為「1~3 位年 / 月 / 日」且年∈[1,200]、月∈[1,12]、日∈[1,31]，
+    其後接空白或字串結束 → 年 +1911 轉西元再 parse。西元四位年（電信常見）不符 \\d{1,3}
+    pattern、且月>12 也被守門擋下，不會被誤轉。
+    """
+    if _is_na(s):
+        return None
+    if isinstance(s, datetime):
+        return _parse_ts(s)
+    txt = str(s).strip().replace("\xa0", " ")
+    m = re.match(r"^(\d{1,3})/(\d{1,2})/(\d{1,2})(\s.*)?$", txt)
+    if m:
+        yy, mm, dd = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= yy <= 200 and 1 <= mm <= 12 and 1 <= dd <= 31:
+            txt = f"{yy + 1911}/{mm:02d}/{dd:02d}{m.group(4) or ''}"
+    return _parse_ts(txt)
+
+
+def _parse_latlng_text(s: Any) -> Optional[Tuple[float, float]]:
+    """單格座標字串 → (lat, lng)。嚴格：去全形逗號後須恰好 2 個浮點、不含中文（CJK）；
+    自動校正 lng,lat / lat,lng（緯度必在 [-90,90]）；超界 / (0,0) 回 None。
+
+    支援：'22.6273,120.3014'、'22.6273 120.3014'、'22.6273，120.3014'、'120.3014,22.6273'。
+    含中文（地址）或非「恰 2 浮點」一律回 None → 交回地址 geocode 路徑（避免把地址數字誤判）。
+    """
+    if _is_na(s):
+        return None
+    t = str(s).strip().replace("，", ",")
+    if not t or re.search(r"[一-鿿]", t):
+        return None
+    tokens = [x for x in re.split(r"[,\s]+", t) if x]
+    if len(tokens) != 2:
+        return None
+    try:
+        a, b = float(tokens[0]), float(tokens[1])
+    except (TypeError, ValueError):
+        return None
+    lat, lng = a, b
+    if abs(lat) > 90 and abs(lng) <= 90:   # 順序標反 → 對調
+        lat, lng = lng, lat
+    if abs(lat) > 90 or abs(lng) > 180:
+        return None
+    if lat == 0 and lng == 0:
+        return None
+    return (lat, lng)
+
+
+def _looks_like_addr(s: Any) -> bool:
+    """偵測門檻用：B 欄是否像「地址」（含中文 → 是）。純數字/代碼不算，
+    避免把電信 cell_id 數字欄誤算成位置而誤判格式。"""
+    if _is_na(s):
+        return False
+    t = str(s).strip()
+    return bool(t) and bool(re.search(r"[一-鿿]", t))
+
+
+def _iter_simple_time_location(df_raw) -> Iterable[Dict[str, Any]]:
+    """simple_time_location fallback（A 欄=時間, B 欄=位置, A/B 以外忽略）。
+
+    僅由 _iter_rows_excel 在「規則 B 失敗、本來要 skip sheet」時呼叫。
+    **不命中 → 不 yield 任何列**（呼叫端據此維持舊 skip 行為）；電信格式都過規則 B、
+    不會進到這裡，故零回歸。
+
+    偵測（避免誤判）：
+      - 有/無表頭：第 0 列 A 欄能否 _parse_simple_time → 不能則視為表頭、資料從第 1 列；
+        能（看起來像資料）→ 無表頭、第 0 列即資料（不誤當表頭）。
+      - 取前 20 個非全空資料列：A 可解析時間 ≥80% 且 B 可定位（latlng 或含中文地址）≥80%，
+        且至少 1 列「時間且位置皆有效」。少數壞列靠「分母夠大不跌破 80%」+ emit 逐列跳過容忍。
+    emit：時間壞列 skip（不讓整檔失敗）；B 為 latlng → 緯/經（免 geocode）；否則 → 基地台地址。
+    """
+    if df_raw is None or df_raw.shape[1] < 2 or len(df_raw) < 1:
+        return
+
+    def _empty(v) -> bool:
+        if v is None:
+            return True
+        if isinstance(v, str):
+            return not v.strip()
+        try:
+            import pandas as pd
+            return bool(pd.isna(v))
+        except Exception:
+            return False
+
+    def _cell(row, j):
+        try:
+            v = row.iloc[j]
+        except Exception:
+            return None
+        return None if _empty(v) else v
+
+    # 有無表頭：第 0 列 A 欄是否為時間（時間值 → 是資料、無表頭）
+    a0 = _cell(df_raw.iloc[0], 0)
+    has_header = (a0 is None) or (_parse_simple_time(a0) is None)
+    data_start = 1 if has_header else 0
+    if len(df_raw) <= data_start:
+        return
+
+    data = df_raw.iloc[data_start:]
+
+    # 取樣前 20 個「非全空」資料列算命中比例（A、B 皆空的列不計入分母）：
+    #   - 時間命中比例 ≥80%、位置命中比例 ≥80%（設計規格，從嚴避免誤判一般業者格式）
+    #   - 另要求至少 1 列「時間且位置皆有效」（乾淨列），避免零星巧合命中
+    # 壞列容忍靠「分母夠大時少數壞列不致跌破 80%」+ emit 階段逐列跳過，不靠放寬門檻。
+    n_sample = n_time = n_loc = n_clean = 0
+    for _, row in data.head(20).iterrows():
+        a = _cell(row, 0)
+        b = _cell(row, 1)
+        if a is None and b is None:
+            continue
+        n_sample += 1
+        a_time = (a is not None) and (_parse_simple_time(a) is not None)
+        b_loc = (b is not None) and (_parse_latlng_text(b) is not None or _looks_like_addr(b))
+        if a_time:
+            n_time += 1
+        if b_loc:
+            n_loc += 1
+        if a_time and b_loc:
+            n_clean += 1
+    if n_sample < 1 or n_clean < 1:
+        return
+    if n_time / n_sample < 0.8 or n_loc / n_sample < 0.8:
+        return
+
+    # 命中 → emit（lazy；yield 既有 canonical 別名，下游 normalize/geocode 不需改）
+    for _, row in data.iterrows():
+        a = _cell(row, 0)
+        b = _cell(row, 1)
+        t = _parse_simple_time(a)
+        if t is None:
+            continue   # 時間壞列 skipped，不讓整檔失敗
+        ll = _parse_latlng_text(b) if b is not None else None
+        if ll is not None:
+            yield {"開始時間": t, "緯度": ll[0], "經度": ll[1]}
+        else:
+            yield {"開始時間": t, "基地台地址": (None if b is None else str(b).strip())}
+
+
 def _iter_rows_excel(
     file_bytes: bytes,
     user_mapping: Optional[Dict[str, str]] = None,
@@ -350,6 +494,14 @@ def _iter_rows_excel(
 
         # 規則 B：scan 視窗內無夠強的 header → 視為非資料 sheet
         if best_match < MIN_HEADER_MATCHES:
+            # P8.2-fmt fallback：規則 B 失敗時試 simple_time_location 極簡格式
+            # （A=時間, B=位置）。僅在此嘗試 → 電信格式（過規則 B）零影響、零回歸。
+            emitted_simple = False
+            for srow in _iter_simple_time_location(df_raw):
+                emitted_simple = True
+                yield srow
+            if emitted_simple:
+                continue
             skipped_sheets.append(
                 (sheet_name, f"header matches < {MIN_HEADER_MATCHES} (best={best_match})")
             )
