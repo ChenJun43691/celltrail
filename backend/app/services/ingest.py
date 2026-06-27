@@ -217,9 +217,19 @@ def _iter_rows_csv(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
     for r in rdr:
         yield {(k or "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in (r or {}).items()}
 
-def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
+def _iter_rows_excel(
+    file_bytes: bytes,
+    user_mapping: Optional[Dict[str, str]] = None,
+) -> Iterable[Dict[str, Any]]:
     """
     讀取 .xlsx / .xltx / .xlsm / .xltm 為 row dict。
+
+    手動對應（2026-06-27）：`user_mapping`（{raw_col: system_field}）為使用者在
+    「系統不認識此格式」時手動指定的欄位對應。傳入時，header detection 規則 B
+    計分會把「使用者已指定的欄位」也算命中 —— 否則完全陌生的欄名（0 個已知
+    別名）會在規則 B 被整張 sheet 丟棄，輪不到後續 _apply_user_mapping rename，
+    手動對應形同虛設（這正是先前的結構性 bug）。raw key 照舊原樣 yield，rename
+    由呼叫端的 _apply_user_mapping 負責，分工不變。
 
     W2.1（2026-04-29）：多 sheet 支援
     ──────────────────────────────────────────
@@ -241,7 +251,8 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
       4. 若最高命中數 < M=2 → 規則 B 跳過（保留 W2.1 行為的概念）
       5. 若 sheet 總列數 < 5 → 規則 A 跳過（同上）
 
-    為何 N=25：實測最深的真表頭在 row 22，預留 buffer。
+    為何 N=30：實測最深的真表頭在 row 27（台哥大上網歷程 test2.xlsx，前面是
+              查詢條件 + 完整「使用者資料」PII 區塊），預留 buffer。
     為何 M=2：M=1 太鬆（PII sheet 的「地址」單欄會誤命中），
               M=3 太嚴（縮減 schema 會誤殺）。
     為何「首次出現」而非「最後出現」：嫌1 雙向歷程 row 10/11 重複表頭
@@ -278,8 +289,18 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
     except Exception:
         active_map = HEADER_MAP
 
-    SCAN_WINDOW = 25         # 表頭最多埋多深（實測 row 22 是當前已知最深）
+    SCAN_WINDOW = 30         # 表頭最多埋多深（台哥大上網歷程 test2.xlsx 真表頭在
+                             # row 27：前面有查詢條件 + 完整「使用者資料」PII 區塊；
+                             # 舊上限 25 會掃不到。放寬安全：PII/metadata 列命中數=0，
+                             # 真表頭（≥2 canonical 命中）仍穩定勝出，規則 B 不受影響）
     MIN_HEADER_MATCHES = 2   # 真表頭至少要命中幾欄才算數
+
+    # 手動對應：使用者指定的 raw 欄名（canon 後）視同「已知欄位」參與規則 B 計分
+    mapped_canon = {
+        _canon(str(k))
+        for k, v in (user_mapping or {}).items()
+        if v and v != "ignore"
+    }
 
     def _is_empty_cell(c) -> bool:
         if c is None:
@@ -320,7 +341,8 @@ def _iter_rows_excel(file_bytes: bytes) -> Iterable[Dict[str, Any]]:
             for c in row:
                 if _is_empty_cell(c):
                     continue
-                if active_map.get(_canon(str(c))):
+                canon = _canon(str(c))
+                if active_map.get(canon) or canon in mapped_canon:
                     n += 1
             if n > best_match:
                 best_match = n
@@ -432,6 +454,8 @@ _RAW2CANON = {
     "時間": "start_ts",          # W1 新增：「0801-0903彭奕翔網路歷程.xlsx」
     "始話時間": "start_ts",      # W1 新增：「電話通聯+歷程.xlsx」
     "始話日期時間": "start_ts",  # 雙向通聯：「11501-11505(雙向).xlsx」始話日期+時間合併欄
+    "進入基地台時間": "start_ts",  # 台哥大上網歷程「test2.xlsx」：到達該基地台覆蓋的時間（地圖以此為定位時間）
+    "離開基地台時間": "end_ts",    # 同上：離開該基地台的時間，補滿 end_ts 不遺失
     "通聯時間": "start_ts",      # W1 新增：常見通聯紀錄欄名
     "手機連到基地台的時間": "start_ts",  # W2.2：「電話通聯+歷程.xlsx」網路歷程 sheet 方言（此 carrier 常空，留作保險）
     "連到internet的時間":   "start_ts",  # W2.2：同上，此 carrier 真正帶值的時間欄
@@ -445,6 +469,7 @@ _RAW2CANON = {
     "站台地址": "cell_addr",
     "地址": "cell_addr",
     "起址": "cell_addr",          # W1 新增：「周蔓達上網歷程.xlsx」起話端位址
+    "離開基地台地址": "cell_addr",  # 台哥大上網歷程「test2.xlsx」：服務基地台地址
     "基地台編號": "cell_id",
     "基地臺編號": "cell_id",
     "基地台ID": "cell_id",       # Excel 範本有時用 ID 而非「編號」
@@ -453,6 +478,7 @@ _RAW2CANON = {
     "最終基地臺ID": "cell_id",
     "站台編號": "cell_id",
     "站碼": "cell_id",
+    "離開基地台編號": "cell_id",  # 台哥大上網歷程「test2.xlsx」：服務基地台編號（純 ID，非複合欄）
     "cell_id": "cell_id",
     "基地台": "cell_id",          # W1 新增：「0801-0903彭奕翔網路歷程.xlsx」
     "基地台/交換機": "cell_id",   # W1 新增：「電話通聯+歷程.xlsx」
@@ -920,8 +946,8 @@ def _match_col_idx(headers: List[str]) -> Dict[str, int]:
     """
     h = [_canon(x) for x in headers]
     cands = {
-        "start": [_canon(x) for x in ["開始連線時間", "開始時間", "起始時間", "GPS時間", "定位時間"]],
-        "end":   [_canon(x) for x in ["結束連線時間", "結束時間", "終止時間"]],
+        "start": [_canon(x) for x in ["開始連線時間", "開始時間", "起始時間", "GPS時間", "定位時間", "進入基地台時間"]],
+        "end":   [_canon(x) for x in ["結束連線時間", "結束時間", "終止時間", "離開基地台時間"]],
         "cellid":[_canon(x) for x in ["基地台編號", "基地臺編號", "站台編號", "站碼", "cell_id"]],
         "addr":  [_canon(x) for x in ["基地台地址", "基地臺地址", "站台地址", "地址"]],
         "sector":[_canon(x) for x in ["細胞名稱", "小區名稱"]],
@@ -1122,10 +1148,91 @@ _SYSTEM_TO_ALIAS = {
 }
 
 
+def _read_xlsx_top_rows(file_bytes: bytes, max_rows: int) -> List[tuple]:
+    """讀 active sheet 前 max_rows 列（values_only），含「假 dimension」防呆。
+
+    為何不直接 load_workbook(read_only=True)：部分電信匯出工具產生的 xlsx 會把
+    worksheet 的 <dimension> 標籤寫死成 'A1'（宣告整表只有一格）。openpyxl 在
+    read_only 模式為了省記憶體會「信任」這個邊界 → 只讀到 1 列、真資料全被跳過
+    （實測台哥大上網歷程 test2.xlsx：read_only 只回 1 列，read_only=False 回 21785 列）。
+
+    對策：先走 read_only 快路徑；若結果「退化」就 fallback 用 read_only=False 重開
+    （openpyxl 非 read_only 會自行重掃真實使用範圍，不信任 dimension）。
+
+    退化偵測（為何不是 len(rows)<=1）：對假 dimension 檔給定 max_row=N 時，
+    read_only 會回「N 列但每列幾乎全空」（信任 A1 邊界，A1 以外都讀成空），
+    不是只回 1 列。故改判「最寬的一列也只有 ≤1 個非空格」才是真退化徵狀
+    （實測 test2.xlsx：read_only 35 列最寬僅 1 格；read_only=False 則正常 10 欄）。
+
+    安全/成本：這兩個 peek 只在「解析失敗 → 診斷／手動對應」流程被呼叫（量小）；
+    正常檔 read_only 就會回多欄、不觸發 fallback，故全載入成本只在退化檔上付。
+    """
+    from openpyxl import load_workbook
+
+    def _grab(read_only: bool) -> List[tuple]:
+        wb = load_workbook(io.BytesIO(file_bytes), read_only=read_only, data_only=True)
+        try:
+            ws = wb.active
+            return list(ws.iter_rows(min_row=1, max_row=max_rows, values_only=True))
+        finally:
+            wb.close()
+
+    def _degenerate(rows: List[tuple]) -> bool:
+        widest = 0
+        for r in rows:
+            w = sum(1 for c in r if c is not None and str(c).strip() != "")
+            if w > widest:
+                widest = w
+                if widest > 1:
+                    return False
+        return widest <= 1
+
+    rows = _grab(True)
+    if _degenerate(rows):
+        rows = _grab(False)
+    return rows
+
+
+def _guess_header_row_idx(rows: List[tuple]) -> int:
+    """從前幾列「結構性」猜真表頭在第幾列（給 peek / 手動對應用，不靠別名）。
+
+    為什麼需要：手動對應的前提是「系統不認識此格式」，此時無法用 canonical
+    別名定位表頭（_iter_rows_excel 那套會 0 命中）。但電信歷程檔的版面有穩定
+    結構特徵可利用：真表頭前堆的查詢條件 / 個資區塊多半每列只有 1～3 個非空格
+    （key:value 形式），真表頭與其下的資料列則「較寬且寬度一致」。
+
+    演算法：取最寬列的寬度 max_w，門檻 thr=max(3, ⌈max_w/2⌉)；回傳第一個
+    「自己 ≥thr 且下一列也 ≥thr」的列索引（= 表頭，後面緊接資料）。都不滿足
+    就退回最寬的單列；空輸入回 0。
+
+    侷限（誠實標註）：此為啟發式，非保證正確；故手動對應 UI 仍同時秀「範例值」
+    讓使用者用眼睛確認哪欄是時間/地點，不單靠這個猜測。
+    """
+    if not rows:
+        return 0
+
+    def _width(r) -> int:
+        return sum(1 for c in r if c is not None and str(c).strip() != "")
+
+    widths = [_width(r) for r in rows]
+    max_w = max(widths)
+    if max_w <= 0:
+        return 0
+    thr = max(3, (max_w + 1) // 2)
+    for i in range(len(rows) - 1):
+        if widths[i] >= thr and widths[i + 1] >= thr:
+            return i
+    return max(range(len(rows)), key=lambda i: widths[i])
+
+
 def _peek_headers(filename: str, file_bytes: bytes) -> List[str]:
     """
-    淺薄抓取檔案的「第一個」表頭，僅供診斷與「手動對應」介面顯示。
-    不做 buried-header 偵測（W2.2 邏輯）— 此時只想讓使用者看到原始欄位。
+    抓取檔案表頭，供診斷與「手動對應」介面顯示欄位清單。
+
+    2026-06-27：改用 _guess_header_row_idx 結構性定位真表頭，不再死抓第一個
+    物理列。根因：台哥大上網歷程等格式真表頭埋在第 27 列（前面是大標題 + 查詢
+    條件 + 個資區塊），舊版抓第一列只會回大標題「台灣大哥大…查詢」一個假欄位，
+    害手動對應 modal 顯示錯的可對應欄位、根本無法操作。
     """
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     try:
@@ -1138,13 +1245,13 @@ def _peek_headers(filename: str, file_bytes: bytes) -> List[str]:
                     return [c.strip() for c in first.split(delim)]
             return [first.strip()] if first.strip() else []
         elif ext in {"xlsx", "xltx", "xlsm", "xltm"}:
-            from openpyxl import load_workbook
-            wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
-            ws = wb.active
-            first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
-            if first_row is None:
+            # 多讀幾列才能涵蓋埋深表頭（對齊 _iter_rows_excel SCAN_WINDOW=30 + buffer）
+            rows = _read_xlsx_top_rows(file_bytes, 35)
+            if not rows:
                 return []
-            return [str(c).strip() if c is not None else "" for c in first_row]
+            h = _guess_header_row_idx(rows)
+            header_row = rows[h]
+            return [str(c).strip() if c is not None else "" for c in header_row]
         elif ext == "pdf":
             if pdfplumber is None:
                 return []
@@ -1179,10 +1286,11 @@ def _peek_sample_rows(filename: str, file_bytes: bytes, n: int = 3) -> List[List
             for ln in lines[1:1 + n]:
                 out.append([clip(c) for c in ln.split(delim)])
         elif ext in {"xlsx", "xltx", "xlsm", "xltm"}:
-            from openpyxl import load_workbook
-            wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
-            ws = wb.active
-            for row in ws.iter_rows(min_row=2, max_row=1 + n, values_only=True):
+            # 與 _peek_headers 一致：先結構性定位真表頭，取其「下方」n 列當範例值，
+            # 否則埋深表頭檔會把個資/查詢條件列當成範例，手動對應更難猜。
+            rows = _read_xlsx_top_rows(file_bytes, 35 + n)
+            h = _guess_header_row_idx(rows)
+            for row in rows[h + 1: h + 1 + n]:
                 out.append([clip(c) for c in row])
         elif ext == "pdf":
             if pdfplumber is not None:
@@ -1275,7 +1383,9 @@ def parse_file_only(
             rows = _apply_user_mapping(rows, mapping)
         records = _parse_rows_to_records(target_id, rows)
     elif ext in {"xlsx", "xltx", "xlsm", "xltm"}:
-        rows = _iter_rows_excel(file_bytes)
+        # user_mapping 同時傳入 _iter_rows_excel：讓使用者指定的欄位在 header
+        # detection 規則 B 被算成命中，陌生格式的 sheet 才不會在 rename 前被丟棄。
+        rows = _iter_rows_excel(file_bytes, user_mapping=mapping)
         if mapping:
             rows = _apply_user_mapping(rows, mapping)
         records = _parse_rows_to_records(target_id, rows)
