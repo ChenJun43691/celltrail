@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> 最近一次更新：2026-06-28（P8.1：persisted /upload 改 chunk-based ingest + 檔名 XSS 修補 + 雲端正式驗證；對齊 commit 9f43006）
+> 最近一次更新：2026-06-28（P8.2：simple_time_location Excel 極簡格式支援 + 雲端驗證；P8.2 deployed，對齊 commit 44f9298）
 
 ---
 
@@ -208,6 +208,7 @@ bash scripts/rebuild_venv.sh   # 核彈級重建，約 5 分鐘
 | **P7** | 專案分享連結：30 分鐘臨時免登入唯讀檢視（`share_links` 表 + `api/share.py` + `frontend/share.html`）；見下節五-M。同 commit 另含 index.html「回到先前的專案」下拉、measure 距離標籤改用 leaflet tooltip、admin 核准流程顯示順序修正、register 帳號 placeholder 文案調整 |
 | **P8**（2026-06-27） | 台哥大上網歷程格式（進入/離開基地台）+ 手動對應結構性修復 + geocode 並行/SQL 持久快取 + 雲端大檔上限發現；見下節五-P/Q/R 與七-8 |
 | **P8.1**（2026-06-28，commit 9f43006） | persisted `/upload` 存檔路徑改 **chunk-based ingest**（`_ingest_rows_stream`）：正式存檔路徑也吃到 `geocode.lookup_bulk`（並行 + SQL 快取）、每塊 normalize→bulk geocode→executemany→釋放，解 H1 與 OOM。chunk 由 `INGEST_CHUNK_SIZE` 控制（預設 800，合理 100–5000，非法 fallback 800）。另修 upload queue 檔名 `f.name` 未跳脫的 self-XSS（改 `escH`）。新增 20 條測試（`test_ingest_chunked_stream.py`），pytest **286 passed**。**已部署 Render 並以完整 test3 實測通過**（見五-T、七-8）。 |
+| **P8.2**（2026-06-28，commit 44f9298） | 新增 **`simple_time_location` Excel 極簡格式**支援：A 欄=時間、B 欄=位置（地址或**單格經緯度**）、A/B 以外忽略、**支援有表頭與無表頭**（靠結構與內容判斷、不靠檔名）。落點為 **`_iter_rows_excel` 規則 B 失敗後的 fallback**（電信格式過規則 B、不進 fallback → 零回歸）。新增 `_parse_simple_time`（民國年隔離、不改 `_parse_ts`）、`_parse_latlng_text`（單格座標）、`_iter_simple_time_location`（偵測+emit）。門檻 **time ratio ≥80% 且 location ratio ≥80%**。新增 15 條測試（`test_ingest_simple_time_location.py`），pytest **301 passed**。**已部署 Render 並以 simple 檔正式 `/upload` 實測通過**（見五-U、七-9）。 |
 
 ### 各真實樣本當前 normalize 通過率
 
@@ -222,6 +223,18 @@ bash scripts/rebuild_venv.sh   # 核彈級重建，約 5 分鐘
 | `test2.xlsx` / `test3.xlsx`（台哥大上網歷程） | 100%（各 21757/21758 列全解） | 2026-06-27：`進入/離開基地台` 系列別名 + SCAN_WINDOW→30（真表頭埋 row 27）+ 假 dimension peek fallback。**注意：雲端單次上傳受記憶體/逾時限制，>~5000 筆需分批**（見七-8） |
 
 **結論**：手邊所有真實樣本要嘛 100%、要嘛達資料物理上限。**ingest pipeline 沒有已知未修的 silent bug**。解析無筆數上限；雲端「上傳→geocode→回應」整段才有資源上限（七-8）。
+
+### 支援格式一覽（ingest 能吃的檔案格式）
+
+**容器**：CSV/TXT/TSV、Excel（xlsx/xltx/xlsm/xltm）、PDF。**業者欄位方言**見五-A / 五-P（台哥大、雙向通聯、中華上網、GPS 軌跡…，皆 header-alias 驅動）。
+
+**`simple_time_location`（P8.2 極簡格式）**：
+- **Excel only**（目前**不支援 CSV**）。
+- **A 欄 = 時間**、**B 欄 = 位置（地址或經緯度）**、**A/B 以外一律忽略**。
+- **可有表頭、可無表頭**（靠結構與內容判斷、不靠檔名）。
+- 時間支援：`2026/06/28 13:20`、`2026-06-28 13:20:30`、`115/06/28 13:20`（民國年）、`6/28/2026 1:20 PM`（美式）。
+- 經緯度（**單格**）支援：`lat,lng`、`lng,lat`（自動對調）、半形逗號、全形逗號、空白分隔；B 為地址則走 geocode。
+- 落點：**`_iter_rows_excel` 規則 B 失敗後的 fallback**（`_iter_simple_time_location`）；命中門檻 time ≥80% 且 location ≥80%。詳見五-U / 七-9。
 
 ---
 
@@ -439,6 +452,21 @@ persisted `/upload` chunk-based ingest（五-P8.1 milestone）已部署並在 Re
 - `parse-only` / `parse-temp` 預覽 payload 仍偏大（同時回 `_records` + GeoJSON），大檔預覽仍可能 OOM（待辦 #0）。
 - chunk 原子性尚未用 `conn.transaction()` 強化：某塊 `executemany` 中途失敗時，`inserted` 可能少報（誠實面安全，不多報）；本次雲端實測未觸發（無 DB 失敗）。
 
+### U. P8.2 雲端驗證結果（2026-06-28）
+
+`simple_time_location` 極簡格式已部署 Render（commit 44f9298）並經**正式 `POST /api/upload`**（CIDadmin token，非 parse-only）實測。
+
+**測試檔**（1 表頭 + 2 資料列）：
+- row1 = **民國年 + 單格經緯度**：`115/06/28 13:20` + `22.6273,120.3014`
+- row2 = **ISO 時間 + 中文地址**：`2026-06-28 13:25:30` + `高雄市前金區中正四路211號`
+
+**驗證結果（皆確認事實）**：
+- `POST /api/upload` → HTTP **200**、`total=2 / inserted=2 / skipped=0 / errors=0`。
+- **map-layers** `total=2`：row1 落點 `[120.3014, 22.6273]`（民國 115→2026、單格經緯度**免 geocode**、addr=None）；row2 落點 `[120.293, 22.628]`（中文地址 **geocode 成功**、cell_addr 保留）。
+- **coverage** `with_geom=2 / without_geom=0`（定位率 100%）；時區 TPE↔UTC 正確（13:20→05:20Z）。
+- 測試 project **`DELETE /api/projects/_simple_verify`** 軟刪成功（`affected_rows=2`），刪除後 coverage `total=0`。
+- **結論**：simple_time_location 走正式 `/upload`（P8.1 chunked 路徑）端到端通過；民國年、單格經緯度、中文地址 geocode 全部正確。
+
 ---
 
 ## 六、待辦事項（依優先級）
@@ -538,6 +566,17 @@ test3.xlsx 經正式 `POST /api/upload` 實測**（CIDadmin token、非 parse-on
 > `GEO_GOOGLE_CONCURRENCY` env（預設 10）可在 Render 調高加速 geocode（仍受 Google
 > ~50 QPS 配額）。`INGEST_CHUNK_SIZE`（預設 800）可調存檔分塊大小。parse-only 限
 > **20 req/hr/IP**，盲測大檔很快用完配額。
+
+### 9. simple_time_location 格式（P8.2）注意事項
+
+**【已確認】**（Render 雲端 + 正式 `/api/upload` 實測，見五-U）：
+- `simple_time_location` 已在雲端驗證成功；正式 `/api/upload` 可解析 **民國年**、**單格經緯度（免 geocode）**、**中文地址（走 geocode）**。
+- `map-layers` / `coverage` 讀回正常（測試檔 2 列全定位）。
+
+**【已知限制】**：
+- **CSV 尚未支援**（`simple_time_location` 只接 Excel，走 `_iter_rows_excel`；CSV 走 `_iter_rows_csv` 未接此 fallback）。
+- **headerless 單列檔**仍受 `_iter_rows_excel` 規則 A（`rows<2` 跳過）限制：無表頭需 ≥2 列；有表頭單筆（表頭+1 資料=2 列）可解。
+- **canonical 地址表頭 + 經緯度內容的混用 edge**尚未處理：若表頭用 canonical 別名（如「地址」，過規則 B 走正常路徑）但 B 內容其實是經緯度，會被當地址 geocode（可能失敗）。simple 偵測只在規則 B 失敗時觸發，故不涵蓋此罕見混用。
 
 ---
 
