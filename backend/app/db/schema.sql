@@ -389,6 +389,44 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ---------- Preview Evidence Artifact（P9A，2026-07-01） ----------
+-- preview 的「加密原始檔 + 雙 hash + provenance」暫存表；供「儲存為專案」時 server
+-- 端重解析為權威來源，補 save-records 的證據鏈缺口。詳見 migration_preview_artifacts.sql。
+--   - internal id = BIGSERIAL；external preview_id = token（不當 FK）。
+--   - raw_enc = AES-256-GCM(gzip(raw))（crypto_box）；短 TTL（expires_at）+ 背景清理。
+--   - preview_artifact.py 的 _ensure_preview_table() 也會自動建立此表（雲端免手動）。
+CREATE TABLE IF NOT EXISTS preview_artifacts (
+  id                    BIGSERIAL   PRIMARY KEY,
+  preview_id            TEXT UNIQUE NOT NULL,
+  filename              TEXT        NOT NULL,
+  ext                   TEXT        NULL,
+  size_bytes            BIGINT      NOT NULL,
+  sha256_full           TEXT        NOT NULL,
+  parsed_records_hash   TEXT        NOT NULL,
+  row_count             INT         NOT NULL,
+  storage_kind          TEXT        NOT NULL,
+  raw_enc               BYTEA       NULL,
+  storage_key           TEXT        NULL,
+  enc_alg               TEXT        NOT NULL,
+  parser_type           TEXT        NOT NULL,
+  provenance            JSONB       NOT NULL DEFAULT '{}'::jsonb,
+  created_by            BIGINT      NULL REFERENCES users(id) ON DELETE SET NULL,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at            TIMESTAMPTZ NOT NULL,
+  system_sealed_at      TIMESTAMPTZ NULL,
+  sealed_at             TIMESTAMPTZ NULL,
+  sealed_by             BIGINT      NULL,
+  supervisor_sealed_at  TIMESTAMPTZ NULL,
+  supervisor_sealed_by  BIGINT      NULL,
+  consumed_at           TIMESTAMPTZ NULL,
+  consumed_project      TEXT        NULL,
+  consumed_target       TEXT        NULL,
+  revoked_at            TIMESTAMPTZ NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_preview_artifacts_pid     ON preview_artifacts (preview_id);
+CREATE INDEX        IF NOT EXISTS idx_preview_artifacts_expires ON preview_artifacts (expires_at);
+CREATE INDEX        IF NOT EXISTS idx_preview_artifacts_creator ON preview_artifacts (created_by);
+
 -- ---------- Cell Tower Reference Table（P4.1） ----------
 -- 本地基地台座標對照表：cell_id → lat/lng
 -- 用途：geocode 前置查詢，命中即直接用，不打 Google/OSM API
