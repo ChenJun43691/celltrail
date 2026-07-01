@@ -236,6 +236,7 @@ from app.api.carrier_profile import router as carrier_profile_router  # noqa: E4
 from app.api.parse_only      import router as parse_only_router       # noqa: E402
 from app.api.format_reports  import router as format_reports_router   # noqa: E402
 from app.api.share           import router as share_router            # noqa: E402
+from app.api.preview          import router as preview_router          # noqa: E402
 
 app.include_router(health_router,          prefix="/api/health", tags=["health"])
 app.include_router(auth_router,            prefix="/api",        tags=["auth"])
@@ -254,6 +255,7 @@ app.include_router(carrier_profile_router, prefix="/api",        tags=["carrier-
 app.include_router(parse_only_router,      prefix="/api",        tags=["parse-only"])
 app.include_router(format_reports_router,  prefix="/api",        tags=["format-reports"])
 app.include_router(share_router,           prefix="/api",        tags=["share"])
+app.include_router(preview_router,         prefix="/api",        tags=["preview"])
 
 
 @app.get("/api")
