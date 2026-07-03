@@ -28,6 +28,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app.db.session import pool, get_conn
 from app.services.limiter import limiter
 from app.security import SECRET_KEY, AUTH_ENABLED
+from app.services import preview_artifact
+from app.services.audit import write_audit
 
 logger = logging.getLogger("celltrail")
 
@@ -45,26 +47,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[DB] pool warmup error: {type(e).__name__}: {e}")
 
-    # APScheduler：每 6 小時 ping 一次 DB，保 Supabase 免費方案不被暫停。
-    # 整段包 try-catch；pytest 下不啟動（測試不需保活，避免背景執行緒干擾）。
+    # APScheduler 背景 job（keepalive 每 6h + preview cleanup 每 10m）。
+    # 整段包 try-catch；pytest 下不啟動（測試不需，避免背景執行緒干擾）。
     if "pytest" not in sys.modules:
         try:
             scheduler = BackgroundScheduler(daemon=True)
-            scheduler.add_job(
-                _supabase_keepalive,
-                trigger="interval",
-                hours=6,
-                id="supabase_keepalive",
-                next_run_time=datetime.now(timezone.utc),  # 啟動後立即跑一次，之後每 6h
-                max_instances=1,
-                coalesce=True,
-            )
+            _register_jobs(scheduler)
             scheduler.start()
             app.state.keepalive_scheduler = scheduler
-            print("[keepalive] scheduler started（每 6 小時 ping 一次 DB）")
+            print("[scheduler] started（keepalive 6h + preview cleanup 10m）")
         except Exception as e:
             app.state.keepalive_scheduler = None
-            print(f"[keepalive] scheduler 啟動失敗（不影響主程式）: {type(e).__name__}: {e}")
+            print(f"[scheduler] 啟動失敗（不影響主程式）: {type(e).__name__}: {e}")
     else:
         app.state.keepalive_scheduler = None
 
@@ -176,6 +170,44 @@ def _supabase_keepalive() -> None:
         print("[keepalive] Supabase ping OK")
     except Exception as e:
         print(f"[keepalive] ping failed: {type(e).__name__}: {e}")
+
+
+# ---------- Preview cleanup（P9A A.4）----------
+def _preview_cleanup() -> None:
+    """清除過期 preview_artifacts（APScheduler 每 10 分呼叫）。
+
+    全程包 try/except：清理失敗只寫 log，絕不 crash scheduler / app。
+    n>0：log + 寫一筆 preview.cleanup summary audit（系統操作，user=None）；
+    n==0：只 log，不寫 audit。（每筆 preview.expire 留待 P9B / custody ledger。）
+    """
+    try:
+        n = preview_artifact.cleanup_expired()
+        if n > 0:
+            print(f"[preview_cleanup] purged {n} expired preview artifact(s)")
+            write_audit(action="preview.cleanup", details={"deleted": n}, status_code=200)
+        else:
+            print("[preview_cleanup] none expired")
+    except Exception as e:
+        print(f"[preview_cleanup] failed: {type(e).__name__}: {e}")
+
+
+def _register_jobs(scheduler) -> None:
+    """把背景 job 掛上傳入的 scheduler（keepalive + preview cleanup）。
+
+    抽成 helper 供測試直接驗證註冊（不需真的 start scheduler）。keepalive 參數不變。
+    """
+    scheduler.add_job(
+        _supabase_keepalive,
+        trigger="interval", hours=6, id="supabase_keepalive",
+        next_run_time=datetime.now(timezone.utc),  # 啟動後立即跑一次，之後每 6h
+        max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        _preview_cleanup,
+        trigger="interval", minutes=10, id="preview_cleanup",
+        next_run_time=datetime.now(timezone.utc),  # 啟動後立即清一次，之後每 10m
+        max_instances=1, coalesce=True,
+    )
 
 
 # ---------- FastAPI App ----------
