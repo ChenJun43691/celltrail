@@ -129,14 +129,25 @@ GMAPS_LANG = os.getenv("GOOGLE_LANGUAGE", "zh-TW")
 # 序列逐筆打 Google 累積 >110s → 超過 Render 請求上限 502。並行把它壓進請求窗口。
 GEO_GOOGLE_CONCURRENCY = max(1, int(os.getenv("GEO_GOOGLE_CONCURRENCY", "10") or "10"))
 
+
+def _google_enabled() -> bool:
+    """Google geocode 硬性開關（**call-time** 讀 env，避免 module-level 常數造成 monkeypatch/
+    runtime 不一致）。`GEO_GOOGLE_ENABLED` ∈ {0,false,no,off}（不分大小寫、去前後空白）→ 關閉；
+    其餘值與未設定 → 啟用（向後相容）。關閉時保證不建立任何 Google HTTP request。"""
+    return os.getenv("GEO_GOOGLE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _google_geocode(addr: str) -> Optional[Tuple[float, float]]:
     """
     打 Google Maps Geocoding API。失敗一律回 None（不 raise），
     但會把原因 print 到 stdout（uvicorn 終端可見），方便排查：
-      - API key 未設定 / 無效
+      - Google disabled（GEO_GOOGLE_ENABLED=0）/ API key 未設定 / 無效
       - status != OK（REQUEST_DENIED、OVER_QUERY_LIMIT、ZERO_RESULTS ...）
       - HTTP / 網路 / JSON 例外
     """
+    if not _google_enabled():
+        # 硬止血：GEO_GOOGLE_ENABLED 關閉 → 在建立任何 requests 呼叫之前即回傳（靜默，無錯誤 log）
+        return None
     if not GMAPS_KEY:
         print("[geocode] GOOGLE_MAPS_API_KEY 未設定，跳過 Google geocode")
         return None
@@ -413,22 +424,25 @@ def lookup_bulk(
                     _sql_cache_set_bulk(pending_writes)
                     pending_writes.clear()
 
-        # Google：I/O bound，並行大幅縮短總時間（thread-safe：requests + 唯讀 GMAPS_KEY）
-        workers = min(GEO_GOOGLE_CONCURRENCY, len(uniq_simplified))
-        with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = {ex.submit(_google_geocode, s): s for s in uniq_simplified}
-            for fut in _cf.as_completed(futs):
-                s = futs[fut]
-                try:
-                    ll = fut.result()
-                except Exception as e:
-                    print(f"[bulk_geocode] google parallel error: {type(e).__name__}: {e} addr={s!r}")
-                    ll = None
-                _record(s, ll)
-        n_google_call = len(uniq_simplified)
+        # Google：I/O bound，並行大幅縮短總時間（thread-safe：requests + 唯讀 GMAPS_KEY）。
+        # **僅在 GEO_GOOGLE_ENABLED 啟用時執行**；關閉時完全跳過 ThreadPool、不提交任何
+        # _google_geocode task → 硬止血、零 Google 請求（n_google_call 維持 0）。
+        if _google_enabled():
+            workers = min(GEO_GOOGLE_CONCURRENCY, len(uniq_simplified))
+            with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(_google_geocode, s): s for s in uniq_simplified}
+                for fut in _cf.as_completed(futs):
+                    s = futs[fut]
+                    try:
+                        ll = fut.result()
+                    except Exception as e:
+                        print(f"[bulk_geocode] google parallel error: {type(e).__name__}: {e} addr={s!r}")
+                        ll = None
+                    _record(s, ll)
+            n_google_call = len(uniq_simplified)
 
-        # Google 失敗者 → OSM 備援。**刻意序列**：Nominatim 政策 1 req/s（_osm_geocode
-        # 內含 sleep），並行會違規且可能被 429 封；Google 命中率高時這串通常很短。
+        # 尚未解出者（Google 關閉時=全部；啟用時=Google 失敗者）→ OSM 備援。**刻意序列**：
+        # Nominatim 政策 1 req/s（_osm_geocode 內含 sleep），並行會違規且可能被 429 封。
         osm_targets = [s for s in uniq_simplified if geo_map.get(s) is None]
         for s in osm_targets:
             _record(s, _osm_geocode(s))

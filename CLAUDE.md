@@ -40,6 +40,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `GEO_OSM_FALLBACK=1` + `NOMINATIM_EMAIL=...`（OSM 備援已啟用）
 - `GOOGLE_MAPS_API_KEY`、`SECRET_KEY`（JWT 簽章，production 必須改）
 - `GEO_GOOGLE_CONCURRENCY`（P8，預設 10）：bulk geocode 並行打 Google 的併發數
+- **`GEO_GOOGLE_ENABLED`（2026-07-03，硬性停用 Google Geocoding）**：
+  - 值 ∈ `{0, false, no, off}`（不分大小寫、去前後空白）→ **關閉**；未設定或其他值 → 啟用（向後相容）。
+  - 關閉時 **不建立任何 Google HTTP request、也不建立 Google bulk ThreadPool task**（`_google_geocode` 在送出前即回 None；`lookup_bulk` 跳過整個並行 Google 階段）。
+  - 關閉後查詢順序變為：**`cell_towers` → `geocode_cache` → OSM → unlocated**（本地表與 SQL 快取優先序不變）。
+  - **防止 Google 費用復燃**：production（Render）應明確設 `GEO_GOOGLE_ENABLED=0`（比只在 Google Console 停用更徹底——連被拒的請求都不送）。
+  - **建議的「不用 Google」production 設定**：
+    ```
+    GEO_GOOGLE_ENABLED=0
+    GEO_OSM_FALLBACK=1
+    ```
 
 ### 雲端部署架構（production）— **使用者主要在這裡測試**
 
