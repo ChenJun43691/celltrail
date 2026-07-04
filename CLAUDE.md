@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> 最近一次更新：2026-06-28（P8.2：simple_time_location Excel 極簡格式支援 + 雲端驗證；P8.2 deployed，對齊 commit 44f9298）
+> 最近一次更新：2026-07-05（P9A：Preview Evidence Artifact backend 完成 + 正式環境端到端驗證；Google Geocoding 以 `GEO_GOOGLE_ENABLED=0` 硬性停用；deployed，對齊 commit aa3125e）
 
 ---
 
@@ -219,6 +219,7 @@ bash scripts/rebuild_venv.sh   # 核彈級重建，約 5 分鐘
 | **P8**（2026-06-27） | 台哥大上網歷程格式（進入/離開基地台）+ 手動對應結構性修復 + geocode 並行/SQL 持久快取 + 雲端大檔上限發現；見下節五-P/Q/R 與七-8 |
 | **P8.1**（2026-06-28，commit 9f43006） | persisted `/upload` 存檔路徑改 **chunk-based ingest**（`_ingest_rows_stream`）：正式存檔路徑也吃到 `geocode.lookup_bulk`（並行 + SQL 快取）、每塊 normalize→bulk geocode→executemany→釋放，解 H1 與 OOM。chunk 由 `INGEST_CHUNK_SIZE` 控制（預設 800，合理 100–5000，非法 fallback 800）。另修 upload queue 檔名 `f.name` 未跳脫的 self-XSS（改 `escH`）。新增 20 條測試（`test_ingest_chunked_stream.py`），pytest **286 passed**。**已部署 Render 並以完整 test3 實測通過**（見五-T、七-8）。 |
 | **P8.2**（2026-06-28，commit 44f9298） | 新增 **`simple_time_location` Excel 極簡格式**支援：A 欄=時間、B 欄=位置（地址或**單格經緯度**）、A/B 以外忽略、**支援有表頭與無表頭**（靠結構與內容判斷、不靠檔名）。落點為 **`_iter_rows_excel` 規則 B 失敗後的 fallback**（電信格式過規則 B、不進 fallback → 零回歸）。新增 `_parse_simple_time`（民國年隔離、不改 `_parse_ts`）、`_parse_latlng_text`（單格座標）、`_iter_simple_time_location`（偵測+emit）。門檻 **time ratio ≥80% 且 location ratio ≥80%**。新增 15 條測試（`test_ingest_simple_time_location.py`），pytest **301 passed**。**已部署 Render 並以 simple 檔正式 `/upload` 實測通過**（見五-U、七-9）。 |
+| **P9A**（2026-07-05，deployed commit aa3125e） | **Preview Evidence Artifact backend**：A.1 加密盒（gzip→AES-256-GCM，`PREVIEW_ARTIFACT_KEY`，fail-closed，commit `0d38198`）+ A.2 `preview_artifacts` 儲存基礎（internal BIGSERIAL / external preview_id / raw SHA-256 / canonical parsed hash / parser provenance / TTL / system·analyst·supervisor seal 欄；<5MB BYTEA、5–50MB object storage 未實作、>50MB 不支援，commit `89a9e6c`）+ A.3 五端點 API（create/read/seal/save/delete，response 不回 `_records`，save 由 server 重讀原檔驗 SHA-256 再解析→register evidence→chunked ingest，consumed/revoked/expired 回 410，commit `f541ae6`）+ A.4 每 10 分鐘過期清理排程（啟動即跑一次、fail-safe、`preview.cleanup` audit，commit `aa3125e`）+ Google 費用硬停（`GEO_GOOGLE_ENABLED=0`，commit `50b558b`，runtime log `google_calls=0`）。**A.6 正式環境端到端 smoke 全通過**（health 200 / create·read·seal·save 200 / evidence 建立 / map-layers·coverage 2/2 / evidence PDF / consumed·revoked 再讀 410 / 六類 preview audit 確認 / 測試 project 正式 DELETE 軟刪）。詳見下節「P9A Preview Evidence Artifact」。**尚未完成**：A.5 object storage、前端 cutover、mapping-aware preview、guest preview、`save-records` deprecation、supervisor seal/custody ledger、`geocoded_cell_estimates` 推估分表。 |
 
 ### 各真實樣本當前 normalize 通過率
 
@@ -476,6 +477,93 @@ persisted `/upload` chunk-based ingest（五-P8.1 milestone）已部署並在 Re
 - **coverage** `with_geom=2 / without_geom=0`（定位率 100%）；時區 TPE↔UTC 正確（13:20→05:20Z）。
 - 測試 project **`DELETE /api/projects/_simple_verify`** 軟刪成功（`affected_rows=2`），刪除後 coverage `total=0`。
 - **結論**：simple_time_location 走正式 `/upload`（P8.1 chunked 路徑）端到端通過；民國年、單格經緯度、中文地址 geocode 全部正確。
+
+---
+
+## P9A Preview Evidence Artifact（2026-07-05，deployed commit `aa3125e`）
+
+**目標**：把「臨時查看／預覽」升級為有證據完整性保障的 **preview artifact**——server 端加密保存原始檔與 canonical parsed hash、走 seal（分級封存）與 save（server 重讀原檔驗證後才落 evidence），前端不再持有 `_records`、不再把解析後資料回送 server。P9A 完成 **backend + 正式環境端到端驗證**；前端切換與進階流程列於「尚未完成」。
+
+### A.1 — Encryption box
+
+- commit：`0d38198`
+- gzip → AES-256-GCM
+- blob layout：`[version:1][nonce:12][ciphertext+tag:n]`
+- env：`PREVIEW_ARTIFACT_KEY`
+- 缺失或格式錯誤時 **fail-closed**（拒絕運作，不 silent 降級）
+
+### A.2 — Artifact storage foundation
+
+- commit：`89a9e6c`
+- `preview_artifacts` table
+- internal `BIGSERIAL id`（內部主鍵）
+- external `preview_id`（對外不可猜 token）
+- raw SHA-256（原始檔雜湊）
+- canonical parsed-record hash（解析後正規化記錄雜湊）
+- parser provenance（解析器來源／版本標記）
+- TTL lifecycle（到期治理）
+- system / analyst / supervisor seal 欄位（分級封存）
+- `<5MB` 使用 DB BYTEA
+- `5–50MB` object storage **尚未實作**（A.5）
+- `>50MB` 不支援 preview
+
+### A.3 — Preview API
+
+- commit：`f541ae6`
+- 端點：
+  - `POST /api/preview`
+  - `GET /api/preview/{preview_id}`
+  - `POST /api/preview/{preview_id}/seal`
+  - `POST /api/preview/{preview_id}/save`
+  - `DELETE /api/preview/{preview_id}`
+- response **不回 `_records`**
+- **save 時由 server 重新讀 raw file、驗證 SHA-256、重新解析、register evidence、chunked ingest**（server 為 authoritative source）
+- consumed / revoked / expired 一律回 **410**
+- guest 與 mapping-aware preview **尚未支援**
+
+### A.4 — Cleanup scheduler
+
+- commit：`aa3125e`
+- 每 10 分鐘執行
+- 啟動時立即執行一次
+- fail-safe，不影響 app（排程失敗不拖垮主服務）
+- 寫 `preview.cleanup` summary audit
+
+### Google cost hard stop
+
+- commit：`50b558b`
+- `GEO_GOOGLE_ENABLED=0`
+- 關閉時：
+  - **不建立 Google HTTP request**
+  - **不建立 Google ThreadPool task**
+  - 查詢順序為：`cell_towers → geocode_cache → OSM → unlocated`
+- production runtime log 已確認 `google_calls=0`
+
+### A.6 — Production verification（皆確認事實）
+
+- live deploy commit：`aa3125e`
+- `/api/health/`：**200**（PostgreSQL / PostGIS 正常；Redis 未連線，但未影響本次核心功能）
+- Preview create：**200**
+- Preview read：**200**
+- Analyst seal：**200**
+- Preview save：**200** → evidence 建立成功
+- map-layers：成功
+- coverage：**2/2 有座標**
+- evidence report：合法 PDF
+- consumed preview 再讀：**410**
+- revoked preview 再讀：**410**
+- audit actions 已確認：`preview.create` / `preview.read` / `preview.seal` / `preview.consume` / `preview.delete` / `preview.cleanup`
+- 測試 project 已透過正式 DELETE API 軟刪；未保留測試資料；未輸出任何 production secret
+
+### 尚未完成（P9 後續）
+
+- **A.5 object storage branch**（5–50MB 走 object storage）
+- **前端 Preview Artifact cutover**（前端仍走舊 parse-temp/parse-only + `_records` + save-records）
+- **mapping-aware preview**（A.3 目前不收 mapping）
+- **guest preview**（A.3 目前 auth required）
+- **舊 `save-records` deprecation**
+- **supervisor seal workflow / custody ledger**（監督層封存與保管鏈）
+- **`geocoded_cell_estimates` 推估座標分表**
 
 ---
 
