@@ -674,6 +674,7 @@
   <script src="https://cdn.jsdelivr.net/npm/nouislider@15.7.1/dist/nouislider.min.js"></script>
   <script src="https://unpkg.com/leaflet.markercluster@1.4.1/dist/leaflet.markercluster.js"></script>
   <script src="./api.js"></script>
+  <script src="./preview-state.js"></script>
 
   <script>
     // ── 全域錯誤捕捉：任何未捕捉的錯誤都不該讓整個 UI 崩潰 ──
@@ -812,7 +813,13 @@
     let _sessionMode = null;
     let _sessionProjectId = null;  // 專案模式下的 project_id
     // _tempRecordsStore：target_id → _records[]（parse-temp 回傳的完整紀錄，供儲存用）
+    // 仍服務 manual mapping / guest 舊路徑；Phase 2A.2 不移除。
     const _tempRecordsStore = new Map();
+    // _previewArtifactStore（P9 Phase 2A.2）：target_id → PreviewArtifactState[]
+    // 只服務「登入 + temp 模式 + 自動辨識成功」的 Preview Artifact 新流程。
+    // 只存 preview_id + metadata（allowlist），絕不存 _records。多檔同 target → 陣列。
+    const _previewArtifactStore = new Map();
+    const _PF = window.CT_PREVIEW_FLOW;  // 純狀態/編排邏輯（preview-state.js）
 
     const SESSION_MODE_KEY = 'ct_session_mode';  // localStorage key for remember
 
@@ -1130,58 +1137,80 @@
       });
     }
 
-    // ── 臨時模式：upload → parse-temp → appendGeoJsonToSeries ──
-    async function doTempUpload(files) {
-      let totalPlotted = 0, anyFail = null;
-      for (const file of files) {
-        const tid = file.name.replace(/\.[^.]+$/, '');
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('target_id', tid);
-        setUploadState('uploading', file.name);
-        try {
-          const res = await fetch(
-            `${API_BASE}/upload/parse-temp`,
-            { method:'POST', headers: { ...authHeaders() }, body: fd }
-          );
-          if (res.status === 422) {
-            const j = await res.json().catch(() => ({}));
-            if (j.diagnosis) {
-              // 格式無法辨識 → 智慧診斷 modal
-              setUploadState('error', '無法解析此檔案，請查看診斷結果');
-              showDiagnosisModal({
-                filename: file.name,
-                file,
-                headers: (j.diagnosis || {}).available_columns || [],
-                diagnosis: j.diagnosis || {},
-              });
-            } else {
-              // 其他 422（如加密 / 密碼保護檔）→ 直接顯示後端清楚訊息
-              const msg = j.detail || '此檔案無法解析';
-              setUploadState('error', msg);
-              showToast(msg, 'error', 6000);
-            }
-            continue;
-          }
-          if (!res.ok) {
-            const j = await res.json().catch(() => ({}));
-            throw new Error(j.detail || 'HTTP ' + res.status);
-          }
-          const geo = await res.json();
-          _tempRecordsStore.set(tid, geo._records || []);
-          appendGeoJsonToSeries(geo);
-          totalPlotted += geo.plotted || 0;
-        } catch(e) {
-          anyFail = e.message;
-          console.error('[parse-temp]', e);
-        }
+    // ── preview 錯誤 → 使用者文案（委派純模組；不含 token/header/raw）──
+    function _previewErrorMessage(err) { return _PF.previewErrorMessage(err); }
+
+    // ── temp preview 成功後的最小提示（Phase 2A.2 §10）──
+    function _showPreviewReady(summary) {
+      // 取最早到期時間（多檔時最保守）
+      let earliest = null;
+      (summary.items || []).forEach(({ item }) => {
+        if (!item.expires_at) return;
+        const t = new Date(item.expires_at);
+        if (!earliest || t < earliest) earliest = t;
+      });
+      const expText = earliest ? earliest.toLocaleString() : '—';
+      showToast(
+        `🔒 已建立存證預覽 ｜ 有效期限：${expText} ｜ ` +
+        `共 ${summary.totalTotal} 筆，已定位 ${summary.plottedTotal}，未定位 ${summary.skippedTotal}`,
+        'success', 6000
+      );
+    }
+
+    // ── 撤銷尚未存證的 preview（Phase 2A.2 §9）──
+    //  明確取消/重置時呼叫；只撤銷 READY 且未 saved（consumed/saved 不動）。
+    //  刻意「不」掛 beforeunload：卸載時 fetch 不可靠，後端 TTL cleanup 為保底。
+    //  目前無專屬「清除暫存」按鈕 → 先提供可呼叫 helper，明確取消 UI 留待後續。
+    async function revokePendingPreviews() {
+      if (!_previewArtifactStore.size) return;
+      const res = await _PF.runRevokePending(_previewArtifactStore, {
+        revokePreview: (pid) => window.CT_PREVIEW.revokePreview(pid),
+      });
+      if (res.failed.length) {
+        showToast(`部分預覽撤銷未成功（${res.failed.length} 筆），將於到期後自動清理。`, 'info', 4000);
       }
+      return res;
+    }
+
+    // ── 臨時模式（P9 Phase 2A.2）：登入自動辨識 → Preview Artifact ──
+    //   POST /api/preview（CT_PREVIEW.createPreview）→ 只存 preview_id + metadata，
+    //   不存 _records；422 diagnosis 回退舊 manual mapping 流程（parse-temp）。
+    async function doTempUpload(files) {
+      setUploadState('uploading', files.length === 1 ? files[0].name : `${files.length} 個檔案`);
+
+      const summary = await _PF.runTempPreviewUpload(files, {
+        createPreview: (file, targetId) => window.CT_PREVIEW.createPreview(file, targetId),
+        store: _previewArtifactStore,
+        // onFeatures 只拿 features 陣列渲染；絕不觸碰 response 的 _records。
+        onFeatures: (features) => appendGeoJsonToSeries({ features }),
+        onDiagnosis: (file, err) => {
+          // 自動辨識失敗 → 智慧診斷 modal（可續進手動對應，走舊 parse-temp）
+          showDiagnosisModal({
+            filename: file.name,
+            file,
+            headers: (err.diagnosis || {}).available_columns || [],
+            diagnosis: err.diagnosis || {},
+          });
+        },
+        onError: (file, err) => {
+          showToast(`${file.name}：${_previewErrorMessage(err)}`, 'error', 6000);
+        },
+      });
+
       shouldFit = true;
       refreshSeriesPanel();
       await render();
       populateTargetList();
-      if (anyFail) setUploadState('error', `解析失敗：${anyFail}`);
-      else setUploadState('success', `解析完成，已載入 ${totalPlotted} 筆資料`);
+
+      if (summary.items.length > 0) {
+        _showPreviewReady(summary);
+        setUploadState('success', `已建立存證預覽，共 ${summary.totalTotal} 筆（已定位 ${summary.plottedTotal}）`);
+      } else if (summary.diagnoses.length > 0) {
+        setUploadState('error', '無法自動辨識此檔案，請查看診斷結果');
+      } else {
+        const first = summary.failures[0];
+        setUploadState('error', first ? `解析失敗：${_previewErrorMessage(first.err)}` : '解析失敗');
+      }
     }
 
     // 不清除現有 series，直接追加新 series 的 features
@@ -1311,28 +1340,57 @@
         overlay.querySelector('#_stpConfirm').disabled = true;
         let allOk = true;
 
+        // Phase 2A.2 §6：每個 target 依暫存來源分流 —
+        //   preview  → CT_PREVIEW.savePreview（不送 records）
+        //   legacy   → 舊 save-records（manual mapping / guest）
+        //   conflict → 同 target 兩種暫存並存 → 停止並提示
+        let previewOkCount = 0, previewInserted = 0, previewSkipped = 0;
         for (const el of tidEls) {
           const origId = el.dataset.orig;
           const newTid = el.value.trim();
-          const records = _tempRecordsStore.get(origId) || [];
-          if (!records.length) {
+          const kind = _PF.classifyTargetSave(origId, _previewArtifactStore, _tempRecordsStore);
+
+          if (kind === 'conflict') {
+            msgEl.textContent = `此目標同時存在新舊兩種暫存資料，請重新整理並重新上傳。`;
+            allOk = false; break;
+          }
+          if (kind === 'empty') {
             msgEl.textContent = `歷程「${origId}」無資料可儲存`;
             allOk = false; break;
           }
-          // 更新 target_id
-          const body = { records: records.map(r => ({ ...r, target_id: newTid })), source_note: 'converted from temp mode' };
-          try {
-            const r = await fetch(
-              `${API_BASE}/projects/${encodeURIComponent(projId)}/targets/${encodeURIComponent(newTid)}/save-records`,
-              { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) }
-            );
-            if (!r.ok) {
-              const j = await r.json().catch(() => ({}));
-              throw new Error(j.detail || 'HTTP ' + r.status);
+
+          if (kind === 'preview') {
+            // 存證預覽：逐筆 savePreview（可多檔）；不送 records。
+            const res = await _PF.runPreviewSaveForTarget(origId, projId, {
+              savePreview: (pid, proj, tid) => window.CT_PREVIEW.savePreview(pid, proj, tid),
+              store: _previewArtifactStore,
+            }, newTid);
+            previewOkCount += res.successes + res.alreadySaved;
+            previewInserted += res.insertedTotal;
+            previewSkipped  += res.skippedTotal;
+            if (res.failures > 0) {
+              const e0 = res.errors[0] || {};
+              msgEl.textContent = `目標「${newTid}」部分儲存失敗（${res.failures} 筆${e0.kind ? '：' + e0.kind : ''}），已成功者已保留`;
+              allOk = false; break;
             }
-          } catch(e) {
-            msgEl.textContent = `儲存「${newTid}」失敗：${e.message}`;
-            allOk = false; break;
+          } else {
+            // legacy：manual mapping / guest 舊資料 → save-records（契約不變）
+            showToast('此筆資料使用舊式手動對應流程，並非由 Preview Artifact 直接存證。', 'info', 5000);
+            const records = _tempRecordsStore.get(origId) || [];
+            const body = { records: records.map(r => ({ ...r, target_id: newTid })), source_note: 'converted from temp mode' };
+            try {
+              const r = await fetch(
+                `${API_BASE}/projects/${encodeURIComponent(projId)}/targets/${encodeURIComponent(newTid)}/save-records`,
+                { method:'POST', headers:{ 'Content-Type':'application/json', ...authHeaders() }, body: JSON.stringify(body) }
+              );
+              if (!r.ok) {
+                const j = await r.json().catch(() => ({}));
+                throw new Error(j.detail || 'HTTP ' + r.status);
+              }
+            } catch(e) {
+              msgEl.textContent = `儲存「${newTid}」失敗：${e.message}`;
+              allOk = false; break;
+            }
           }
         }
 
@@ -1342,9 +1400,13 @@
           _sessionProjectId = projId;
           $('projectId').value = projId;
           hideTempBanner();
-          _tempRecordsStore.clear();
+          _tempRecordsStore.clear();   // 只清 legacy；preview items 已標 saved 保留供狀態顯示
           updateModeChip();
-          showToast(`已儲存為專案「${projId}」`, 'success', 2500);
+          if (previewOkCount > 0) {
+            showToast(`✅ 已完成存證 ｜ 成功 ${previewOkCount} 筆，寫入 ${previewInserted}，略過 ${previewSkipped}`, 'success', 5000);
+          } else {
+            showToast(`已儲存為專案「${projId}」`, 'success', 2500);
+          }
         } else {
           overlay.querySelector('#_stpConfirm').disabled = false;
         }
@@ -3735,6 +3797,8 @@
         await render();
         populateTargetList();
         setUploadState('success', `解析完成，已載入 ${geo.plotted || 0} 筆資料（手動對應）`);
+        // Phase 2A.2 §4：明確標示此筆走舊手動對應流程，尚未受 Preview Artifact 保護。
+        if (TOKEN) showToast('⚠ 手動對應模式：這筆資料尚未使用存證預覽流程，儲存後才建立正式證據。', 'info', 6000);
       } catch (e) {
         setUploadState('error', `解析失敗：${e.message}`);
       }
