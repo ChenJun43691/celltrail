@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> 最近一次更新：2026-07-05（P9A：Preview Evidence Artifact backend 完成 + 正式環境端到端驗證；Google Geocoding 以 `GEO_GOOGLE_ENABLED=0` 硬性停用；deployed，對齊 commit aa3125e）
+> 最近一次更新：2026-07-08（P9 Phase 2A：前端 Preview Artifact cutover（2A.1 client / 2A.2 temp 切換 / 2A.3 error contract+request_id+structured log）+ DB-backed E2E 驗收；判定「有條件可部署」；對齊 commit 5b501e0，尚未 push）
 
 ---
 
@@ -564,6 +564,88 @@ persisted `/upload` chunk-based ingest（五-P8.1 milestone）已部署並在 Re
 - **舊 `save-records` deprecation**
 - **supervisor seal workflow / custody ledger**（監督層封存與保管鏈）
 - **`geocoded_cell_estimates` 推估座標分表**
+
+> 註：下列「前端 Preview Artifact cutover」已於 **P9 Phase 2A** 完成（登入版 temp 路徑），見下一節。
+
+---
+
+## P9 Phase 2A — Frontend Preview Artifact Cutover（2026-07-08）
+
+把「登入後臨時查看」前端從 legacy `parse-temp` + client-held `_records` + `save-records` 切到 **server-side Preview Artifact**（`/api/preview*`）。guest / manual-mapping 刻意續留 legacy。四個子階段：
+
+### Phase 2A.1 — Preview API client（commit `f6aab58` 的一部分）
+- `frontend/api.js` 新增 `window.CT_PREVIEW`：`createPreview` / `getPreview` / `sealPreview` / `savePreview` / `revokePreview` + `parsePreviewError` / `sanitizePreviewResponse`。
+- **response allowlist**（`_pick`）：每個 response 只留白名單欄位，即使 server 意外回 `_records` 也**不保存/不暴露**。
+- 統一 `PreviewError`（`name/kind/status/message/code/request_id/diagnosis`）；token 只讀 `localStorage['ct_token']`，錯誤訊息全靜態、不夾帶 token。
+- 零依賴 Node 測試 `frontend/tests/test_preview_client.js`。
+
+### Phase 2A.2 — Authenticated temp preview cutover（commit `f6aab58`）
+- 純狀態/編排抽到 `frontend/preview-state.js`（`window.CT_PREVIEW_FLOW`，無 DOM 依賴、可 Node 測）；`index.html` 只做薄 glue。
+- **登入 + `_sessionMode==='temp'` + 自動辨識** → `POST /api/preview`（`doTempUpload` 改走 `runTempPreviewUpload`）；只存 `preview_id` + metadata 於 **`_previewArtifactStore`**（`Map<target_id, PreviewArtifactState[]>`，**一 target 可多 preview**、append 不覆蓋），**不存 `_records`**。
+- 儲存改走 `POST /api/preview/{id}/save`（`openSaveToProjectModal` 依 `classifyTargetSave` 分流：preview → `savePreview`；legacy → 舊 `save-records`；conflict → 阻擋）。
+- **guest（`parse-only`）/ manual mapping（`parse-temp` + `save-records`）保留 legacy**；`_tempRecordsStore` **只剩 guest / manual-mapping 使用**（temp preview 路徑零 `_records`）。
+- 422 diagnosis → 回退既有手動對應流程；手動對應 UI 標「⚠ 尚未使用存證預覽流程」。
+- 測試 `frontend/tests/test_preview_temp_flow.js`。
+
+### Phase 2A.3 — Traceable error contract + Request ID + structured logging（commit `5b501e0`）
+- **machine-readable error contract**（`backend/app/core/errors.py`）：`AppError` + `ErrorCode.*`（`PREVIEW_NOT_FOUND/FORBIDDEN/EXPIRED/REVOKED/CONSUMED/TOO_LARGE/STORAGE_UNAVAILABLE/KEY_MISSING/SHA_MISMATCH/PARSE_FAILED`、`AUTH_REQUIRED`、`INTERNAL_ERROR`）。response 形狀 `{ error:{code,message,details}, request_id }`；只套 `/api/preview*`，其餘 endpoint `{"detail":…}` 零回歸。
+- **Request ID middleware**（`core/request_context.py`）：`contextvars.ContextVar` + `X-Request-ID`（合法沿用、否則 `req_<uuid4hex>`）；**未預期 500 就地攔截**（最外層安全邊界）以保證 request_id + header + 不洩漏 stack trace。
+- **structured JSON logging**（`core/logging_utils.py`）：`log_info/warning/error(event, **fields)`，共同欄位 `timestamp/level/event/request_id`；**redaction**（authorization/token/secret/password/jwt/cookie/bearer/api_key/apikey/artifact_key + 完全等於 key/auth/credential(s)；bytes 一律丟）+ **preview_id 遮罩**（前 6 + 後 4）。
+- **preview cleanup scheduler** 改結構化 log（`preview.cleanup.completed/failed` + `run_id`，不偽裝 HTTP request_id）。
+- 前端 `parsePreviewError` **優先 `body.error.code`**、保留 legacy detail fallback（rolling deploy）；`index.html` 錯誤 UI 顯示「錯誤追蹤碼：<request_id>」（`withRequestId`，`textContent` 安全輸出）。
+- Pydantic schemas（`schemas/preview.py`）→ OpenAPI 可見 error contract。
+- 新增 backend 測試：`test_error_contract` / `test_request_context` / `test_structured_logging` / `test_api_preview_errors`。
+
+### Phase 2A.4 — DB-backed E2E 驗收（2026-07-08）
+**環境**：本機 Docker PostGIS 16-3.4 + 本機 FastAPI(:8000) + static(:5501) + system Chrome via playwright-core；`GEO_GOOGLE_ENABLED=0` + seed `geocode_cache`/直接 lat/lng（避開 live OSM）；`PREVIEW_ARTIFACT_KEY` 僅進程內、未落檔。
+
+**實測結果（皆確認事實）**：
+- **格式矩陣 15/15**（一般電信/台哥大進入-離開/simple 有表頭/simple 無表頭/單格經緯度/中文地址/民國年/CSV/多筆同地址/部分未定位/雜訊欄；+ 加密 422/壞檔 422/diagnosis 422/>5MB 413/空檔 422）——每筆 upload→preview→save→evidence→map-layers→coverage，response **無 `_records`**、**未走 legacy API**。部分未定位案例 coverage `without_geom=1`（不沉默丟資料）。
+- **權限矩陣 13/13**（real per-role JWT + real ACL）：owner GET/seal 200；unrelated GET/seal/delete/save 403 `PREVIEW_FORBIDDEN`；admin GET 他人 200；無/malformed/expired token 401 `AUTH_REQUIRED`；viewer save 403、collaborator save 200、project-owner save 200。
+- **Browser 13/13**：真 create→`POST /api/preview`（非 parse-temp）+ marker render + 無 `_records`；6 種錯誤 UI（expired/revoked/consumed/413/503/500）皆顯示正確中文 + 「錯誤追蹤碼」且無 stack trace；guest→`parse-only`；diagnosis modal 開啟。
+- **structured logs 72 events**：required fields 全具備、preview_id 遮罩、cleanup 用 run_id；**掃描無 token/key/raw bytes/PII 洩漏**。evidence-report：admin 200 有效 PDF、project owner 403（見 Finding）。
+- **回歸**：backend **438 passed**、frontend **33 + 32 passed**。
+- **cleanup 完成**：e2e users=0、live e2e raw traces=0、active previews=0、測試 project 軟刪、geocode seed 移除、audit logs 未刪、uvicorn/static 已停、臨時 key 隨進程消失。**測試資料未殘留**。
+
+### 部署判定
+
+```text
+Phase 2A 有條件可部署
+```
+
+- **核心 authenticated temp preview**：已完整 E2E（create 真瀏覽器 + save→evidence→map/coverage/report API real-DB + admin report PDF）。
+- 尚缺真瀏覽器 E2E（皆有單元 / 既有 smoke / API 契約替代覆蓋，低風險）：
+  - guest login restore / guest save-records 未 browser E2E
+  - manual mapping 完整提交 / `parse-temp` / `save-records` 未 browser E2E
+  - save modal 未完整 browser 驅動
+  - conflict guard 未 browser E2E
+  - duplicate save API 未明確重送驗證（consumed 狀態已由 read 410 驗證）
+  - TTL 自動 purge 未 real-time E2E（scheduler `completed` 已記錄；單元覆蓋）
+
+### Finding
+
+```text
+REPORT_ACL_SPEC_MISMATCH
+Severity: Medium
+Status: Open / pre-existing
+```
+
+- `api/report.py` `evidence_report` docstring 寫「需 viewer 以上」，實作為 `dependencies=[Depends(require_admin)]`（admin-only）。
+- 實測：project owner → **403**、admin → **200 有效 PDF**。
+- **不在 Phase 2A 修改**（report.py 未被本階段觸及）；待產品決策：（a）僅 admin 可出報告 → 修 docstring；（b）應 viewer+ → 改 guard 為 `assert_project_access(viewer)`。
+
+### 尚未完成（Phase 2A 後續 / P9 待辦）
+
+- manual mapping full Preview Artifact（mapping-aware preview）
+- guest preview / guest restore E2E
+- save modal full browser flow
+- conflict guard browser test
+- duplicate save E2E
+- TTL automatic purge E2E
+- object storage A.5（5–50MB）
+- report ACL decision（REPORT_ACL_SPEC_MISMATCH）
+- supervisor seal / custody ledger
+- `geocoded_cell_estimates` 推估座標分表
 
 ---
 
