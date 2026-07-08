@@ -317,6 +317,114 @@ function mockFetch(resp) {
     assert.strictEqual(out.preview_id, 'p1');
   });
 
+  // ═══ P9 Phase 2A.3：machine-readable error contract ═══
+
+  // 28. machine-readable code 優先於 status/detail
+  await testAsync('28. body.error.code 優先判定 kind', async () => {
+    setToken('T1');
+    // status 410 但 code 明確給 REVOKED（若靠 status+detail 會判 generic）
+    mockFetch({ status: 410, body: { error: { code: 'PREVIEW_REVOKED', message: '預覽已撤銷。', details: {} }, request_id: 'req_abc' } });
+    const P = loadPreview();
+    let thrown = null;
+    try { await P.getPreview('p1'); } catch (e) { thrown = e; }
+    assert.strictEqual(thrown.kind, 'revoked');
+    assert.strictEqual(thrown.code, 'PREVIEW_REVOKED');
+  });
+
+  // 28b. 410 三態全靠 code（不需中文字串）
+  await testAsync('28b. 410 三態靠 code：expired/revoked/consumed', async () => {
+    setToken('T1');
+    const P = loadPreview();
+    const cases = [
+      ['PREVIEW_EXPIRED', 'expired'],
+      ['PREVIEW_REVOKED', 'revoked'],
+      ['PREVIEW_CONSUMED', 'consumed'],
+    ];
+    for (const [code, kind] of cases) {
+      // detail 故意留白 → 證明不靠中文字串
+      mockFetch({ status: 410, body: { error: { code, message: '', details: {} }, request_id: 'req_x' } });
+      let thrown = null;
+      try { await P.getPreview('p1'); } catch (e) { thrown = e; }
+      assert.strictEqual(thrown.kind, kind, code + ' → ' + kind);
+    }
+  });
+
+  // 29. legacy detail fallback 仍可用（無 code）
+  await testAsync('29. 無 code → legacy status/detail fallback', async () => {
+    setToken('T1');
+    mockFetch({ status: 410, body: { detail: 'preview 已過期' } });
+    const P = loadPreview();
+    let thrown = null;
+    try { await P.getPreview('p1'); } catch (e) { thrown = e; }
+    assert.strictEqual(thrown.kind, 'expired');
+    assert.strictEqual(thrown.code, null);
+  });
+
+  // 30. request_id 保留於 error 物件
+  await testAsync('30. error.request_id 從 body 保留', async () => {
+    setToken('T1');
+    mockFetch({ status: 409, body: { error: { code: 'PREVIEW_SHA_MISMATCH', message: 'x', details: {} }, request_id: 'req_trace_123' } });
+    const P = loadPreview();
+    let thrown = null;
+    try { await P.savePreview('p1', 'proj', 't'); } catch (e) { thrown = e; }
+    assert.strictEqual(thrown.request_id, 'req_trace_123');
+    assert.strictEqual(thrown.kind, 'sha_mismatch');
+  });
+
+  // 31. error message 不含 token（新 contract 路徑）
+  await testAsync('31. 新 contract 錯誤訊息不含 token', async () => {
+    setToken('SECRET-TOKEN-XYZ');
+    mockFetch({ status: 403, body: { error: { code: 'PREVIEW_FORBIDDEN', message: '你沒有權限存取這筆預覽資料。', details: {} }, request_id: 'req_1' } });
+    const P = loadPreview();
+    let thrown = null;
+    try { await P.getPreview('p1'); } catch (e) { thrown = e; }
+    const dump = JSON.stringify({ m: thrown.message, c: thrown.code, r: thrown.request_id }) + String(thrown.stack || '');
+    assert.strictEqual(dump.indexOf('SECRET-TOKEN-XYZ'), -1);
+  });
+
+  // 32. AUTH_REQUIRED code → auth_required；INTERNAL_ERROR → server
+  await testAsync('32. AUTH_REQUIRED/INTERNAL_ERROR/TOO_LARGE/KEY_MISSING code 映射', async () => {
+    setToken('T1');
+    const P = loadPreview();
+    const map = [
+      [401, 'AUTH_REQUIRED', 'auth_required'],
+      [500, 'INTERNAL_ERROR', 'server'],
+      [413, 'PREVIEW_TOO_LARGE', 'too_large'],
+      [503, 'PREVIEW_KEY_MISSING', 'no_key'],
+      [404, 'PREVIEW_NOT_FOUND', 'not_found'],
+    ];
+    for (const [status, code, kind] of map) {
+      mockFetch({ status, body: { error: { code, message: 'm', details: {} }, request_id: 'r' } });
+      let thrown = null;
+      try { await P.getPreview('p1'); } catch (e) { thrown = e; }
+      assert.strictEqual(thrown.kind, kind, code + ' → ' + kind);
+    }
+  });
+
+  // 32b. PREVIEW_PARSE_FAILED + diagnosis → diagnosis（保留 diagnosis）
+  await testAsync('32b. PREVIEW_PARSE_FAILED 帶 diagnosis → diagnosis', async () => {
+    setToken('T1');
+    const diag = { available_columns: ['A'] };
+    mockFetch({ status: 422, body: { error: { code: 'PREVIEW_PARSE_FAILED', message: '無法自動辨識此檔案格式。', details: { diagnosis: diag } }, request_id: 'r' } });
+    const P = loadPreview();
+    let thrown = null;
+    try { await P.createPreview('FAKEFILE', 't'); } catch (e) { thrown = e; }
+    assert.strictEqual(thrown.kind, 'diagnosis');
+    assert.deepStrictEqual(thrown.diagnosis, diag);
+  });
+
+  // 33. 所有 PreviewError 都有 code / request_id 欄位（本地產生的也是）
+  await testAsync('33. 本地 auth_required 錯誤也帶 code/request_id 欄位', async () => {
+    // 不 setToken → 本地拋 auth_required（不發 request）
+    const P = loadPreview();
+    let thrown = null;
+    try { await P.getPreview('p1'); } catch (e) { thrown = e; }
+    assert.strictEqual(thrown.kind, 'auth_required');
+    assert.ok('code' in thrown && 'request_id' in thrown);
+    assert.strictEqual(thrown.code, null);
+    assert.strictEqual(thrown.request_id, null);
+  });
+
   // ── 總結 ─────────────────────────────────────────────────
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   if (failed > 0) {

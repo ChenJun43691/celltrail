@@ -13,13 +13,11 @@ load_dotenv()
 import logging
 import os
 import sys
-import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -30,6 +28,9 @@ from app.services.limiter import limiter
 from app.security import SECRET_KEY, AUTH_ENABLED
 from app.services import preview_artifact
 from app.services.audit import write_audit
+from app.core.request_context import RequestContextMiddleware
+from app.core.error_handlers import register_error_handlers
+from app.core import logging_utils as clog
 
 logger = logging.getLogger("celltrail")
 
@@ -180,15 +181,24 @@ def _preview_cleanup() -> None:
     n>0：log + 寫一筆 preview.cleanup summary audit（系統操作，user=None）；
     n==0：只 log，不寫 audit。（每筆 preview.expire 留待 P9B / custody ledger。）
     """
+    import uuid as _uuid
+    from time import perf_counter as _pc
+    run_id = "job_" + _uuid.uuid4().hex   # scheduler 非 HTTP → 用 run_id，不偽裝成 request_id
+    t0 = _pc()
     try:
         n = preview_artifact.cleanup_expired()
         if n > 0:
-            print(f"[preview_cleanup] purged {n} expired preview artifact(s)")
             write_audit(action="preview.cleanup", details={"deleted": n}, status_code=200)
-        else:
-            print("[preview_cleanup] none expired")
+        clog.log_info(
+            "preview.cleanup.completed",
+            run_id=run_id, deleted=int(n), duration_ms=round((_pc() - t0) * 1000, 1),
+        )
     except Exception as e:
-        print(f"[preview_cleanup] failed: {type(e).__name__}: {e}")
+        clog.log_error(
+            "preview.cleanup.failed",
+            run_id=run_id, error_type=type(e).__name__,
+            duration_ms=round((_pc() - t0) * 1000, 1),
+        )
 
 
 def _register_jobs(scheduler) -> None:
@@ -225,6 +235,11 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
+# Request ID + 未預期例外邊界（P9 Phase 2A.3）。加在 CORS 內側 → 500 response 仍能
+# 經 CORS 補上 CORS header；仍外於 router/ExceptionMiddleware → 能攔截未處理例外並補
+# request_id。實作見 core.request_context（不洩漏 stack trace、只回 INTERNAL_ERROR）。
+app.add_middleware(RequestContextMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
@@ -234,19 +249,11 @@ app.add_middleware(
 )
 
 
-# ---------- 全局 500 錯誤處理：不洩漏 stack trace ----------
-@app.exception_handler(Exception)
-async def generic_exception_handler(request: Request, exc: Exception):
-    logger.error(
-        "Unhandled exception %s %s — %s\n%s",
-        request.method, request.url.path,
-        type(exc).__name__,
-        traceback.format_exc(),
-    )
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "系統發生錯誤，請稍後再試"},
-    )
+# ---------- 統一 error contract handlers（P9 Phase 2A.3）----------
+# AppError → { error:{code,message,details}, request_id }；preview 路徑的 HTTPException
+# 也轉成該 contract；其餘路徑維持 FastAPI 預設 {"detail": ...}，零回歸。
+# 未預期 500 由 RequestContextMiddleware 攔截（保證 request_id + header）。
+register_error_handlers(app)
 
 
 # ---------- Routers ----------

@@ -1193,7 +1193,8 @@
           });
         },
         onError: (file, err) => {
-          showToast(`${file.name}：${_previewErrorMessage(err)}`, 'error', 6000);
+          // showToast 以 textContent 輸出（非 innerHTML）→ request_id 安全以純文字呈現。
+          showToast(_PF.withRequestId(`${file.name}：${_previewErrorMessage(err)}`, err), 'error', 7000);
         },
       });
 
@@ -1370,7 +1371,11 @@
             previewSkipped  += res.skippedTotal;
             if (res.failures > 0) {
               const e0 = res.errors[0] || {};
-              msgEl.textContent = `目標「${newTid}」部分儲存失敗（${res.failures} 筆${e0.kind ? '：' + e0.kind : ''}），已成功者已保留`;
+              // msgEl 以 textContent 輸出 → request_id 安全以純文字呈現。
+              msgEl.textContent = _PF.withRequestId(
+                `目標「${newTid}」部分儲存失敗（${res.failures} 筆${e0.kind ? '：' + e0.kind : ''}），已成功者已保留`,
+                e0
+              );
               allOk = false; break;
             }
           } else {

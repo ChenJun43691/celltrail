@@ -383,6 +383,53 @@ function previewError(kind, message) {
     assert.strictEqual(tempBody.indexOf('upload/parse-temp'), -1, 'doTempUpload 不得再打 /upload/parse-temp 端點');
   });
 
+  // ═══ P9 Phase 2A.3 收尾：withRequestId ═══
+
+  // 26. 有 request_id → 附錯誤追蹤碼
+  await test('26. withRequestId 有 request_id → 附追蹤碼', (F) => {
+    const out = F.withRequestId('儲存失敗', { request_id: 'req_abc123' });
+    assert.ok(out.indexOf('req_abc123') !== -1);
+    assert.ok(out.indexOf('錯誤追蹤碼') !== -1);
+    assert.ok(out.indexOf('儲存失敗') === 0, '原訊息應在前');
+  });
+
+  // 27. 無 request_id → 原樣（不追加空字串）
+  await test('27. withRequestId 無 request_id → 原樣回傳', (F) => {
+    assert.strictEqual(F.withRequestId('X', { request_id: null }), 'X');
+    assert.strictEqual(F.withRequestId('X', {}), 'X');
+    assert.strictEqual(F.withRequestId('X', null), 'X');
+    assert.strictEqual(F.withRequestId('X', undefined), 'X');
+  });
+
+  // 28. request_id 不會被當 HTML 執行（純文字回傳，交由 textContent 呈現）
+  await test('28. withRequestId 純文字回傳、不 HTML 包裝', (F) => {
+    const evil = '<img src=x onerror=alert(1)>';
+    const out = F.withRequestId('錯誤', { request_id: evil });
+    // 回傳為純字串、原樣夾帶（呼叫端以 textContent 呈現 → 不會被當 HTML 執行）
+    assert.strictEqual(typeof out, 'string');
+    assert.ok(out.indexOf(evil) !== -1, '原樣夾帶，不轉義也不包 HTML tag');
+    assert.strictEqual(out.indexOf('<div'), -1);
+    assert.strictEqual(out.indexOf('innerHTML'), -1);
+  });
+
+  // 29. 訊息不含 token / Authorization
+  await test('29. withRequestId 不引入 token / Authorization', (F) => {
+    const out = F.withRequestId('權限不足', { request_id: 'req_1', message: 'x' });
+    assert.strictEqual(out.indexOf('Bearer'), -1);
+    assert.strictEqual(out.indexOf('Authorization'), -1);
+    assert.strictEqual(out.indexOf('token'), -1);
+  });
+
+  // 30. index.html 靜態守護：preview 錯誤 glue 用 withRequestId + showToast/textContent（非 innerHTML）
+  await test('30. index.html 錯誤 glue 用 withRequestId + 安全輸出', () => {
+    assert.ok(INDEX.indexOf('_PF.withRequestId') !== -1, 'index.html 應呼叫 withRequestId');
+    // onError 走 showToast（其以 textContent 輸出），不得用 innerHTML 直塞 request_id
+    const tempFn = INDEX.slice(INDEX.indexOf('async function doTempUpload'));
+    const tempBody = tempFn.slice(0, tempFn.indexOf('\n    }\n'));
+    assert.ok(tempBody.indexOf('withRequestId') !== -1, 'onError 應包 withRequestId');
+    assert.ok(tempBody.indexOf('showToast') !== -1, 'onError 應用 showToast');
+  });
+
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   if (failed > 0) {
     console.log('\nFailures:');

@@ -101,7 +101,7 @@
     return (typeof window !== 'undefined' && window.CT_API) || '';
   }
 
-  // 統一的 PreviewError 建構（instanceof Error，但帶 kind/status/diagnosis）。
+  // 統一的 PreviewError 建構（instanceof Error，但帶 kind/status/code/request_id/diagnosis）。
   function makePreviewError(kind, status, message, diagnosis) {
     const msg = message || MSG[kind] || MSG.generic;
     const err = new Error(msg);
@@ -109,52 +109,89 @@
     err.kind = kind;
     err.status = status || 0;
     err.message = msg;
+    err.code = null;         // machine-readable code（parsePreviewError 會覆寫）
+    err.request_id = null;   // 錯誤追蹤碼（server 回傳時覆寫）
     if (diagnosis !== undefined) err.diagnosis = diagnosis;
     return err;
   }
 
   function _errMessage(kind, detail) {
-    // encrypted_file / diagnosis 用後端 detail（若有），其餘用固定文案。
+    // encrypted_file / diagnosis 用後端訊息（若有），其餘用固定文案。
     if (MSG[kind]) return MSG[kind];
     return detail || MSG.generic;
   }
 
-  // 依 HTTP status + response body（detail / diagnosis）判定 kind。
-  function parsePreviewError(status, body) {
-    const detail = (body && typeof body.detail === 'string') ? body.detail : '';
-    const diagnosis = body ? body.diagnosis : undefined;
-    let kind;
+  // machine-readable error code → 前端 kind（P9 Phase 2A.3）。
+  // PREVIEW_PARSE_FAILED 需看 diagnosis/status 進一步判別，故不放這張表（見 _kindFromCode）。
+  const CODE_TO_KIND = {
+    PREVIEW_EXPIRED:  'expired',
+    PREVIEW_REVOKED:  'revoked',
+    PREVIEW_CONSUMED: 'consumed',
+    PREVIEW_TOO_LARGE: 'too_large',
+    PREVIEW_STORAGE_UNAVAILABLE: 'too_large',
+    PREVIEW_KEY_MISSING: 'no_key',
+    PREVIEW_SHA_MISMATCH: 'sha_mismatch',
+    PREVIEW_FORBIDDEN: 'forbidden',
+    PREVIEW_NOT_FOUND: 'not_found',
+    AUTH_REQUIRED: 'auth_required',
+    INTERNAL_ERROR: 'server',
+  };
 
-    if (status === 401) {
-      kind = 'auth_required';
-    } else if (status === 403) {
-      kind = 'forbidden';
-    } else if (status === 404) {
-      kind = 'not_found';
-    } else if (status === 409) {
-      kind = 'sha_mismatch';
-    } else if (status === 410) {
-      // TODO Phase 2B：後端回傳 machine-readable state/code，移除以下中文字串判斷。
-      if (detail.indexOf('過期') !== -1) kind = 'expired';
-      else if (detail.indexOf('撤銷') !== -1) kind = 'revoked';
-      else if (detail.indexOf('存證') !== -1 || detail.indexOf('不可重複') !== -1) kind = 'consumed';
-      else kind = 'generic';
-    } else if (status === 413) {
-      kind = 'too_large';
-    } else if (status === 422) {
-      if (diagnosis !== undefined && diagnosis !== null) kind = 'diagnosis';
-      else if (detail.indexOf('密碼') !== -1 || detail.indexOf('加密') !== -1) kind = 'encrypted_file';
-      else kind = 'generic';
-    } else if (status === 503) {
-      // 缺 PREVIEW_ARTIFACT_KEY / preview 設定問題 → no_key；其餘 503 → server。
-      kind = /金鑰|key|加密服務|加密金鑰|未設定|config/i.test(detail) ? 'no_key' : 'server';
-    } else if (status >= 500) {
-      kind = 'server';
-    } else {
-      kind = 'generic';
+  function _kindFromCode(code, status, detail, diagnosis) {
+    if (code === 'PREVIEW_PARSE_FAILED') {
+      if (diagnosis !== undefined && diagnosis !== null) return 'diagnosis';
+      if (detail.indexOf('密碼') !== -1 || detail.indexOf('加密') !== -1) return 'encrypted_file';
+      return status >= 500 ? 'server' : 'generic';
     }
+    return CODE_TO_KIND[code] || null;
+  }
+
+  // legacy fallback：無 machine-readable code 時，靠 status + 中文 detail 判定。
+  // TODO：所有 production instance 都完成新 error contract 後移除 legacy detail fallback。
+  function _kindByStatus(status, detail, diagnosis) {
+    if (status === 401) return 'auth_required';
+    if (status === 403) return 'forbidden';
+    if (status === 404) return 'not_found';
+    if (status === 409) return 'sha_mismatch';
+    if (status === 410) {
+      if (detail.indexOf('過期') !== -1) return 'expired';
+      if (detail.indexOf('撤銷') !== -1) return 'revoked';
+      if (detail.indexOf('存證') !== -1 || detail.indexOf('不可重複') !== -1) return 'consumed';
+      return 'generic';
+    }
+    if (status === 413) return 'too_large';
+    if (status === 422) {
+      if (diagnosis !== undefined && diagnosis !== null) return 'diagnosis';
+      if (detail.indexOf('密碼') !== -1 || detail.indexOf('加密') !== -1) return 'encrypted_file';
+      return 'generic';
+    }
+    if (status === 503) return /金鑰|key|加密服務|加密金鑰|未設定|config/i.test(detail) ? 'no_key' : 'server';
+    if (status >= 500) return 'server';
+    return 'generic';
+  }
+
+  // 依 machine-readable error contract 優先判定 kind；缺 code 時退回 legacy status/detail。
+  // 回傳的 PreviewError 帶 code + request_id（追蹤碼）。
+  function parsePreviewError(status, body) {
+    body = body || {};
+    // 新 contract 的 error 必為物件 {code,message,details}；字串型 error（legacy）不算。
+    const contractErr = (body.error && typeof body.error === 'object') ? body.error : null;
+    const requestId = (typeof body.request_id === 'string') ? body.request_id : null;
+    const code = contractErr && contractErr.code ? contractErr.code : null;
+    const codeMsg = contractErr && typeof contractErr.message === 'string' ? contractErr.message : '';
+    const codeDetails = (contractErr && contractErr.details) || null;
+
+    // detail / diagnosis：新 contract 優先，legacy 為備援。
+    const detail = codeMsg || ((typeof body.detail === 'string') ? body.detail : '');
+    const diagnosis = (codeDetails && codeDetails.diagnosis) || body.diagnosis;
+
+    let kind = null;
+    if (code) kind = _kindFromCode(code, status, detail, diagnosis);
+    if (!kind) kind = _kindByStatus(status, detail, diagnosis);   // legacy fallback
 
     const err = makePreviewError(kind, status, _errMessage(kind, detail));
+    err.code = code;
+    err.request_id = requestId;
     if (kind === 'diagnosis') err.diagnosis = diagnosis;
     return err;
   }

@@ -47,6 +47,14 @@
     return (err && err.message) || '解析失敗';
   }
 
+  // 在錯誤訊息後附上錯誤追蹤碼（request_id）供 production 排查。純字串處理、無 DOM
+  // 依賴；request_id 以純文字回傳，呼叫端須以 textContent 輸出（不得 innerHTML）。
+  // 無 request_id 時原樣回傳，不追加空字串。
+  function withRequestId(message, err) {
+    if (!err || !err.request_id) return message;
+    return message + '\n錯誤追蹤碼：' + err.request_id;
+  }
+
   // ── 上傳分派決策（純函式）──────────────────────────────────
   //  guest       ：未登入
   //  temp-preview：登入 + temp 模式 → 走 Preview Artifact
@@ -206,11 +214,11 @@
         } else if (kind === 'expired' || kind === 'revoked') {
           item.status = kind;
           res.failures++;
-          res.errors.push({ preview_id: item.preview_id, kind: kind });
+          res.errors.push({ preview_id: item.preview_id, kind: kind, request_id: err && err.request_id });
         } else {
           // 其餘錯誤：保留 READY 狀態，允許重試
           res.failures++;
-          res.errors.push({ preview_id: item.preview_id, kind: kind || 'generic' });
+          res.errors.push({ preview_id: item.preview_id, kind: kind || 'generic', request_id: err && err.request_id });
         }
       }
     }
@@ -253,6 +261,7 @@
     STATUS: STATUS,
     stripExt: stripExt,
     previewErrorMessage: previewErrorMessage,
+    withRequestId: withRequestId,
     chooseUploadMode: chooseUploadMode,
     buildPreviewItem: buildPreviewItem,
     getPreviewItems: getPreviewItems,

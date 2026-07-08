@@ -1,25 +1,27 @@
 # backend/app/api/preview.py
 """
-Preview evidence API（P9A A.3，2026-07-02）。
+Preview evidence API（P9A A.3；P9 Phase 2A.3 錯誤契約重構）。
 
 登入版 preview：POST 建立加密 artifact 並回 features（不回 _records）；GET 重解析
 唯讀渲染；seal/save/delete 生命週期。save 走 server 端重解析（權威來源）+ register_evidence
 + chunked ingest，補 save-records 的證據鏈缺口。
 
-A.3 範圍鎖定：
-  - 只做登入版（無 guest；訪客續走舊 parse-only）。
-  - 不收 mapping（手動對應 preview 續走舊路徑）。
-  - 不動 frontend（前端切換歸 Phase 2）。
-狀態碼：404 not_found / 410 expired|revoked|consumed / 403 forbidden / 409 sha256 不符 /
-        413 過大|中大檔(object stub) / 503 缺金鑰 / 422 診斷|加密檔。
+Phase 2A.3：
+  - 錯誤一律 raise AppError（core.errors），由 core.error_handlers 轉成統一 contract
+    { "error": {code,message,details}, "request_id" }；controller 不再散落中文 detail。
+  - endpoint 掛 response_model（schemas.preview）+ OpenAPI error responses。
+  - 關鍵路徑寫結構化 log（core.logging_utils），preview_id 遮罩、不記 token / raw bytes。
+
+A.3 範圍鎖定：只做登入版（無 guest）；不收 mapping（手動對應續走舊路徑）。
+狀態碼：404 not_found / 410 expired|revoked|consumed / 403 forbidden / 409 sha 不符 /
+        413 過大|中大檔 / 503 缺金鑰 / 422 診斷|加密檔|解析失敗 / 500 重建失敗。
 """
 from __future__ import annotations
 
+from time import perf_counter
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 
 from app.security import (
     get_current_user,
@@ -35,41 +37,68 @@ from app.services.ingest import parse_file_only, ingest_auto, ParseDiagnosisErro
 from app.services.evidence import register_evidence, update_evidence_stats
 from app.services.audit import write_audit
 
+from app.core.errors import AppError, ErrorCode
+from app.core import logging_utils as log
+from app.schemas.preview import (
+    ErrorResponse,
+    PreviewCreateResponse,
+    PreviewReadResponse,
+    PreviewSealResponse,
+    PreviewSaveRequest,
+    PreviewSaveResponse,
+    PreviewDeleteResponse,
+)
+
 router = APIRouter()
 
-_TOO_LARGE_MSG = "preview 暫不支援中大檔，請改用正式 /upload"
+# 410 三態 code + 使用者訊息（machine-readable code 交前端判斷；中文只給人看）。
 _STATE_410 = {
-    "expired": "preview 已過期",
-    "revoked": "preview 已撤銷",
-    "consumed": "preview 已存證，不可重複使用",
+    "expired":  (ErrorCode.PREVIEW_EXPIRED,  "預覽已過期，請重新上傳檔案。"),
+    "revoked":  (ErrorCode.PREVIEW_REVOKED,  "預覽已撤銷。"),
+    "consumed": (ErrorCode.PREVIEW_CONSUMED, "預覽已完成存證，不可重複使用。"),
 }
+_TOO_LARGE_MSG = "檔案超過目前預覽容量，請改用正式上傳。"
 
-
-class SavePreviewIn(BaseModel):
-    project_id: str
-    target_id: str = ""
+# OpenAPI：讓 error contract 出現在文件（附幾個代表性狀態）。
+_ERR_RESPONSES = {
+    403: {"model": ErrorResponse},
+    404: {"model": ErrorResponse},
+    410: {"model": ErrorResponse},
+    413: {"model": ErrorResponse},
+    422: {"model": ErrorResponse},
+    503: {"model": ErrorResponse},
+}
 
 
 # ── helpers ─────────────────────────────────────────────────
 def _require_preview_owner(meta: Dict[str, Any], user: Dict[str, Any]) -> None:
-    """owner（created_by）或 system admin 才可讀/seal/delete；否則 403。"""
+    """owner（created_by）或 system admin 才可讀/seal/delete；否則 AppError 403。"""
     if user.get("role") == "admin":
         return
     cb = meta.get("created_by")
     if cb is not None and cb == user.get("id"):
         return
-    raise HTTPException(status_code=403, detail="無此 preview 的存取權限")
+    raise AppError(
+        code=ErrorCode.PREVIEW_FORBIDDEN,
+        message="你沒有權限存取這筆預覽資料。",
+        status_code=403,
+    )
 
 
 def _load_active(preview_id: str, user: Dict[str, Any]) -> Dict[str, Any]:
     """取 meta；不存在→404、非 owner/admin→403、非 active→410。回 meta。"""
     meta = pa.get_meta(preview_id)
     if meta is None:
-        raise HTTPException(status_code=404, detail="preview 不存在")
+        raise AppError(
+            code=ErrorCode.PREVIEW_NOT_FOUND,
+            message="找不到這筆預覽資料。",
+            status_code=404,
+        )
     _require_preview_owner(meta, user)       # 先驗身分（私有資源），再驗狀態
     st = pa.state_of(meta)
     if st != "active":
-        raise HTTPException(status_code=410, detail=_STATE_410.get(st, "preview 已失效"))
+        code, msg = _STATE_410.get(st, (ErrorCode.PREVIEW_REVOKED, "預覽已失效。"))
+        raise AppError(code=code, message=msg, status_code=410)
     return meta
 
 
@@ -102,8 +131,8 @@ def _records_to_features(records: List[Dict[str, Any]]) -> Tuple[List[Dict[str, 
 
 
 # ── POST /api/preview ───────────────────────────────────────
-@router.post("/preview")
-@router.post("/preview/")
+@router.post("/preview", response_model=PreviewCreateResponse, responses=_ERR_RESPONSES)
+@router.post("/preview/", response_model=PreviewCreateResponse, include_in_schema=False)
 async def create_preview(
     request: Request,
     file: UploadFile = File(...),
@@ -117,10 +146,10 @@ async def create_preview(
     try:
         kind = pa.choose_storage_kind(len(content))
     except PreviewTooLargeError:
-        raise HTTPException(status_code=413, detail=_TOO_LARGE_MSG)
+        raise AppError(code=ErrorCode.PREVIEW_TOO_LARGE, message=_TOO_LARGE_MSG, status_code=413)
     if kind == "object":
-        # A.3 object 分支為 stub → 中大檔一律引導走正式 /upload（413，非 503）
-        raise HTTPException(status_code=413, detail=_TOO_LARGE_MSG)
+        # A.3 object 分支為 stub → 中大檔一律引導走正式 /upload（413）
+        raise AppError(code=ErrorCode.PREVIEW_TOO_LARGE, message=_TOO_LARGE_MSG, status_code=413)
 
     if not target_id:
         target_id = filename.rsplit(".", 1)[0]
@@ -128,14 +157,17 @@ async def create_preview(
     try:
         records = parse_file_only(target_id, filename, content, mapping=None)
     except EncryptedFileError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise AppError(code=ErrorCode.PREVIEW_PARSE_FAILED, message=str(e), status_code=422)
     except ParseDiagnosisError as e:
-        return JSONResponse(status_code=422, content={
-            "ok": False, "error": "format_unknown", "detail": str(e),
-            "diagnosis": e.diagnosis, "filename": filename,
-        })
+        # 使用者檔案格式問題 → 422；diagnosis 放非敏感 details 供前端手動對應。
+        raise AppError(
+            code=ErrorCode.PREVIEW_PARSE_FAILED,
+            message="無法自動辨識此檔案格式。",
+            status_code=422,
+            details={"diagnosis": e.diagnosis, "filename": filename},
+        )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise AppError(code=ErrorCode.PREVIEW_PARSE_FAILED, message=str(e), status_code=422)
 
     features, skipped = _records_to_features(records)
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else None
@@ -150,11 +182,13 @@ async def create_preview(
         )
     except PreviewKeyError:
         # 伺服器設定問題（金鑰缺失）→ 503（fail-closed，絕不明文儲存）
-        raise HTTPException(status_code=503, detail="preview 加密金鑰未設定，暫時無法建立 preview")
-    except PreviewTooLargeError:
-        raise HTTPException(status_code=413, detail=_TOO_LARGE_MSG)
-    except PreviewStorageUnavailable:
-        raise HTTPException(status_code=413, detail=_TOO_LARGE_MSG)
+        raise AppError(
+            code=ErrorCode.PREVIEW_KEY_MISSING,
+            message="預覽加密服務尚未完成設定，請聯絡系統管理員。",
+            status_code=503,
+        )
+    except (PreviewTooLargeError, PreviewStorageUnavailable):
+        raise AppError(code=ErrorCode.PREVIEW_TOO_LARGE, message=_TOO_LARGE_MSG, status_code=413)
 
     write_audit(
         action="preview.create", user=current_user, request=request,
@@ -165,6 +199,13 @@ async def create_preview(
             "row_count": art["row_count"], "plotted": len(features), "skipped": skipped,
         },
         status_code=200,
+    )
+    log.log_info(
+        "preview.create.ok",
+        preview_id_masked=log.mask_preview_id(art["preview_id"]),
+        user_id=current_user.get("id"),
+        row_count=art["row_count"], plotted=len(features), skipped=skipped,
+        storage_kind=art["storage_kind"], status_code=200,
     )
     return {
         "preview_id": art["preview_id"],
@@ -178,7 +219,7 @@ async def create_preview(
 
 
 # ── GET /api/preview/{id} ───────────────────────────────────
-@router.get("/preview/{preview_id}")
+@router.get("/preview/{preview_id}", response_model=PreviewReadResponse, responses=_ERR_RESPONSES)
 def read_preview(
     preview_id: str,
     request: Request,
@@ -190,18 +231,33 @@ def read_preview(
     try:
         records = parse_file_only(target_id, meta["filename"], raw, mapping=None)
     except Exception as e:
+        # artifact 已建立但 server 重建失敗 → 500（非使用者檔案問題）
         write_audit(
             action="preview.read", user=current_user, request=request,
             target_type="preview", target_ref=preview_id,
             status_code=500, error_text=f"{type(e).__name__}: {e}",
         )
-        raise HTTPException(status_code=500, detail="preview 重建失敗")
+        log.log_error(
+            "preview.read.rebuild_failed",
+            preview_id_masked=log.mask_preview_id(preview_id),
+            error_type=type(e).__name__, status_code=500,
+        )
+        raise AppError(
+            code=ErrorCode.PREVIEW_PARSE_FAILED,
+            message="預覽重建失敗，請重新上傳。",
+            status_code=500,
+        )
 
     features, skipped = _records_to_features(records)
-    # pure read on artifact：不 UPDATE preview_artifacts、不做 system_seal_verify；只寫 audit
+    # pure read on artifact：不 UPDATE preview_artifacts、只寫 audit + log
     write_audit(
         action="preview.read", user=current_user, request=request,
         target_type="preview", target_ref=preview_id, status_code=200,
+    )
+    log.log_info(
+        "preview.read.ok",
+        preview_id_masked=log.mask_preview_id(preview_id),
+        user_id=current_user.get("id"), plotted=len(features), skipped=skipped, status_code=200,
     )
     return {
         "features": features,
@@ -212,7 +268,7 @@ def read_preview(
 
 
 # ── POST /api/preview/{id}/seal ─────────────────────────────
-@router.post("/preview/{preview_id}/seal")
+@router.post("/preview/{preview_id}/seal", response_model=PreviewSealResponse, responses=_ERR_RESPONSES)
 def seal_preview(
     preview_id: str,
     request: Request,
@@ -224,24 +280,35 @@ def seal_preview(
         action="preview.seal", user=current_user, request=request,
         target_type="preview", target_ref=preview_id, status_code=200,
     )
+    log.log_info(
+        "preview.seal.ok",
+        preview_id_masked=log.mask_preview_id(preview_id),
+        user_id=current_user.get("id"), status_code=200,
+    )
     return {"ok": True}
 
 
 # ── POST /api/preview/{id}/save ─────────────────────────────
-@router.post("/preview/{preview_id}/save")
+@router.post("/preview/{preview_id}/save", response_model=PreviewSaveResponse, responses=_ERR_RESPONSES)
 def save_preview(
     preview_id: str,
-    body: SavePreviewIn,
+    body: PreviewSaveRequest,
     request: Request,
     current_user: dict = Depends(get_current_user),
 ):
+    t0 = perf_counter()
     meta = _load_active(preview_id, current_user)    # 404/403/410（owner/admin）
     project_id = body.project_id.strip()
     if not project_id:
-        raise HTTPException(status_code=400, detail="project_id 必填")
+        raise AppError(
+            code=ErrorCode.VALIDATION_ERROR,
+            message="project_id 必填",
+            status_code=400,
+        )
     target_id = body.target_id.strip() or meta["filename"].rsplit(".", 1)[0]
 
     # 目標 project 權限（沿用 upload.py：新 project 自動 owner；否則 collaborator+）
+    # assert_project_access 失敗會 raise HTTPException(403) → preview-scoped handler 轉 PREVIEW_FORBIDDEN。
     if AUTH_ENABLED and current_user.get("role") != "admin":
         if not project_has_members(project_id):
             add_project_member(project_id, current_user["id"], "owner", granted_by=current_user["id"])
@@ -251,7 +318,16 @@ def save_preview(
     # 完整性 gate：raw 再 hash 必須等於建立時的 sha256_full（deterministic）
     raw = pa.load_raw(preview_id)
     if pa.sha256_hex(raw) != meta["sha256_full"]:
-        raise HTTPException(status_code=409, detail="檔案指紋不符，拒絕存證")
+        log.log_warning(
+            "preview.save.sha_mismatch",
+            preview_id_masked=log.mask_preview_id(preview_id),
+            user_id=current_user.get("id"), status_code=409,
+        )
+        raise AppError(
+            code=ErrorCode.PREVIEW_SHA_MISMATCH,
+            message="原始檔完整性驗證失敗，請重新建立預覽。",
+            status_code=409,
+        )
 
     # inline analyst seal（若尚未 seal）
     if not meta.get("sealed_at"):
@@ -284,6 +360,13 @@ def save_preview(
         },
         status_code=200,
     )
+    log.log_info(
+        "preview.save.ok",
+        preview_id_masked=log.mask_preview_id(preview_id),
+        user_id=current_user.get("id"), project_id=project_id, target_id=target_id,
+        evidence_id=ev["id"], total=total, inserted=inserted, skipped=skipped,
+        duration_ms=round((perf_counter() - t0) * 1000, 1), status_code=200,
+    )
     return {
         "ok": True,
         "evidence_id": ev["id"],
@@ -295,7 +378,7 @@ def save_preview(
 
 
 # ── DELETE /api/preview/{id} ────────────────────────────────
-@router.delete("/preview/{preview_id}")
+@router.delete("/preview/{preview_id}", response_model=PreviewDeleteResponse, responses=_ERR_RESPONSES)
 def delete_preview(
     preview_id: str,
     request: Request,
@@ -306,5 +389,10 @@ def delete_preview(
     write_audit(
         action="preview.delete", user=current_user, request=request,
         target_type="preview", target_ref=preview_id, status_code=200,
+    )
+    log.log_info(
+        "preview.delete.ok",
+        preview_id_masked=log.mask_preview_id(preview_id),
+        user_id=current_user.get("id"), status_code=200,
     )
     return {"ok": True}

@@ -46,44 +46,76 @@ def test_keepalive_interval_unchanged():
     assert job.trigger.interval == timedelta(hours=6)
 
 
-# ── _preview_cleanup 行為 ───────────────────────────────────
-def test_cleanup_calls_service_and_audits_when_positive(monkeypatch, capsys):
+# ── _preview_cleanup 行為（P9 Phase 2A.3：改結構化 log，caplog 觀測）──
+import json
+import logging
+
+
+def _cleanup_events(caplog):
+    """從 caplog 抓 celltrail logger 的結構化 JSON 事件，回傳 dict list。"""
+    out = []
+    for rec in caplog.records:
+        if rec.name != "celltrail":
+            continue
+        try:
+            out.append(json.loads(rec.getMessage()))
+        except Exception:
+            pass
+    return out
+
+
+def test_cleanup_calls_service_and_audits_when_positive(monkeypatch, caplog):
     called = {"cleanup": 0}
     audits = []
     monkeypatch.setattr(main.preview_artifact, "cleanup_expired",
                         lambda: (called.__setitem__("cleanup", called["cleanup"] + 1) or 3))
     monkeypatch.setattr(main, "write_audit", lambda **kw: audits.append(kw) or 1)
 
-    main._preview_cleanup()
+    with caplog.at_level(logging.INFO, logger="celltrail"):
+        main._preview_cleanup()
 
     assert called["cleanup"] == 1
-    assert "purged 3" in capsys.readouterr().out
+    evts = _cleanup_events(caplog)
+    completed = [e for e in evts if e["event"] == "preview.cleanup.completed"]
+    assert len(completed) == 1
+    assert completed[0]["deleted"] == 3
+    assert "run_id" in completed[0] and completed[0]["run_id"].startswith("job_")
+    assert "duration_ms" in completed[0]
+    # audit 行為維持不變
     assert len(audits) == 1
     assert audits[0]["action"] == "preview.cleanup"
     assert audits[0]["details"] == {"deleted": 3}
 
 
-def test_cleanup_no_audit_when_zero(monkeypatch, capsys):
+def test_cleanup_no_audit_when_zero(monkeypatch, caplog):
     audits = []
     monkeypatch.setattr(main.preview_artifact, "cleanup_expired", lambda: 0)
     monkeypatch.setattr(main, "write_audit", lambda **kw: audits.append(kw) or 1)
 
-    main._preview_cleanup()
+    with caplog.at_level(logging.INFO, logger="celltrail"):
+        main._preview_cleanup()
 
-    assert "none expired" in capsys.readouterr().out
+    evts = _cleanup_events(caplog)
+    completed = [e for e in evts if e["event"] == "preview.cleanup.completed"]
+    assert len(completed) == 1 and completed[0]["deleted"] == 0
     assert audits == []   # n==0 不寫 audit
 
 
-def test_cleanup_exception_does_not_crash(monkeypatch, capsys):
+def test_cleanup_exception_does_not_crash(monkeypatch, caplog):
     def _boom():
         raise RuntimeError("db down")
     monkeypatch.setattr(main.preview_artifact, "cleanup_expired", _boom)
     monkeypatch.setattr(main, "write_audit", lambda **kw: 1)
 
-    # 不應拋例外
-    main._preview_cleanup()
+    with caplog.at_level(logging.INFO, logger="celltrail"):
+        main._preview_cleanup()   # 不應拋例外
 
-    assert "failed" in capsys.readouterr().out
+    evts = _cleanup_events(caplog)
+    failed = [e for e in evts if e["event"] == "preview.cleanup.failed"]
+    assert len(failed) == 1
+    assert failed[0]["error_type"] == "RuntimeError"
+    # 不得洩漏原始錯誤訊息（"db down"）到結構化 log
+    assert "db down" not in json.dumps(failed[0])
 
 
 # ── pytest 環境守門 ─────────────────────────────────────────
