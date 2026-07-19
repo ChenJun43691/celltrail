@@ -231,16 +231,22 @@ def read_preview(
     try:
         records = parse_file_only(target_id, meta["filename"], raw, mapping=None)
     except Exception as e:
-        # artifact 已建立但 server 重建失敗 → 500（非使用者檔案問題）
+        # artifact 已建立但 server 重建失敗 → 500（非使用者檔案問題）。
+        # 安全：不得把底層 exception message（str(e)）寫進 audit / log —— 它可能含檔案路徑、
+        # SQL、連線字串、原始資料或 secret。audit error_text 只留「固定安全摘要 + exception
+        # class 名稱」；structured log 只留 error_type / error_stage（皆不含 str(e)）。
         write_audit(
             action="preview.read", user=current_user, request=request,
             target_type="preview", target_ref=preview_id,
-            status_code=500, error_text=f"{type(e).__name__}: {e}",
+            status_code=500, error_text=f"preview rebuild failed: {type(e).__name__}",
         )
+        # domain event：記錄「非 AppError」底層根因的 class 名稱——全域 AppError handler
+        # 看不到這個被吞掉的原始 exception。全域 handler 另會 emit app.error.server（契約層），
+        # 兩者資訊互補、非重複。
         log.log_error(
             "preview.read.rebuild_failed",
             preview_id_masked=log.mask_preview_id(preview_id),
-            error_type=type(e).__name__, status_code=500,
+            error_type=type(e).__name__, error_stage="preview_rebuild", status_code=500,
         )
         raise AppError(
             code=ErrorCode.PREVIEW_PARSE_FAILED,
@@ -318,11 +324,8 @@ def save_preview(
     # 完整性 gate：raw 再 hash 必須等於建立時的 sha256_full（deterministic）
     raw = pa.load_raw(preview_id)
     if pa.sha256_hex(raw) != meta["sha256_full"]:
-        log.log_warning(
-            "preview.save.sha_mismatch",
-            preview_id_masked=log.mask_preview_id(preview_id),
-            user_id=current_user.get("id"), status_code=409,
-        )
+        # 契約層 log 由全域 AppError handler 統一 emit（app.error.client / 409 /
+        # PREVIEW_SHA_MISMATCH / request_id）；此處不再重複 log，避免同一錯誤兩筆 structured log。
         raise AppError(
             code=ErrorCode.PREVIEW_SHA_MISMATCH,
             message="原始檔完整性驗證失敗，請重新建立預覽。",

@@ -149,6 +149,69 @@ def test_get_active_success(monkeypatch, audits, svc):
     assert svc["analyst_seal"] == [] and svc["mark_consumed"] == [] and svc["revoke"] == []
 
 
+def test_read_rebuild_failure_no_raw_exception_message(monkeypatch, audits, caplog):
+    """rebuild 失敗時，底層 exception message（可能含 JWT/密碼/連線字串/中文地址/raw bytes）
+    不得進入 audit error_text、structured log 或 response —— 只留 exception class + 固定安全摘要。
+    """
+    import json as _json
+    import logging as _logging
+
+    _auth(ADMIN)
+    monkeypatch.setattr(pa, "get_meta", lambda pid: _meta())
+    monkeypatch.setattr(pa, "load_raw", lambda pid: b"raw")
+
+    # 刻意讓底層 exception message 塞滿各類敏感內容
+    SENSITIVE = (
+        "eyJhbGciOiJIUzI1NiJ9.PAYLOAD.SIGNATURE "          # JWT 形狀
+        "password=p@ssw0rd! "
+        "postgresql://celltrail:supersecret@db.internal:5432/celltrail "
+        "高雄市前金區中正四路211號 "
+        "rawbytes=\\x00\\x01\\x02"
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError(SENSITIVE)
+    monkeypatch.setattr("app.api.preview.parse_file_only", _boom)
+
+    with caplog.at_level(_logging.INFO, logger="celltrail"):
+        r = client.get("/api/preview/tok")
+
+    # 1. response contract：固定訊息、不洩漏
+    assert r.status_code == 500
+    b = r.json()
+    assert b["error"]["code"] == "PREVIEW_PARSE_FAILED"
+    assert b["error"]["message"] == "預覽重建失敗，請重新上傳。"
+    for bad in ("eyJhbGci", "p@ssw0rd", "supersecret", "postgresql://", "中正四路", "rawbytes"):
+        assert bad not in r.text
+
+    # 2. audit payload：error_text 只留固定摘要 + class 名，不含 str(e)
+    rebuild = [c for c in audits if c.get("action") == "preview.read" and c.get("status_code") == 500]
+    assert len(rebuild) == 1
+    et = rebuild[0].get("error_text") or ""
+    assert et == "preview rebuild failed: RuntimeError"
+    audit_dump = _json.dumps(rebuild[0], ensure_ascii=False, default=str)
+    for bad in ("eyJhbGci", "p@ssw0rd", "supersecret", "postgresql://", "中正四路", "rawbytes"):
+        assert bad not in audit_dump
+
+    # 3. structured logs：既無 str(e)，且 domain + 全域兩筆皆乾淨
+    evts = []
+    for rec in caplog.records:
+        if rec.name == "celltrail":
+            try:
+                evts.append(_json.loads(rec.getMessage()))
+            except Exception:
+                pass
+    dumped = _json.dumps(evts, ensure_ascii=False)
+    for bad in ("eyJhbGci", "p@ssw0rd", "supersecret", "postgresql://", "中正四路", "rawbytes"):
+        assert bad not in dumped
+    domain = [e for e in evts if e.get("event") == "preview.read.rebuild_failed"]
+    assert domain and domain[-1]["error_type"] == "RuntimeError"
+    assert domain[-1]["error_stage"] == "preview_rebuild"
+    assert "message" not in domain[-1]      # 未夾帶 exception message 欄位
+    server = [e for e in evts if e.get("event") == "app.error.server"]
+    assert server and server[-1]["status_code"] == 500
+
+
 def test_get_not_found(monkeypatch, audits):
     _auth(ADMIN)
     monkeypatch.setattr(pa, "get_meta", lambda pid: None)
