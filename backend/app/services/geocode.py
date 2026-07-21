@@ -203,10 +203,17 @@ def _osm_geocode(addr: str) -> Optional[Tuple[float, float]]:
             r.raise_for_status()
             data = r.json()
             if data:
-                time.sleep(1.0)  # 禮貌性節流（Nominatim 使用政策）
                 return float(data[0]["lat"]), float(data[0]["lon"])
         except Exception as e:
             print(f"[geocode] OSM 例外: {type(e).__name__}: {e} addr={addr!r}")
+        finally:
+            # 節流必須對「每一次送出的請求」生效（2026-07-21 修）。
+            # 原本 sleep 寫在 `if data:` 內 → **只有命中才節流**，而未命中是多數
+            # 情況（台灣門牌在 OSM 覆蓋稀疏），等於請求連發、直接違反 Nominatim
+            # 的 1 req/s 政策。實測後果：大量 429 Too many requests，這些地址被
+            # 記成「查無結果」→ 命中率被系統性低估，且重試風暴拖慢整批查詢。
+            # 也就是說，這個 bug 同時製造了「OSM 沒用」與「OSM 很慢」兩個假象。
+            time.sleep(1.0)
         return None
 
     base = {"format": "json", "limit": 1, "countrycodes": "tw"}
