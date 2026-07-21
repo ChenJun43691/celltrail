@@ -10,7 +10,7 @@
 # ------------------------------------------------------------
 
 from __future__ import annotations
-import csv, io, os, re
+import csv, hashlib, io, os, re
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Iterable, Tuple
 
@@ -394,6 +394,8 @@ def _iter_rows_excel(
       3. 取「命中數最多」的列當 header（同分時取首次出現）
       4. 若最高命中數 < M=2 → 規則 B 跳過（保留 W2.1 行為的概念）
       5. 若 sheet 總列數 < 5 → 規則 A 跳過（同上）
+      6. 若該 sheet 內容與同檔前面某張逐格相同 → 規則 A2 跳過（2026-07-21，
+         避免「標記」這類複製分頁把同一筆通聯重複入庫，詳見規則 A2 處註解）
 
     為何 N=30：實測最深的真表頭在 row 27（台哥大上網歷程 test2.xlsx，前面是
               查詢條件 + 完整「使用者資料」PII 區塊），預留 buffer。
@@ -433,10 +435,14 @@ def _iter_rows_excel(
     except Exception:
         active_map = HEADER_MAP
 
-    SCAN_WINDOW = 30         # 表頭最多埋多深（台哥大上網歷程 test2.xlsx 真表頭在
-                             # row 27：前面有查詢條件 + 完整「使用者資料」PII 區塊；
-                             # 舊上限 25 會掃不到。放寬安全：PII/metadata 列命中數=0，
-                             # 真表頭（≥2 canonical 命中）仍穩定勝出，規則 B 不受影響）
+    SCAN_WINDOW = 60         # 表頭最多埋多深。演進：25 → 30（台哥大 test2.xlsx 真表頭
+                             # 在 row 27）→ 60（台哥大「026962 陳2號機網路」真表頭在
+                             # **row 48**：該檔含「兩個調閱區塊」，每塊各帶一整段
+                             # 「使用者資料」PII，把真表頭推得更深；舊上限 30 掃不到
+                             # 任何命中列 → 規則 B 誤判整張 sheet 為非資料表而丟棄）。
+                             # 放寬安全性論證：PII/查詢條件列的 canonical 命中數＝0，
+                             # 真表頭（≥2 命中）仍穩定勝出；把關的是 MIN_HEADER_MATCHES
+                             # 而非窗寬，故加大窗只會「多看到」真表頭、不會放進垃圾列。
     MIN_HEADER_MATCHES = 2   # 真表頭至少要命中幾欄才算數
 
     # 手動對應：使用者指定的 raw 欄名（canon 後）視同「已知欄位」參與規則 B 計分
@@ -459,6 +465,7 @@ def _iter_rows_excel(
     # 用 ExcelFile 列出 sheet 名，避免每張都重新解析整個 workbook
     xls = pd.ExcelFile(io.BytesIO(file_bytes))
     skipped_sheets: List[Tuple[str, str]] = []  # (sheet_name, reason)
+    seen_sheet_digests: Dict[str, Any] = {}     # sha256 → 首次出現的 sheet 名（pandas 可能給 int）
 
     for sheet_name in xls.sheet_names:
         # 整張 raw 讀（無 header），讓我們可以掃任意列當 header
@@ -474,6 +481,30 @@ def _iter_rows_excel(
         if len(df_raw) < 2:
             skipped_sheets.append((sheet_name, f"row<2 ({len(df_raw)} rows)"))
             continue
+
+        # 規則 A2（2026-07-21）：同一 workbook 內「內容完全相同」的 sheet 只取第一張。
+        # 背景：實測「複本 029935 陳1號機網路.xlsx」與「031543 蘇網路.xlsx」都含一張
+        #   名為「標記」、與「工作表1」逐格完全相同的分頁（承辦人複製一份用來標記重點）。
+        #   W2.1 多 sheet 支援會兩張都讀 → 同一筆通聯入庫兩次；raw_traces 沒有內容
+        #   層級的唯一索引，DB 不會擋 → 地圖點位加倍、證物報告筆數加倍。
+        # 為什麼這是證據完整性問題而非效能問題：法庭上「這支門號在該時段出現幾次」
+        #   是實質待證事實，翻倍會直接扭曲軌跡密度與停留時間的判讀。
+        # 為什麼用 sha256 逐列 update 而非 to_csv 後整包 hash：後者要先在記憶體裡
+        #   組出整張表的字串（大檔 20k+ 列會多吃數十 MB），與 P8.1 的分塊省記憶體
+        #   方向相反；逐列 update 是常數級額外記憶體。
+        # 判準刻意嚴格（逐格相同才算重複）：只要有一格不同就當兩份獨立證據保留，
+        #   寧可多存不可漏存 —— 漏存是不可逆的證據滅失，多存至少可事後篩選。
+        _h = hashlib.sha256()
+        for _t in df_raw.itertuples(index=False, name=None):
+            _h.update("\x1f".join(map(str, _t)).encode("utf-8", "replace"))
+            _h.update(b"\x1e")
+        _digest = _h.hexdigest()
+        if _digest in seen_sheet_digests:
+            skipped_sheets.append(
+                (sheet_name, f"duplicate of {seen_sheet_digests[_digest]!r} (sha256 identical)")
+            )
+            continue
+        seen_sheet_digests[_digest] = sheet_name
 
         # W2.2 核心：scan 前 SCAN_WINDOW 列，找命中 header_map 最多的列
         scan_n = min(SCAN_WINDOW, len(df_raw))
@@ -608,6 +639,8 @@ _RAW2CANON = {
     "始話日期時間": "start_ts",  # 雙向通聯：「11501-11505(雙向).xlsx」始話日期+時間合併欄
     "進入基地台時間": "start_ts",  # 台哥大上網歷程「test2.xlsx」：到達該基地台覆蓋的時間（地圖以此為定位時間）
     "離開基地台時間": "end_ts",    # 同上：離開該基地台的時間，補滿 end_ts 不遺失
+    "通聯起始時間": "start_ts",    # 遠傳上網歷程「028351/031543.xlsx」：連上該基地台的時間（地圖定位時間）
+    "通聯結束時間": "end_ts",      # 同上：離開時間，補滿 end_ts 不遺失
     "通聯時間": "start_ts",      # W1 新增：常見通聯紀錄欄名
     "手機連到基地台的時間": "start_ts",  # W2.2：「電話通聯+歷程.xlsx」網路歷程 sheet 方言（此 carrier 常空，留作保險）
     "連到internet的時間":   "start_ts",  # W2.2：同上，此 carrier 真正帶值的時間欄
@@ -622,6 +655,7 @@ _RAW2CANON = {
     "地址": "cell_addr",
     "起址": "cell_addr",          # W1 新增：「周蔓達上網歷程.xlsx」起話端位址
     "離開基地台地址": "cell_addr",  # 台哥大上網歷程「test2.xlsx」：服務基地台地址
+    "起始基地台地址": "cell_addr",  # 遠傳上網歷程：起話端位址（實測常空，靠 W1.5「空值不覆蓋」與離開端互補）
     "基地台編號": "cell_id",
     "基地臺編號": "cell_id",
     "基地台ID": "cell_id",       # Excel 範本有時用 ID 而非「編號」
@@ -631,6 +665,7 @@ _RAW2CANON = {
     "站台編號": "cell_id",
     "站碼": "cell_id",
     "離開基地台編號": "cell_id",  # 台哥大上網歷程「test2.xlsx」：服務基地台編號（純 ID，非複合欄）
+    "起始基地台編號": "cell_id",  # 遠傳上網歷程：起話端編號（實測常空，同上靠空值不覆蓋語意互補）
     "cell_id": "cell_id",
     "基地台": "cell_id",          # W1 新增：「0801-0903彭奕翔網路歷程.xlsx」
     "基地台/交換機": "cell_id",   # W1 新增：「電話通聯+歷程.xlsx」

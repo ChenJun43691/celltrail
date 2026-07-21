@@ -304,6 +304,8 @@ SELECT
       "始話日期時間": "start_ts",
       "進入基地台時間": "start_ts",
       "離開基地台時間": "end_ts",
+      "通聯起始時間": "start_ts",
+      "通聯結束時間": "end_ts",
       "通聯時間":     "start_ts",
       "手機連到基地台的時間": "start_ts",
       "連到internet的時間":   "start_ts",
@@ -318,6 +320,7 @@ SELECT
       "地址":           "cell_addr",
       "起址":           "cell_addr",
       "離開基地台地址": "cell_addr",
+      "起始基地台地址": "cell_addr",
 
       "基地台編號":   "cell_id",
       "基地臺編號":   "cell_id",
@@ -328,6 +331,7 @@ SELECT
       "站台編號":     "cell_id",
       "站碼":         "cell_id",
       "離開基地台編號": "cell_id",
+      "起始基地台編號": "cell_id",
       "cell_id":      "cell_id",
       "基地台":         "cell_id",
       "基地台/交換機": "cell_id",
@@ -369,6 +373,7 @@ SELECT
     || E'\n+ GPS 軌跡/經緯度直給格式（2026-06-04）：GPS時間/定位時間→start_ts、經度→lng、緯度→lat（含 wgs84 後綴與英文 longitude/latitude/lng/lat/lon）。此類檔無 cell_id/地址，ingest 直接採用座標免 geocode；經緯度欄常被標反，由 _resolve_latlng 以「緯度必在 [-90,90]」範圍自動校正。'
     || E'\n+ 雙向通聯格式（2026-06-22）：始話日期時間→start_ts；基地台編號1/位置1、基地台編號2/位置2→cell_id_compound（cell_id 與地址用 "/" 或全形「／」合併，由 _split_compound_cell 斜線分支拆解）。'
     || E'\n+ 台哥大上網歷程格式（2026-06-27，test2.xlsx）：進入基地台時間→start_ts、離開基地台時間→end_ts、離開基地台編號→cell_id、離開基地台地址→cell_addr（純 ID/地址欄，非複合欄）。此格式表頭埋在 row 27（前置查詢條件 + 完整使用者資料 PII 區塊），故 SCAN_WINDOW 由 25 放寬至 30。'
+    || E'\n+ 遠傳上網歷程格式（2026-07-21，028351/031543.xlsx）：通聯起始時間→start_ts、通聯結束時間→end_ts、起始基地台編號→cell_id、起始基地台地址→cell_addr（離開基地台編號/地址沿用台哥大既有別名）。實測起始端兩欄常為空、資料落在離開端，靠 _normalize_row 的 W1.5「空值不覆蓋」語意互補。另：台哥大「026962」含兩個調閱區塊（各帶一段使用者資料 PII），真表頭深至 row 48，故 SCAN_WINDOW 由 30 放寬至 60。'
     || E'\n暫不收的別名（待未來 milestone）：迄台、迄址（單純迄話端，需先補 cell_id_end / cell_addr_end 欄位）；始話日期（需與始話時間合併規則）。',
     NULL, NULL, NULL
 WHERE NOT EXISTS (
