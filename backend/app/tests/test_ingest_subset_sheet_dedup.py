@@ -308,6 +308,11 @@ def test_regression_other_samples_have_no_unexpected_dedup(monkeypatch):
     for fn in sorted(os.listdir(SAMPLE_DIR)):
         if not fn.lower().endswith((".xlsx", ".xltx")) or fn.startswith("."):
             continue
+        # `~$檔名.xlsx` 是 Excel 開檔時產生的鎖定暫存檔（約 165 bytes，非資料）。
+        # 承辦人只要正開著任一樣本檔就會出現，pandas 讀它會拋
+        # 「Excel file format cannot be determined」→ 測試偽失敗。
+        if fn.startswith("~$"):
+            continue
         if any(fn.startswith(k) for k in known_dup):
             continue
         skips = _capture_skips(monkeypatch)
