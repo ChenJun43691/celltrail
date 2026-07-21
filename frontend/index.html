@@ -634,6 +634,10 @@
 
   <!-- 訪客 banner -->
   <div id="guestDataBanner" style="display:none">
+    <!-- 未定位揭露（訪客模式）：L1/L2/L3 三層 UI 都綁專案模式，訪客路徑原本
+         完全沒有任何未定位提示，導致「解析成功但定位失敗」的資料被沉默丟棄，
+         使用者只看到地圖上寥寥幾點而誤判為「解析失敗」。此處補上最小揭露。 -->
+    <span id="guestUnlocatedNote" style="display:none;flex:1 1 100%;font-weight:600"></span>
     <span>💡 登入後可儲存此次分析，並與同事共享。</span>
     <button id="guestLoginSaveBtn" type="button">立即登入並儲存</button>
     <button id="dismissGuestBannerBtn" type="button" style="margin-left:auto;opacity:.6">✕</button>
@@ -4074,7 +4078,13 @@
 
     // 訪客上傳 → parse-only API（無 DB 寫入）
     async function doGuestUpload(files) {
-      let totalPlotted = 0, anyFail = null;
+      // totalParsed / totalSkipped 為 2026-07-21 新增：
+      //   原本只累計 plotted（成功定位數）並拿它當「已載入筆數」顯示，
+      //   於是 4,800 筆全數解析成功、但只有 1 筆定位得到座標的檔案，
+      //   畫面會顯示「已載入 1 筆資料」→ 使用者無法分辨這是「解析失敗」
+      //   還是「定位失敗」，而且另外 4,799 筆等同被沉默丟棄。
+      //   解析數與定位數是兩件事，必須分開呈現。
+      let totalParsed = 0, totalPlotted = 0, totalSkipped = 0, anyFail = null;
       for (const file of files) {
         const tid = file.name.replace(/\.[^.]+$/, '');
         const fd = new FormData();
@@ -4113,7 +4123,9 @@
           const geo = await res.json();
           _tempRecordsStore.set(tid, geo._records || []);
           appendGeoJsonToSeries(geo);
+          totalParsed  += geo.total   || 0;
           totalPlotted += geo.plotted || 0;
+          totalSkipped += geo.skipped || 0;
           const gb = $('guestDataBanner');
           gb.classList.remove('hiding');
           gb.style.display = 'flex';
@@ -4127,10 +4139,33 @@
       shouldFit = true;
       refreshSeriesPanel();
       await render();
+      // 未定位揭露：dropzone 的成功訊息 2 秒後就自動消失，來不及細看，
+      // 故未定位筆數另外寫進**常駐**的訪客 banner（證據完整性：不可沉默丟資料）。
+      const note = $('guestUnlocatedNote');
+      if (note) {
+        if (totalSkipped > 0) {
+          note.textContent =
+            `⚠ 共解析 ${totalParsed} 筆，其中 ${totalSkipped} 筆查不到基地台座標，未顯示於地圖`
+            + `（資料已完整讀取，非解析失敗）`;
+          note.style.display = '';
+        } else {
+          note.style.display = 'none';
+        }
+      }
+
       if (anyFail) {
         setUploadState('error', `解析失敗：${anyFail}`);
+      } else if (totalSkipped > 0) {
+        // 刻意把「解析」與「定位」拆開講：兩者失敗的原因與處理方式完全不同
+        setUploadState('success',
+          `解析完成：共 ${totalParsed} 筆，已定位 ${totalPlotted}，未定位 ${totalSkipped}`);
+        showToast(
+          `解析成功 ${totalParsed} 筆，但其中 ${totalSkipped} 筆查不到基地台座標，`
+          + `因此不會出現在地圖上。這不是解析失敗。`,
+          'info', 8000
+        );
       } else {
-        setUploadState('success', `解析完成，已載入 ${totalPlotted} 筆資料`);
+        setUploadState('success', `解析完成，共 ${totalParsed} 筆，已全部定位`);
       }
     }
 
