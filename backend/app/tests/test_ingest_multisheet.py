@@ -18,9 +18,29 @@ patch 成回傳 ingest.HEADER_MAP，避免 DB 查詢污染測試。
 from __future__ import annotations
 
 import io
+import json
 import os
 import logging
-from typing import Any, List, Tuple
+from typing import Any, Dict, List, Tuple
+
+
+def _skip_records(caplog) -> List[Dict[str, Any]]:
+    """從結構化 log 取出「分頁被跳過」的稽核紀錄。
+
+    2026-07-21：跳過紀錄改走 core.logging_utils 的結構化 JSON，且**刻意不再
+    包含分頁名稱** —— 實測分頁名可能直接是門號或對象姓名（如
+    「0958549697 雙向歷程（嫌1）」），寫進 log 等同外洩 PII。分頁一律以
+    sheet#<位置> 表示，故測試改為斷言「位置 + reason 代碼」。
+    """
+    out: List[Dict[str, Any]] = []
+    for m in caplog.messages:
+        try:
+            d = json.loads(m)
+        except Exception:
+            continue
+        if d.get("event") == "ingest.sheet.skipped":
+            out.append(d)
+    return out
 
 # 必須在 import app.* 之前設好環境變數，避免 db.session 在 import 期間崩潰
 os.environ.setdefault("DATABASE_URL", "postgresql://user:pass@localhost:5432/fakedb")
@@ -169,8 +189,9 @@ def test_skip_short_sheet(monkeypatch, caplog):
         rows = list(_iter_rows_excel(blob))
     assert len(rows) == 10
     # 跳過資訊應寫進 log
-    assert any("摘要" in m and "row<2" in m for m in caplog.messages), (
-        f"未在 log 看到「摘要」被跳過的紀錄；實際 log：{caplog.messages}"
+    recs = _skip_records(caplog)
+    assert any(r["sheet"] == "sheet#1" and r["reason"] == "row_lt_2" for r in recs), (
+        f"未在 log 看到第 2 張分頁被以 row_lt_2 跳過的紀錄；實際：{recs}"
     )
 
 
@@ -228,9 +249,13 @@ def test_skip_no_header_match(monkeypatch, caplog):
         all_keys.update(r.keys())
     assert "姓名" not in all_keys
     assert "身分證" not in all_keys
-    # W2.2（2026-04-29）：規則 B 觸發訊息從「no header match」改為
-    # 「header matches < N (best=K)」，因新演算法用命中分數而非二元判斷
-    assert any("基本人資" in m and "header matches" in m for m in caplog.messages)
+    # W2.2（2026-04-29）：規則 B 觸發訊息從「no header match」改為命中分數判斷；
+    # 2026-07-21 再改為結構化 reason 代碼（分頁以位置表示，不寫名稱以免外洩 PII）
+    recs = _skip_records(caplog)
+    assert any(
+        r["sheet"] == "sheet#1" and r["reason"] == "header_matches_below_threshold"
+        for r in recs
+    ), f"未看到人資分頁因表頭命中不足被跳過；實際：{recs}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -259,13 +284,11 @@ def test_skip_short_takes_precedence(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="app.services.ingest"):
         rows = list(_iter_rows_excel(blob))
     assert len(rows) == 10
-    # 規則 A 短路 → log 應只出現一次「封面」
-    封面_logs = [m for m in caplog.messages if "封面" in m]
-    assert len(封面_logs) == 1, f"應該只有一筆 log；實際：{封面_logs}"
-    # 短路規則為 A（行<2），不該看到規則 B 的字串
-    # W2.2：規則 B 訊息從「no header match」改為「header matches」
-    assert "row<2" in 封面_logs[0]
-    assert "header matches" not in 封面_logs[0]
+    # 規則 A 短路 → 第 2 張分頁（封面）只該被記錄一次
+    封面_recs = [r for r in _skip_records(caplog) if r["sheet"] == "sheet#1"]
+    assert len(封面_recs) == 1, f"應該只有一筆 log；實際：{封面_recs}"
+    # 短路規則為 A（列數 < 2），不該是規則 B 的 reason
+    assert 封面_recs[0]["reason"] == "row_lt_2"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -280,11 +303,15 @@ def test_per_sheet_fake_header_detection(monkeypatch):
     _patch_active_map_to_default(monkeypatch)
     from app.services.ingest import _iter_rows_excel
 
-    data_rows = [[f"2026-01-01 1{i}:00:00", f"CELL_{i}", "0911111111"] for i in range(5)]
+    # 兩張分頁刻意使用**不同**資料：2026-07-21 新增規則 A2（同 workbook 子集分頁
+    # 去重）後，若兩張內容相同，第二張會被正確判定為重複而跳過 —— 那會讓本測試
+    # 誤以為「假表頭偵測失敗」。用不同日期隔開，才測得到原本要測的東西。
+    data_rows_a = [[f"2026-01-01 1{i}:00:00", f"CELL_A{i}", "0911111111"] for i in range(5)]
+    data_rows_b = [[f"2026-02-02 1{i}:00:00", f"CELL_B{i}", "0922222222"] for i in range(5)]
 
     blob = _make_xlsx_with_supertitle([
-        ("正常表頭", ["時間", "基地台", "通話對象"], data_rows, False),
-        ("假表頭",   ["時間", "基地台", "通話對象"], data_rows, True),
+        ("正常表頭", ["時間", "基地台", "通話對象"], data_rows_a, False),
+        ("假表頭",   ["時間", "基地台", "通話對象"], data_rows_b, True),
     ])
     rows = list(_iter_rows_excel(blob))
     assert len(rows) == 10, (
@@ -321,9 +348,9 @@ def test_all_sheets_filtered_returns_empty(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="app.services.ingest"):
         rows = list(_iter_rows_excel(blob))
     assert rows == []
-    # 兩個 sheet 都該被記錄
-    assert any("封面" in m for m in caplog.messages)
-    assert any("人資" in m for m in caplog.messages)
+    # 兩個 sheet 都該被記錄（以位置表示）
+    skipped = {r["sheet"] for r in _skip_records(caplog)}
+    assert skipped == {"sheet#0", "sheet#1"}, f"兩張分頁都應留下跳過紀錄；實際：{skipped}"
 
 
 # ─────────────────────────────────────────────────────────────

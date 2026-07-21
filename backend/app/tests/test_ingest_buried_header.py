@@ -16,6 +16,7 @@ W2.2 表頭埋深偵測單元測試（2026-04-29）
 from __future__ import annotations
 
 import io
+import json
 import os
 import logging
 from typing import Any, List, Tuple
@@ -230,10 +231,20 @@ def test_no_real_header_in_window(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="app.services.ingest"):
         rows = list(_iter_rows_excel(blob))
     assert rows == []
-    assert any("人資" in m and "header matches" in m for m in caplog.messages), (
-        f"未在 log 看到「人資」sheet 被以 header matches 不足為由跳過；"
-        f"實際 log: {caplog.messages}"
-    )
+    # 2026-07-21：跳過紀錄改走結構化 JSON，且刻意不含分頁名稱（分頁名可能是
+    # 門號或對象姓名 → PII），故改斷言「分頁位置 + reason 代碼」。
+    recs = []
+    for m in caplog.messages:
+        try:
+            d = json.loads(m)
+        except Exception:
+            continue
+        if d.get("event") == "ingest.sheet.skipped":
+            recs.append(d)
+    assert any(
+        r["sheet"] == "sheet#0" and r["reason"] == "header_matches_below_threshold"
+        for r in recs
+    ), f"未看到人資分頁因表頭命中不足被跳過；實際：{recs}"
 
 
 # ─────────────────────────────────────────────────────────────

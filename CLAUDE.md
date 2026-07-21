@@ -235,7 +235,7 @@ bash scripts/rebuild_venv.sh   # 核彈級重建，約 5 分鐘
 | `026962 陳2號機網路.xlsx`（台哥大） | 98.5%（1514→1491） | 2026-07-21：真表頭埋 **row 48**（兩個調閱區塊各帶一段 PII），SCAN_WINDOW→60。丟棄的 23 列＝第二區塊 metadata + 重複表頭列（無 ts，正確過濾）|
 | `026965 陳1號機網路.xlsx`（台哥大） | 99.6%（11557→11511） | 一個 sheet 內 3 個表頭區塊，沿用首個表頭正確解析 |
 | `028351 蘇世崇網路.xlsx` / `031543 蘇網路.xlsx`（遠傳） | 99.6% | 2026-07-21：`通聯起始/結束時間` + `起始基地台編號/地址` 別名（見五-V）|
-| `複本 029935 陳1號機網路.xlsx` / `031543`（含「標記」分頁） | 去重後 99.5% | 2026-07-21：`標記` 分頁與 `工作表1` 逐格相同，規則 A2 去重（否則筆數翻倍）|
+| `複本 029935 陳1號機網路.xlsx` / `031543`（含「標記」分頁） | 去重後 99.5% | 2026-07-21：`標記` 分頁是 `工作表1` 的**子集**（029935 為逐格相同、031543 少 23 列），規則 A2 multiset 子集去重（否則筆數翻倍，見五-W）|
 
 **結論**：手邊所有真實樣本要嘛 100%、要嘛達資料物理上限。**ingest pipeline 沒有已知未修的 silent bug**（2026-07-21 對 `基地台位置範例檔案/` 全 17 檔重驗：16 個真實檔全解，`壞檔.csv` 依設計回 422 診斷）。解析無筆數上限；雲端「上傳→geocode→回應」整段才有資源上限（七-8）。
 
@@ -497,10 +497,29 @@ persisted `/upload` chunk-based ingest（五-P8.1 milestone）已部署並在 Re
 
 3. **重複分頁造成筆數翻倍**（`複本 029935`、`031543`）：兩檔各有一張名為 `標記`、與 `工作表1` **逐格完全相同**的分頁（承辦人複製一份標記重點）。W2.1 多 sheet 支援兩張都讀 → 同一筆通聯入庫兩次；`raw_traces` 無內容層級唯一索引，DB 不擋。
    - **為何是證據完整性問題**：「該門號在該時段出現幾次」是實質待證事實，翻倍會直接扭曲軌跡密度與停留時間判讀。
-   - 解法：**規則 A2** —— 同一 workbook 內容 sha256 相同的 sheet 只取第一張，跳過紀錄寫進既有 `skipped_sheets` log（可追溯、不沉默）。
-   - 刻意取捨：① 逐列 `sha256.update` 而非 `to_csv` 整包 hash（後者大檔多吃數十 MB，與 P8.1 省記憶體方向相反）；② 判準嚴格到「逐格相同」才算重複，**只要一格不同就兩份都留** —— 漏存是不可逆的證據滅失，多存至少可事後篩選；③ 去重狀態限單次 `_iter_rows_excel` 呼叫內，不跨檔（不同單位交付的同批資料是獨立證物）。
+   - 解法：**規則 A2**（初版為「內容 sha256 完全相同才跳過」，**同日改版為 multiset 子集判定**，見下段 W）。
 
 **驗證**：全 17 檔重跑 → 16 個真實檔全解（`壞檔.csv` 依設計回 422），原本正常的 13 檔筆數**逐檔不變**（零回歸）；新增 `test_ingest_fet_and_dup_sheet.py` 8 條，pytest **463 passed**。
+
+### W. 規則 A2 改版：multiset 子集分頁去重（2026-07-21，同日）
+
+**背景**：五-V 的 A2 初版採「逐格 sha256 完全相同」判定。使用者當天編輯樣本檔後，`031543` 的第二分頁變成第一分頁的**純子集**（4,818 個唯一列全部已存在於第一分頁，但列數少 23）→ 雜湊不同 → 規則失效 → **約 4,800 筆重複寫入**。實務上副本幾乎一定會被動過（標記重點、刪幾列），所以「嚴格相等」等於形同虛設。
+
+**改法**（`_iter_rows_excel` 規則 A2 重寫 + 兩支新 helper）：
+- **fingerprint 建在 `_normalize_row` 之後**：比較的是證據語意欄位（`start_ts / end_ts / cell_id / cell_addr / lat / lng / azimuth / sector_id / sector_name / site_code`），壓成 blake2b 16-byte digest。樣式／顏色／註解／未映射欄（承辦人另加的標記欄）**天然不參與比較** —— 副本被塗色仍能辨識為子集，而真正多出來的證據列一定被保留。不需維護黑名單，由架構保證。
+  - `event_type` 不納入：`raw_traces` 無此欄（通話類別只當 dialect 訊號、不落地）。
+  - 無效列（缺 `start_ts`，或 cell_id/地址/座標皆空）回 `None`、不計入比對 —— 否則兩分頁的雜訊列數差異會干擾判定。有效性定義與 `_ingest_rows_stream` 一致。
+  - 型別先 canonical 化（`_parse_ts`/`_to_float`/`_to_int`）：同一筆證據可能一邊存 datetime、一邊存字串，不正規化會產生不同 fingerprint。
+- **multiset（`Counter`）包含判定**，非 set：`new_rows = Σ max(0, count_B[fp] − count_A[fp])`，等價 ∀fp: `count_B ≤ count_A`。用 set 會把「A 有 1 筆、B 有 3 筆」誤判為完全重複，漏掉 2 筆真實獨立事件。
+- **只有 `new_rows == 0` 才整張跳過**；有任何新列就整張保留（寧可多存不可漏存）。
+- 比對對象是**單一先前分頁**而非所有分頁的聯集：更保守，也才能在稽核紀錄明確指出 `reference_sheet`。
+- **兩趟掃描**（Pass 1 建 Counter 判定、Pass 2 才 yield），共用 `_materialize_sheet_row()` 確保「判定用的列」與「實際落地的列」逐欄一致。**單分頁 workbook 自動關閉整個規則**（不可能有分頁間重複），大檔零額外成本。
+- **稽核與隱私**：跳過紀錄改走 `core/logging_utils.log_info`，欄位 `reason=subset_duplicate_sheet / reference_sheet / valid_rows / duplicate_rows / new_rows`。**分頁一律以 `sheet#<位置>` 表示、不寫名稱** —— 實測分頁名可能直接是門號或對象姓名（如「0958549697 雙向歷程（嫌1）」），寫進 log 等同外洩 PII。其餘 skip 原因也一併結構化（`row_lt_2` / `header_matches_below_threshold` / `no_data_row_after_header`）。
+- **不跨檔案去重**：去重狀態是 `_iter_rows_excel` 的區域變數，每次呼叫重建。
+
+**驗證**：`031543` 9,600 → **4,800**（−4,800）；**其餘 15 檔逐檔 `+0`**，DB 實際落地數與 inserted 全部相符（本機 PostGIS 真實 `ingest_auto` 寫入後回查）。新增 `test_ingest_subset_sheet_dedup.py` 13 條，pytest **476 passed**。同時修改 6 條既有測試：5 條斷言舊 log 格式（要求訊息含分頁名稱，正是為 PII 移除的），1 條 `test_per_sheet_fake_header_detection` 屬真實行為變更（其兩分頁用了完全相同資料，新規則正確判為重複）→ 改用不同資料以保住原測試意圖。
+
+**尚存風險**：① 走 `_iter_simple_time_location`（P8.2 fallback）的分頁不經過 A2；② 跨檔案重複仍會重複寫入（刻意）；③ B 的內容若分散在 A1+A2 兩張、各自不完整涵蓋，B 會被保留（偏保守）；④ fingerprint 忽略未映射欄 —— 若某業者把關鍵鑑識資訊放在系統尚未認識的欄位，該資訊不參與判定，緩解方式是把該欄加進 `_RAW2CANON`；⑤ 3 條真實檔回歸測試在 CI 會 skip（樣本檔含個資、不入版控）。
 
 ---
 
@@ -853,7 +872,8 @@ backend/app/
                         三 phase ingest, ParseDiagnosisError, _peek_headers, _apply_user_mapping；
                         P8: _iter_rows_excel(user_mapping=), _guess_header_row_idx,
                         _read_xlsx_top_rows 假 dimension fallback, SCAN_WINDOW=60,
-                        規則 A2 重複 sheet sha256 去重）
+                        規則 A2 multiset 子集分頁去重：_evidence_fingerprint /
+                        _materialize_sheet_row，見五-W）
     geocode.py       ← Google(並行 ThreadPool) + OSM 備援(序列) + cell_towers 本地查詢
                         + Redis/SQL geocode_cache 持久快取 + lookup_bulk 批次(增量寫回)
     audit.py         ← write_audit() helper

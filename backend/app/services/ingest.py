@@ -11,11 +11,13 @@
 
 from __future__ import annotations
 import csv, hashlib, io, os, re
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, List, Optional, Iterable, Tuple
 
 from fastapi import HTTPException
 from app.db.session import get_conn
+from app.core.logging_utils import log_info
 from app.services import geocode
 
 # ====== 共用常數與工具 ======
@@ -361,6 +363,90 @@ def _iter_simple_time_location(df_raw) -> Iterable[Dict[str, Any]]:
             yield {"開始時間": t, "基地台地址": (None if b is None else str(b).strip())}
 
 
+def _materialize_sheet_row(row, columns) -> Dict[str, Any]:
+    """把 pandas 一列轉成 raw row dict（型別正規化）。
+
+    抽成獨立函式的原因：規則 A2（子集分頁去重）需要對同一張 sheet 走兩趟
+    —— 第一趟建 fingerprint multiset 以決定要不要整張跳過，第二趟才真的 yield。
+    兩趟必須產生「逐欄完全一致」的 row dict，否則 fingerprint 與實際落地資料
+    會對不起來；共用同一支函式是保證這件事最直接的方式。
+    """
+    d = {str(k).strip(): row[k] for k in columns}
+    for k, v in list(d.items()):
+        # pandas.Timestamp / numpy.datetime64 → python datetime（時區邏輯留給 _parse_ts）
+        if hasattr(v, "to_pydatetime"):
+            try:
+                d[k] = v.to_pydatetime()
+                continue
+            except Exception:
+                pass
+        # 其他 numpy 型別 → python 原生（跳過 str/bytes，避免它們意外實作了 .item()）
+        try:
+            if hasattr(v, "item") and not isinstance(v, (str, bytes)):
+                d[k] = v.item()
+        except Exception:
+            pass
+    return d
+
+
+# 進入 fingerprint 的 canonical 欄位：**只取具證據語意、且真的會落進 raw_traces 的欄**。
+# 刻意不納入樣式／顏色／註解／未映射欄／純標記欄 —— 因為 fingerprint 是在
+# _normalize_row **之後**才建立的，未被 header_map 認識的欄（例如承辦人另開的
+# 「已標記」欄、外部IP、使用量）本來就不會出現在 normalized row 裡，等於由架構
+# 保證被排除，不需要另外維護黑名單。
+# 註：需求提到的 event_type 在本專案 schema 中不存在（raw_traces 無此欄，通話類別
+# 只在中華上網方言裡當 dialect 判斷訊號、不落地），故不納入；sector_* / site_code
+# 屬證據性識別欄，納入可讓判定更嚴格（更不容易誤判為重複），方向上是安全的。
+_FINGERPRINT_FIELDS = (
+    "start_ts", "end_ts", "cell_id", "cell_addr",
+    "lat", "lng", "azimuth", "sector_id", "sector_name", "site_code",
+)
+
+
+def _evidence_fingerprint(raw_row: Dict[str, Any]) -> Optional[bytes]:
+    """對「已 normalize 的證據欄位」建立 canonical fingerprint。
+
+    回傳 None 代表這一列不是有效證據列（下游 _ingest_rows_stream 也會把它
+    skip 掉），不納入子集比對 —— 否則兩張分頁之間的雜訊列數差異會干擾判定。
+    有效性條件與 _ingest_rows_stream 保持一致：
+      必須有 start_ts，且 cell_addr / cell_id / 經緯度至少有一個。
+
+    canonical 化（而非直接 str()）的必要性：同一份資料在不同分頁可能一邊被
+    Excel 存成 datetime、另一邊存成字串；不先過 _parse_ts / _to_float / _to_int
+    正規化，同一筆證據會產生不同 fingerprint，子集判定就會失效。
+    """
+    r = _normalize_row(raw_row)
+
+    start_ts = _parse_ts(r.get("start_ts"))
+    if not start_ts:
+        return None
+    cell_id = (str(r.get("cell_id") or "").strip() or None)
+    cell_addr = (str(r.get("cell_addr") or "").strip() or None)
+    direct_ll = _resolve_latlng(r)
+    if not cell_addr and not cell_id and not direct_ll:
+        return None
+
+    end_ts = _parse_ts(r.get("end_ts")) or start_ts
+    canon = {
+        "start_ts": start_ts.isoformat(),
+        "end_ts": end_ts.isoformat(),
+        "cell_id": cell_id,
+        "cell_addr": cell_addr,
+        "lat": f"{direct_ll[0]:.7f}" if direct_ll else None,
+        "lng": f"{direct_ll[1]:.7f}" if direct_ll else None,
+        "azimuth": _to_int(r.get("azimuth")),
+        "sector_id": (str(r.get("sector_id") or "").strip() or None),
+        "sector_name": (str(r.get("sector_name") or "").strip() or None),
+        "site_code": (str(r.get("site_code") or "").strip() or None),
+    }
+    payload = "\x1f".join(
+        "" if canon[k] is None else str(canon[k]) for k in _FINGERPRINT_FIELDS
+    )
+    # 只留 16 bytes digest：分頁動輒上萬列，存完整 payload 會把記憶體吃掉；
+    # 同時 digest 不可逆，之後即使進 log 也不會外洩證物內容或 PII。
+    return hashlib.blake2b(payload.encode("utf-8", "replace"), digest_size=16).digest()
+
+
 def _iter_rows_excel(
     file_bytes: bytes,
     user_mapping: Optional[Dict[str, str]] = None,
@@ -464,10 +550,19 @@ def _iter_rows_excel(
 
     # 用 ExcelFile 列出 sheet 名，避免每張都重新解析整個 workbook
     xls = pd.ExcelFile(io.BytesIO(file_bytes))
-    skipped_sheets: List[Tuple[str, str]] = []  # (sheet_name, reason)
-    seen_sheet_digests: Dict[str, Any] = {}     # sha256 → 首次出現的 sheet 名（pandas 可能給 int）
+    skipped_sheets: List[Dict[str, Any]] = []   # 結構化跳過紀錄（見檔末 log）
+    # 規則 A2 用：已採納分頁的 (分頁代號, fingerprint multiset)。
+    # **只在單一 workbook 的生命週期內存在** —— 函式區域變數，每次呼叫重建，
+    # 因此不可能跨檔案去重（不同單位交付的同批資料是各自獨立的證物）。
+    accepted_sheets: List[Tuple[str, "Counter[bytes]"]] = []
+    # 單一分頁的 workbook 不可能有分頁間重複 → 直接關掉 A2，省下整整一趟
+    # normalize（大檔上萬列，這趟不便宜）。
+    dedup_enabled = len(xls.sheet_names) > 1
 
-    for sheet_name in xls.sheet_names:
+    for sheet_pos, sheet_name in enumerate(xls.sheet_names):
+        # 分頁對外代號一律用「位置」而非名稱：實測分頁名可能直接是門號或對象姓名
+        # （例如「0958549697 雙向歷程（嫌1）」），寫進 log 等同外洩 PII。
+        sheet_ref = f"sheet#{sheet_pos}"
         # 整張 raw 讀（無 header），讓我們可以掃任意列當 header
         df_raw = pd.read_excel(xls, sheet_name=sheet_name, header=None)
 
@@ -479,32 +574,10 @@ def _iter_rows_excel(
         #   （表頭必須命中 ≥2 個 canonical 別名）＋ line 350（去表頭後須 ≥1 列），
         #   不是列數本身；故安全地把列數門檻降到「資料表的物理下限」= 2 列。
         if len(df_raw) < 2:
-            skipped_sheets.append((sheet_name, f"row<2 ({len(df_raw)} rows)"))
+            skipped_sheets.append({
+                "sheet": sheet_ref, "reason": "row_lt_2", "rows": int(len(df_raw)),
+            })
             continue
-
-        # 規則 A2（2026-07-21）：同一 workbook 內「內容完全相同」的 sheet 只取第一張。
-        # 背景：實測「複本 029935 陳1號機網路.xlsx」與「031543 蘇網路.xlsx」都含一張
-        #   名為「標記」、與「工作表1」逐格完全相同的分頁（承辦人複製一份用來標記重點）。
-        #   W2.1 多 sheet 支援會兩張都讀 → 同一筆通聯入庫兩次；raw_traces 沒有內容
-        #   層級的唯一索引，DB 不會擋 → 地圖點位加倍、證物報告筆數加倍。
-        # 為什麼這是證據完整性問題而非效能問題：法庭上「這支門號在該時段出現幾次」
-        #   是實質待證事實，翻倍會直接扭曲軌跡密度與停留時間的判讀。
-        # 為什麼用 sha256 逐列 update 而非 to_csv 後整包 hash：後者要先在記憶體裡
-        #   組出整張表的字串（大檔 20k+ 列會多吃數十 MB），與 P8.1 的分塊省記憶體
-        #   方向相反；逐列 update 是常數級額外記憶體。
-        # 判準刻意嚴格（逐格相同才算重複）：只要有一格不同就當兩份獨立證據保留，
-        #   寧可多存不可漏存 —— 漏存是不可逆的證據滅失，多存至少可事後篩選。
-        _h = hashlib.sha256()
-        for _t in df_raw.itertuples(index=False, name=None):
-            _h.update("\x1f".join(map(str, _t)).encode("utf-8", "replace"))
-            _h.update(b"\x1e")
-        _digest = _h.hexdigest()
-        if _digest in seen_sheet_digests:
-            skipped_sheets.append(
-                (sheet_name, f"duplicate of {seen_sheet_digests[_digest]!r} (sha256 identical)")
-            )
-            continue
-        seen_sheet_digests[_digest] = sheet_name
 
         # W2.2 核心：scan 前 SCAN_WINDOW 列，找命中 header_map 最多的列
         scan_n = min(SCAN_WINDOW, len(df_raw))
@@ -533,9 +606,10 @@ def _iter_rows_excel(
                 yield srow
             if emitted_simple:
                 continue
-            skipped_sheets.append(
-                (sheet_name, f"header matches < {MIN_HEADER_MATCHES} (best={best_match})")
-            )
+            skipped_sheets.append({
+                "sheet": sheet_ref, "reason": "header_matches_below_threshold",
+                "best_match": int(best_match), "threshold": MIN_HEADER_MATCHES,
+            })
             continue
 
         # 切片：best_idx 是 header row，其下是資料
@@ -559,9 +633,10 @@ def _iter_rows_excel(
 
         # 規則 A 二次校驗：去 header 後資料列若 < 1，跳過（罕見但保險）
         if len(df) < 1:
-            skipped_sheets.append(
-                (sheet_name, f"no data row after header at row{best_idx+1}")
-            )
+            skipped_sheets.append({
+                "sheet": sheet_ref, "reason": "no_data_row_after_header",
+                "header_row_idx": int(best_idx),
+            })
             continue
 
         df = df.replace({np.nan: ""})
@@ -580,37 +655,80 @@ def _iter_rows_excel(
                 "ingest: sheet=%r detected dialect=%r", sheet_name, sheet_dialect
             )
 
-        for _, row in df.iterrows():
-            d = {str(k).strip(): row[k] for k in df.columns}
-            for k, v in list(d.items()):
-                # pandas.Timestamp / numpy.datetime64 → python datetime（保留時區邏輯由 _parse_ts 處理）
-                if hasattr(v, "to_pydatetime"):
-                    try:
-                        d[k] = v.to_pydatetime()
-                        continue
-                    except Exception:
-                        pass
-                # 其他 numpy 型別 → python 原生（跳過 str/bytes，避免它們意外實作了 .item()）
-                try:
-                    if hasattr(v, "item") and not isinstance(v, (str, bytes)):
-                        d[k] = v.item()
-                except Exception:
-                    pass
-            # W2.4：用 reserved key 注入 dialect tag。下游 _normalize_row 會
-            # pop 掉這個 key、決定走 dialect path 或標準 path。命名加雙底線
-            # 前後綴是 magic key 的常見 convention，幾乎不可能撞到真欄名。
-            if sheet_dialect:
-                d["__celltrail_dialect__"] = sheet_dialect
+        def _sheet_rows():
+            """產生本 sheet 的 raw row dict（含 dialect tag 注入）。"""
+            for _, row in df.iterrows():
+                d = _materialize_sheet_row(row, df.columns)
+                # W2.4：用 reserved key 注入 dialect tag。下游 _normalize_row 會
+                # pop 掉這個 key、決定走 dialect path 或標準 path。命名加雙底線
+                # 前後綴是 magic key 的常見 convention，幾乎不可能撞到真欄名。
+                if sheet_dialect:
+                    d["__celltrail_dialect__"] = sheet_dialect
+                yield d
+
+        # ── 規則 A2（2026-07-21）：同一 workbook 內的「子集分頁」去重 ──────────
+        # 問題：承辦人常把資料分頁複製一份用來標記重點（實測 031543 的第二張分頁
+        #   是第一張的**純子集**：4,818 個唯一列全部已存在於第一張）。W2.1 多 sheet
+        #   支援會兩張都讀 → 同一筆通聯入庫兩次；raw_traces 沒有內容層級唯一索引，
+        #   DB 不會擋 → 事件頻次被灌水。
+        # 為什麼這是證據完整性問題而非效能問題：「該門號在該時段出現幾次」是實質
+        #   待證事實，翻倍會直接扭曲軌跡密度與停留時間的判讀。
+        # 為什麼先前的「逐格 sha256 相同」規則不夠：承辦人只要在副本上動過一格
+        #   （或刪掉幾列），雜湊就不同 → 規則失效、重複照樣寫進去。實務上副本幾乎
+        #   一定會被動過，所以嚴格相等等於形同虛設。
+        # 判定改用 **multiset（Counter）包含**而非 set：set 會把「A 有 1 筆、B 有
+        #   3 筆」誤判成完全重複，而那多出來的 2 筆是真實的獨立事件，漏存等同證據
+        #   滅失。改成對每個 fingerprint 都要求 count_B <= count_A，多出來的量一定
+        #   被算成 new_rows。
+        # fingerprint 建在 **normalize 之後**：這樣比較的是證據語意欄位，樣式／顏色／
+        #   註解／未映射欄（承辦人另加的標記欄）天然不參與比較 —— 副本被塗色或加註
+        #   仍能正確辨識為子集，而真正多出來的證據列一定會被保留。
+        # 只有 new_rows == 0（B 完全被單一張 A 覆蓋）才整張跳過；只要有一列是新的，
+        #   整張保留 —— 寧可多存不可漏存。
+        if dedup_enabled:
+            fp_counter: "Counter[bytes]" = Counter()
+            valid_rows = 0
+            for _d in _sheet_rows():
+                fp = _evidence_fingerprint(_d)
+                if fp is None:
+                    continue          # 非有效證據列，下游本來就會 skip，不參與比對
+                valid_rows += 1
+                fp_counter[fp] += 1
+
+            subset_of = None
+            if valid_rows > 0:
+                # 逐一與「先前已採納的單一分頁」比對。刻意不用「所有分頁的聯集」：
+                # 要求被單一張完整覆蓋更保守，也才能在稽核紀錄裡明確指出參照對象。
+                for prev_ref, prev_counter in accepted_sheets:
+                    new_rows = sum(
+                        max(0, cnt - prev_counter.get(fp, 0))
+                        for fp, cnt in fp_counter.items()
+                    )
+                    if new_rows == 0:
+                        subset_of = prev_ref
+                        break
+
+            if subset_of is not None:
+                skipped_sheets.append({
+                    "sheet": sheet_ref,
+                    "reason": "subset_duplicate_sheet",
+                    "reference_sheet": subset_of,
+                    "valid_rows": valid_rows,
+                    "duplicate_rows": valid_rows,   # new_rows==0 → 全數為重複
+                    "new_rows": 0,
+                })
+                continue
+
+            accepted_sheets.append((sheet_ref, fp_counter))
+
+        for d in _sheet_rows():
             yield d
 
-    # 跳過的 sheet 留下軌跡（forensic 系統應該可追溯）
-    if skipped_sheets:
-        import logging
-        logging.getLogger(__name__).info(
-            "ingest: skipped %d sheet(s): %s",
-            len(skipped_sheets),
-            ", ".join(f"{n!r}({r})" for n, r in skipped_sheets),
-        )
+    # 跳過的 sheet 留下軌跡（forensic 系統應該可追溯）。
+    # 全部欄位皆為代號／計數，不含分頁名稱、儲存格內容或任何證物資料 ——
+    # 分頁名實測會直接是門號或對象姓名，故一律以 sheet#<位置> 表示。
+    for _sk in skipped_sheets:
+        log_info("ingest.sheet.skipped", **_sk)
 
 # ====== 欄位對照（來源→系統） ======
 # ----------------------------------------------------------------------
