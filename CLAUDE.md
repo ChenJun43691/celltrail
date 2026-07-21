@@ -521,6 +521,37 @@ persisted `/upload` chunk-based ingest（五-P8.1 milestone）已部署並在 Re
 
 **尚存風險**：① 走 `_iter_simple_time_location`（P8.2 fallback）的分頁不經過 A2；② 跨檔案重複仍會重複寫入（刻意）；③ B 的內容若分散在 A1+A2 兩張、各自不完整涵蓋，B 會被保留（偏保守）；④ fingerprint 忽略未映射欄 —— 若某業者把關鍵鑑識資訊放在系統尚未認識的欄位，該資訊不參與判定，緩解方式是把該欄加進 `_RAW2CANON`；⑤ 3 條真實檔回歸測試在 CI 會 skip（樣本檔含個資、不入版控）。
 
+### X. cell_towers 匯入欄序 bug + 座標把關（2026-07-21）
+
+**觸發時機警告**：這個 bug **只會在「第一次真正匯入業者座標表」時發作** —— 也就是待辦 #1 執行的那一刻。`cell_towers` 表一直是空的，所以它潛伏至今從未被觸發。
+
+**根因**：`api/cell_towers.py` 用 `or` 鏈推導 CSV 欄位索引：
+
+```python
+idx_lat = col.get("lat") or col.get("latitude") or 1   # ← Python 的 0 是 falsy
+```
+
+欄位剛好排在**第一欄（索引 0）**時，`or` 會誤判成「找不到」而落到位置後備值。實測：
+
+| CSV 欄序 | 修正前推導 (id,lat,lng) | 後果 |
+|---|---|---|
+| `cell_id,lat,lng` | (0,1,2) | 正常（碰巧）|
+| `lat,lng,cell_id` | (2,**1,1**) | lat 與 lng **讀同一欄** → 緯度被寫成經度值 |
+| `latitude,longitude,cell_id` | (2,**1,1**) | 同上 |
+| `lng,lat,cell_id` | (2,1,**2**) | lng 讀到 cell_id 欄 → `float()` 例外 → 整批列跳過 |
+
+**為何比一般欄位對應 bug 嚴重**：`cell_towers` 是 geocode 的**最前置查詢**（`_lookup_from_local` 命中就直接採用、不再問 OSM），而基地台座標**本身就是證據**。寫錯之後地圖照樣畫出漂亮的點位，整條軌跡卻是錯的，事後幾乎無從察覺。而業者交付的 CSV 欄序不是我方能控制的。
+
+**修法**：
+- 新增 `_pick_col()` / `_pick_col_req()` 以「欄名是否存在」判斷，取代 `or` 鏈。刻意分成兩支，而非在呼叫端寫 `_pick_col(...) or default` —— 後者正是本 bug 本身，留著遲早被照抄。
+- 補上**座標範圍驗證**（原本完全沒有）：`lat ∈ [-90,90]`、`lng ∈ [-180,180]`，越界即**拒絕該列 + 記明確錯誤**（不猜測、不修正）。這是第二道防線：台灣經度約 120–122，落在合法緯度範圍外，故「經緯度對調」這個最常見的實務失誤會被攔下。
+- 測試 `test_cell_towers_import_cols.py` 12 條（各種欄序 + helper 語意 + 範圍邊界），pytest **488 passed**。
+
+**尚存風險（非程式問題）**：
+- **短碼 cell_id 的唯一性**：周蔓達（中華上網方言）的 `起址` 是 **3–5 碼短式編號**（如 `13792`、甚至 `1`、`10`），與台哥大 15 碼 / 遠傳 20 碼截然不同。這類短碼**通常不是全域唯一**，需 LAC/TAC 等區域碼才能定位到唯一基地台 —— 向業者索取時可能得附原調閱案號。（**此為依編號形態的推論，未經業者確認**。）
+- `(0,0)` 座標仍會通過範圍驗證。台灣不可能有此座標，但列為合法值不擋；若業者表出現大量 `(0,0)`，屬資料品質問題需人工檢視。
+- **業者歸屬無法由檔案內容判定**：部分樣本檔的查詢前言（含「業者名稱:…」）已被承辦人剝除，只能依來源檔由人工標註。
+
 ---
 
 ## P9A Preview Evidence Artifact（2026-07-05，deployed commit `aa3125e`）
@@ -699,7 +730,7 @@ Status: Open / pre-existing
 | # | Task | 說明 |
 |---|---|---|
 | 0 | **preview 路徑 payload 瘦身（記憶體優化下一階段）** | **P8.1 已完成 persisted `/upload` chunking** → 正式存檔路徑 OOM 已解除（test3 21757 列雲端實測 200/42s，見五-T、七-8）。**剩餘**：`parse-only` / `parse-temp` 仍會**同時回完整 `_records` + GeoJSON `features`**（記憶體 ×2），大檔預覽仍可能受 payload 過大影響。下一階段目標 = preview 路徑瘦身（移除 `_records` 重複、或 `?include_records=1` 才回、或分頁/NDJSON）。 |
-| 1 | **填充 cell_towers 座標表** | 架構（P4.1）已就緒但表是空的；向業者取得基地台座標 CSV 匯入，可徹底解決純數字 cell_id 的 geocode 問題（消 geocode 時間牆，但七-8 記憶體牆仍在，需配 #0） |
+| 1 | **填充 cell_towers 座標表** | 架構（P4.1）已就緒但表是空的；向業者取得基地台座標 CSV 匯入，可徹底解決純數字 cell_id 的 geocode 問題（消 geocode 時間牆，但七-8 記憶體牆仍在，需配 #0）。**2026-07-21 盤點**：手邊 16 檔共需 **6,620 個唯一 cell_id**，其中 96.1% 的列有 cell_id → 這條路的涵蓋上限最高。匯入前務必先看 **五-X**（匯入欄序 bug 已修，但仍有短碼唯一性問題）|
 | 2 | **P3–P6 API 補自動化測試** | auth / members / parse-only / format-reports / cell-towers 目前只有手動驗證 |
 | 3 | **carrier_profile DB 同步** | 把 `_RAW2CANON` 所有 key 補進 DB `mapping_json`（讓 DB 真正成為 SoT）。注意：雲端 active_map 用 `{**_RAW2CANON, **db_profile}` 合併，新增別名只要 push+redeploy 即生效、**不需** Supabase migration |
 

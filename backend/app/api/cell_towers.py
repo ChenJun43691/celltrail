@@ -91,11 +91,11 @@ def import_csv(
     # 如果有 header，解析欄位位置
     if has_header:
         col = {name: i for i, name in enumerate(first)}
-        idx_id  = col.get("cell_id") or col.get("cell") or 0
-        idx_lat = col.get("lat") or col.get("latitude") or 1
-        idx_lng = col.get("lng") or col.get("longitude") or 2
-        idx_carrier = col.get("carrier_name") or col.get("carrier")
-        idx_memo    = col.get("memo")
+        idx_id  = _pick_col_req(col, "cell_id", "cell", default=0)
+        idx_lat = _pick_col_req(col, "lat", "latitude", default=1)
+        idx_lng = _pick_col_req(col, "lng", "longitude", default=2)
+        idx_carrier = _pick_col(col, "carrier_name", "carrier")
+        idx_memo    = _pick_col(col, "memo")
     else:
         idx_id, idx_lat, idx_lng = 0, 1, 2
         idx_carrier = idx_memo = None
@@ -119,6 +119,17 @@ def import_csv(
 
                 if not cid:
                     errors.append(f"第 {lineno} 行 cell_id 為空，跳過")
+                    skipped += 1
+                    continue
+
+                # 座標合理性把關：寧可拒收也不要靜默寫進錯誤座標。
+                # 基地台座標本身就是證據，一旦寫錯，地圖仍會畫出漂亮但錯誤的點位，
+                # 事後幾乎無從察覺 —— 故此處採「拒絕該列 + 明確記錯誤」而非修正或猜測。
+                if not (_LAT_MIN <= lat <= _LAT_MAX) or not (_LNG_MIN <= lng <= _LNG_MAX):
+                    errors.append(
+                        f"第 {lineno} 行座標超出合理範圍（lat={lat}, lng={lng}），跳過"
+                        "：請確認欄位順序是否為經緯度對調"
+                    )
                     skipped += 1
                     continue
 
@@ -207,6 +218,41 @@ def clear_all(
 
 
 # ---------- 工具函式 ----------
+def _pick_col(col: dict[str, int], *names: str, default: Optional[int] = None) -> Optional[int]:
+    """依序取第一個存在的欄名，回傳其索引；都找不到才回 default。
+
+    為什麼不能寫成 `col.get(a) or col.get(b) or default`（2026-07-21 修）：
+      索引 **0 是 falsy**，欄位剛好排在第一欄時會被誤判成「找不到」而落到後備值。
+      實測 header 為 `lat,lng,cell_id` 時，idx_lat 與 idx_lng 會**同時指向第 1 欄**
+      → 每座基地台的緯度被寫成經度值；`lng,lat,cell_id` 則讓 idx_lng 指到 cell_id
+      欄而整批列以「格式錯誤」被跳過。
+    為什麼這個 bug 特別嚴重：基地台座標**本身就是證據**，錯了整條軌跡跟著錯，
+      而且錯得毫無徵兆 —— 地圖照樣畫得出漂亮的點位。業者交付的 CSV 欄序不是
+      我方能控制的，所以不能靠「大家都會把 cell_id 放第一欄」這種假設。
+    """
+    for n in names:
+        if n in col:
+            return col[n]
+    return default
+
+
+def _pick_col_req(col: dict[str, int], *names: str, default: int) -> int:
+    """同 _pick_col，但保證回傳 int（給一定會有後備位置的必要欄位用）。
+
+    刻意分成兩支而不是在呼叫端寫 `_pick_col(...) or default`：後者正是本次修掉
+    的 falsy-zero bug 本身，留著這個寫法遲早有人照抄。
+    """
+    idx = _pick_col(col, *names)
+    return default if idx is None else idx
+
+
+# 座標合理範圍。除了擋純粹的髒資料，這也是上面 falsy-zero 類錯誤的第二道防線：
+# 台灣的經度（約 120~122）落在合法緯度範圍 [-90, 90] 之外，故「經緯度對調」
+# 這個最常見的實務失誤會在此被攔下，而不是靜默寫進 DB。
+_LAT_MIN, _LAT_MAX = -90.0, 90.0
+_LNG_MIN, _LNG_MAX = -180.0, 180.0
+
+
 def _is_data_row(row: list[str]) -> bool:
     """判斷這一行是否像資料行（前三欄都是可解析數字/數字字串）。"""
     if len(row) < 3:
