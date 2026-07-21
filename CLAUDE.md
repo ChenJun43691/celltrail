@@ -915,6 +915,20 @@ test3.xlsx 經正式 `POST /api/upload` 實測**（CIDadmin token、非 parse-on
 
 次選：Google（覆蓋率遠優於 OSM）。**但 2026-07-22 實測本機金鑰為 `REQUEST_DENIED`（The provided API key is invalid），啟用前必須先在 GCP Console 修復。** 另使用者反映上月費用達 NT$5,000，成本需另行評估。
 
+**可用的過渡方案**：`backend/scripts/geocode_verify.py`（2026-07-22）—— 離線地理編碼 + **雙重反查驗證**，把上述「模糊比對回錯誤座標」的風險擋在匯入之前。
+
+```bash
+cd backend && source .venv/bin/activate
+python scripts/geocode_verify.py <檔案或資料夾> -o towers.csv [--limit N] [--email you@example.com]
+# 產出 cell_id,lat,lng,memo → admin.html 基地台座標表匯入
+```
+
+- **兩道驗證**：① 反查座標的行政區須與原地址一致 ② 反查的路名須與原地址路名相容（允許「大豐一路288巷」對「大豐一路」這類更細層級）。
+- **實測成效**（三個真實案件檔、前 40 大地址）：採用 19 址 / 6,050 列（42.5%）；**擋下 11 址 / 7,172 列的錯誤匹配** —— 若無驗證，這些會全部變成地圖上看似正常的錯誤點位。
+- **離線執行的必要性**：嚴守 Nominatim 1 req/s，每址最多 4 次查詢 + 1 次反查（約 5 秒/址），遠超 Render 請求上限，故不可能在上傳週期內完成。
+- **殘留限制（必須告知使用者）**：精度是「**路名正確**」而非「門牌正確」，座標可能落在該路某處；產出為**地址推估值、非業者座標**，每列 memo 均標註。業者對照表到手後直接重匯即覆蓋（`cell_towers` 為 `ON CONFLICT DO UPDATE`）。
+- 純判準邏輯由 `test_geocode_verify_script.py`（11 條）守住 —— 其中 `road_of` 曾因「路竹**區**」的「路」被誤判為路名而回傳「高雄市路」，是測試抓出來的實際 bug。
+
 ---
 
 ## 八、git commit message 風格
