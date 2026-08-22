@@ -136,9 +136,11 @@ def test_nlsc_ssl_context_keeps_verification_on(gv):
 
 
 def test_nlsc_reverse_parses_city_and_town(gv, monkeypatch):
-    """回的是 XML（非 JSON）；只取縣市與鄉鎮。
+    """回的是 XML（非 JSON）；取縣市、鄉鎮與村里。
 
-    刻意不取村里：業者地址的里名時有時無（常被承辦人刪去），拿來當驗證條件會誤殺正確結果。
+    村里在 2026-08-22 加入：業者地址有 20.8% 帶里名（涵蓋 51.4% 的列），
+    而里比區細得多，是能分辨「同一區內定位到錯誤街廓」的唯一免費訊號。
+    但它**不是預設的拒絕條件**（里界附近反查到相鄰里屬正常），只在報告中揭露。
     """
     body = ("<?xml version='1.0'?><townVillageItem><ctyCode>E</ctyCode>"
             "<ctyName>高雄市</ctyName><townName>新興區</townName>"
@@ -152,7 +154,7 @@ def test_nlsc_reverse_parses_city_and_town(gv, monkeypatch):
 
     monkeypatch.setattr(gv.urllib.request, "urlopen", lambda *a, **k: _R())
     monkeypatch.setattr(gv.time, "sleep", lambda s: None)
-    assert gv.reverse_nlsc(22.6273, 120.3014) == ("高雄市", "新興區")
+    assert gv.reverse_nlsc(22.6273, 120.3014) == ("高雄市", "新興區", "成功里")
 
 
 def test_nlsc_reverse_network_failure_is_not_fatal(gv, monkeypatch):
@@ -163,7 +165,7 @@ def test_nlsc_reverse_network_failure_is_not_fatal(gv, monkeypatch):
     def _boom(*a, **k): raise OSError("connection reset")
     monkeypatch.setattr(gv.urllib.request, "urlopen", _boom)
     monkeypatch.setattr(gv.time, "sleep", lambda s: None)
-    assert gv.reverse_nlsc(22.6, 120.3) == (None, None)
+    assert gv.reverse_nlsc(22.6, 120.3) == (None, None, None)
 
 
 def test_nlsc_reverse_throttles_even_on_failure(gv, monkeypatch):
@@ -203,3 +205,52 @@ def test_memo_always_marks_non_carrier_origin(gv):
     for p in ("osm", "google", "tgos"):
         for v in ("osm", "nlsc"):
             assert "非業者提供" in gv.build_memo(p, v)
+
+
+# ── village_of：里名擷取（2026-08-22）────────────────────────
+@pytest.mark.parametrize("addr,want", [
+    ("高雄市鳳山區文福里建國路三段539號11樓室內(4G)", "文福里"),
+    ("高雄市三民區本館里昌裕街1號7樓樓頂(4G)", "本館里"),
+    ("高雄市三民區寶國里1鄰覺民路168號樓頂(4G)", "寶國里"),
+    ("臺北市士林區承德路4段166號樓頂機房", None),        # 沒有里
+    ("高雄市湖內區中山路２段290號", None),
+])
+def test_village_of(gv, addr, want):
+    assert gv.village_of(addr) == want
+
+
+def test_village_of_does_not_match_road_containing_li(gv):
+    """『里港路』的「里」不是里名 —— 只認「區/鄉/鎮之後緊接的里」。
+
+    誤判的代價是拿一個不存在的里去比對反查結果，把正確座標標成可疑，
+    讓人把注意力花在假警報上。
+    """
+    assert gv.village_of("屏東縣里港鄉里港路100號") is None
+    assert gv.village_of("高雄市三民區里港街5號") is None
+
+
+def test_village_of_handles_empty(gv):
+    assert gv.village_of("") is None and gv.village_of(None) is None
+
+
+# ── village_verdict：里名判定（2026-08-22）──────────────────
+def test_village_verdict_ok_and_mismatch(gv):
+    a = "高雄市鳳山區文福里建國路三段539號"
+    assert gv.village_verdict(a, "文福里") == "ok"
+    assert gv.village_verdict(a, "文德里") == "mismatch"
+
+
+def test_village_verdict_unknown_is_not_ok(gv):
+    """無從判斷必須是 'unknown'，不可當成 'ok'。
+
+    本專案 79.2% 的地址沒有里名。若把「沒得比」算成「比對通過」，
+    報告會顯示「全部驗過了」，而實際上有一大半根本沒驗到里這一層 ——
+    那是對稽核者的誤導，比不驗更糟。
+    """
+    assert gv.village_verdict("高雄市湖內區中山路２段290號", "海埔里") == "unknown"
+    assert gv.village_verdict("高雄市鳳山區文福里建國路三段539號", None) == "unknown"
+    assert gv.village_verdict("", None) == "unknown"
+
+
+def test_village_verdict_tolerates_whitespace(gv):
+    assert gv.village_verdict("高雄市三民區本館里昌裕街1號", " 本館里 ") == "ok"

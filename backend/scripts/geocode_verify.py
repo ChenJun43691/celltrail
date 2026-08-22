@@ -145,6 +145,35 @@ def road_of(addr: str):
     return m2.group(1) if m2 else None
 
 
+_VILLAGE_RE = re.compile(r"[市縣].{1,4}?[區鄉鎮市]([一-鿿]{1,4}里)")
+
+
+def village_of(addr: str):
+    """取出地址中的里名（例：高雄市鳳山區**文福里**建國路三段539號）。沒有回 None。
+
+    只認「區/鄉/鎮之後緊接的里」，避免把路名裡的「里」字（如「里港路」）誤判。
+    """
+    m = _VILLAGE_RE.search(addr or "")
+    return m.group(1) if m else None
+
+
+def village_verdict(addr: str, got_village):
+    """比對「地址裡的里」與「反查回來的里」→ 'ok' / 'mismatch' / 'unknown'。
+
+    抽成純函式的理由與 `roads_compatible` 相同：判定規則是這支腳本裡最容易寫錯、
+    也最需要被釘住的部分，埋在 main() 的迴圈裡就測不到。
+
+    'unknown' 的兩種來源都必須當作「無從判斷」而非「通過」：
+      - 地址沒寫里（本專案 79.2% 的地址如此）
+      - NLSC 沒回里（外島、新開發區等）
+    把無從判斷當通過，會讓報告顯示「全部驗過了」而實際上有一半沒驗到。
+    """
+    want = village_of(addr)
+    if not want or not got_village:
+        return "unknown"
+    return "ok" if want == got_village.strip() else "mismatch"
+
+
 def strip_village(addr: str) -> str:
     """
     移除「N鄰」與「X里」——行政區劃，非郵遞地址的一部分，但業者常寫進地址欄。
@@ -191,10 +220,16 @@ def reverse(lat: float, lng: float, ua: str):
 
 
 def reverse_nlsc(lat: float, lng: float):
-    """用 NLSC 官方 API 反查行政區 → (縣市, 鄉鎮區)。查不到回 (None, None)。
+    """用 NLSC 官方 API 反查 → (縣市, 鄉鎮區, 村里)。查不到回 (None, None, None)。
 
-    回傳的是 XML（非 JSON），故不共用 `_get`。刻意只取縣市與鄉鎮：
-    村里層級在業者地址裡時有時無（且常被承辦人刪去），拿來當驗證條件會誤殺正確結果。
+    回傳的是 XML（非 JSON），故不共用 `_get`。
+
+    **村里為什麼取回來、卻不當作預設的拒絕條件**（2026-08-22）：
+      取回來的理由——業者地址有 20.8% 帶里名（涵蓋 51.4% 的列），而里比區細得多，
+      是能分辨「同一區內定位到錯誤街廓」的唯一免費訊號。
+      不預設拒絕的理由——里界附近的建物反查到相鄰里是正常現象，
+      硬性拒絕會誤殺正確結果、白白損失覆蓋率。
+    折衷：一律取回並在報告中揭露不一致，另提供 `--strict-village` 讓需要時可強制拒絕。
     """
     url = f"{NLSC_REVERSE}/{lng}/{lat}/4326"
     req = urllib.request.Request(url, headers={"User-Agent": "CellTrail-geocode-verify/1.1"})
@@ -202,13 +237,15 @@ def reverse_nlsc(lat: float, lng: float):
         with urllib.request.urlopen(req, timeout=15, context=_nlsc_ssl_context()) as r:
             body = r.read().decode("utf-8", "replace")
     except Exception:
-        return None, None
+        return None, None, None
     finally:
         time.sleep(NLSC_SLEEP)
     cty = re.search(r"<ctyName>(.*?)</ctyName>", body)
     twn = re.search(r"<townName>(.*?)</townName>", body)
+    vil = re.search(r"<villageName>(.*?)</villageName>", body)
     return (cty.group(1).strip() if cty else None,
-            twn.group(1).strip() if twn else None)
+            twn.group(1).strip() if twn else None,
+            vil.group(1).strip() if vil else None)
 
 
 def collect(paths):
@@ -272,6 +309,14 @@ def main() -> int:
                     help="正向查詢次數上限（預設 9000）。這是**費用護欄**：Google 每月前 10,000 次"
                          "免費，超過才 $5/1000。達到上限即停止並如實印出已查次數，"
                          "不會安靜地一直跑下去。0=不設限（明確表示你接受可能的費用）")
+    ap.add_argument("--strict-village", action="store_true",
+                    help="村里不符時也拒絕（預設只在報告中揭露）。里界附近的建物反查到相鄰里"
+                         "是正常現象，強制拒絕會誤殺正確結果，故預設關閉；"
+                         "需要最保守判定時再開。")
+    ap.add_argument("--top", type=int, default=10,
+                    help="報告最後列出「高影響地址」的筆數（預設 10）。"
+                         "本專案前 10 大地址即涵蓋 63%% 的列 —— 這幾筆的正確性幾乎決定整張圖，"
+                         "值得逐筆人工確認。")
     ap.add_argument("--verifier", choices=["nlsc", "osm"], default="nlsc",
                     help="反查驗證器。nlsc=內政部官方行政區（免金鑰，預設）；"
                          "osm=Nominatim reverse（含路名比對，但行政區欄位對台灣不穩定）")
@@ -346,6 +391,9 @@ def main() -> int:
           f"，預估 {len(targets) * per // 60 + 1} 分鐘\n")
 
     accepted, rej_dist, rej_road, notfound = {}, [], [], []
+    rej_village = []                  # --strict-village 開啟時因里不符而拒絕
+    village_warn = []                 # 已採用但里名對不上 → 報告中揭露，交人工判斷
+    nlsc_view = {}                    # 採用者的 NLSC 反查結果（供高影響地址報告顯示）
     n_forward = 0                     # 實際送出的正向查詢次數（費用護欄用，且要如實回報）
     for i, a in enumerate(targets, 1):
         city, dist = admin_of(a)
@@ -363,16 +411,23 @@ def main() -> int:
             # 官方行政區反查：縣市與鄉鎮都必須對得上。
             # 這裡**不比路名** —— NLSC 這支 API 不回路名，而硬要再打一次 OSM 拿路名
             # 等於把不可靠的來源重新引回驗證鏈，得不償失。
-            got_cty, got_twn = reverse_nlsc(hit[0], hit[1])
-            got_show = f"{got_cty or '?'}{got_twn or '?'}"
+            got_cty, got_twn, got_vil = reverse_nlsc(hit[0], hit[1])
+            got_show = f"{got_cty or '?'}{got_twn or '?'}{got_vil or ''}"
+            want_vil = village_of(a)
+            vil_bad = village_verdict(a, got_vil) == "mismatch"
             if not city or not dist:
                 rej_dist.append((a, "地址無法解析出縣市/區，無從驗證"))
             elif (got_cty or "").replace("臺", "台") != city.replace("臺", "台"):
                 rej_dist.append((a, got_show))
             elif dist not in (got_twn or ""):
                 rej_dist.append((a, got_show))
+            elif vil_bad and args.strict_village:
+                rej_village.append((a, f"{got_show}（地址寫 {want_vil}）"))
             else:
                 accepted[a] = hit
+                nlsc_view[a] = got_show
+                if vil_bad:
+                    village_warn.append((a, want_vil, got_vil))
         else:
             got_dist, got_road = reverse(hit[0], hit[1], ua)
             if not dist or dist not in (got_dist or ""):
@@ -384,7 +439,7 @@ def main() -> int:
         if i % 10 == 0 or i == len(targets):
             print(f"  ..{i}/{len(targets)}  採用 {len(accepted)}"
                   f"  區不符 {len(rej_dist)}  路不符 {len(rej_road)}"
-                  f"  查無 {len(notfound)}", flush=True)
+                  f"  里不符 {len(rej_village)}  查無 {len(notfound)}", flush=True)
 
     def _rows(keys):
         return sum(rows[k] for k in keys)
@@ -397,11 +452,45 @@ def main() -> int:
           f"({acc_rows / total_rows * 100:.1f}%)")
     print(f"  拒絕・行政區不符    : {len(rej_dist):>4} 址 / {_rows(a for a, _ in rej_dist):>7,} 列")
     print(f"  拒絕・路名不符      : {len(rej_road):>4} 址 / {_rows(a for a, _ in rej_road):>7,} 列")
+    if rej_village:
+        print(f"  拒絕・里名不符      : {len(rej_village):>4} 址 / "
+              f"{_rows(a for a, _ in rej_village):>7,} 列（--strict-village）")
     print(f"  查無結果            : {len(notfound):>4} 址 / {_rows(notfound):>7,} 列")
+
+    # ── 已採用但里名對不上：不拒絕，但必須讓人看見 ──
+    if village_warn:
+        vw_rows = _rows(a for a, _, _ in village_warn)
+        print(f"\n  ⚠ 已採用但里名與反查不符：{len(village_warn)} 址 / {vw_rows:,} 列")
+        print("     里界附近的建物反查到相鄰里屬正常，但也可能是定位到同區內的錯誤街廓。")
+        print("     要一律拒絕請加 --strict-village。")
+        for a, want, got in sorted(village_warn, key=lambda x: -rows[x[0]])[:5]:
+            print(f"       {rows[a]:>6,} 列  {a[:32]}  地址寫 {want} → 反查 {got}")
     if rej_dist or rej_road:
         print("\n  被驗證擋下的錯誤匹配（若無驗證，這些都會變成錯誤點位）：")
         for a, got in (rej_dist + rej_road)[:5]:
             print(f"    {a[:34]} → 實際落在 {got}")
+
+    # ── 高影響地址：少數幾筆決定整張圖，值得逐筆人工確認 ──
+    # 本專案實測：前 10 大地址涵蓋 63.2% 的列；而七-11 記載被 OSM 錯誤定位的兩個地址
+    # 合計就佔 19.0%。一個錯誤的高頻座標，會讓地圖上五分之一的點指向錯誤地點，
+    # 且看起來完全正常。人工確認 10 筆是可行的，確認 3,459 筆不是。
+    if accepted and args.top:
+        top_acc = sorted(accepted, key=lambda a: -rows[a])[:args.top]
+        cov = sum(rows[a] for a in top_acc)
+        print(f"\n=== 高影響地址（前 {len(top_acc)} 名，涵蓋已採用結果的 "
+              f"{cov / max(acc_rows, 1) * 100:.1f}%）—— 請逐筆目視確認 ===")
+        for a in top_acc:
+            lat, lng = accepted[a]
+            flag = ""
+            wv, gv = village_of(a), None
+            for _a, _w, _g in village_warn:
+                if _a == a:
+                    gv = _g
+            if gv:
+                flag = f"  ⚠里名不符(地址寫{wv}→反查{gv})"
+            print(f"  {rows[a]:>6,} 列  {a[:40]}")
+            print(f"          → {lat:.6f}, {lng:.6f}   反查={nlsc_view.get(a, '—')}{flag}")
+            print(f"          → Google Maps 目視：https://www.google.com/maps?q={lat:.6f},{lng:.6f}")
 
     n = 0
     with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
