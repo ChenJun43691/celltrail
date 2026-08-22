@@ -163,3 +163,49 @@ def test_sql_cache_writes_new_geocodes(monkeypatch):
     addrs_written = sorted(w[0] for w in written)
     assert addrs_written == ["台北市A路1號", "台北市C路3號"]
     assert all(w[1:] == (25.0, 121.5) for w in written)
+
+
+# ── OSM 停用時的計數語意（2026-08-22）────────────────────────
+def _timing_line(capsys):
+    for ln in capsys.readouterr().out.splitlines():
+        if "[bulk_geocode][timing]" in ln:
+            return ln
+    return ""
+
+
+def test_osm_calls_reported_zero_when_osm_disabled(monkeypatch, capsys):
+    """OSM 停用時 log 必須印 osm_calls=0。
+
+    為什麼值得測：`_osm_geocode` 在 USE_OSM=False 時第一行就 return None、不發任何請求，
+    但計數若照樣記「候選數」，log 會出現「OSM 已停用卻 osm_calls=119」這種自相矛盾的畫面
+    （2026-08-22 全樣本盤點時實際看到）。七-10 / 七-11 記著「OSM 對本專案地址會回看起來
+    正常但錯誤的座標」，所以「這批座標是不是 OSM 給的」是判讀證據時要回答的問題 ——
+    log 誤導會讓人查錯方向，甚至誤信一批其實不存在的 OSM 結果。
+    """
+    import app.services.geocode as geo
+
+    monkeypatch.setattr(geo, "USE_OSM", False)
+    monkeypatch.setattr(geo, "_google_enabled", lambda: False)
+    # **刻意不 mock `_osm_geocode`**：要驗的正是「真正的那支函式在 USE_OSM=False 時
+    # 不發請求」。改以攔 requests.get 來證明沒有任何網路呼叫 —— 這比信任 mock 更接近事實。
+    monkeypatch.setattr(geo.requests, "get",
+                        lambda *a, **k: pytest.fail("OSM 停用時不該發出任何 HTTP 請求"))
+
+    res = geo.lookup_bulk([(None, "台北市A路1號"), (None, "台北市B路2號")])
+    assert all(v is None for v in res.values()), "三條路都關著，不該生出任何座標"
+
+    line = _timing_line(capsys)
+    assert "osm_calls=0" in line, line
+    assert "google_calls=0" in line, line
+
+
+def test_osm_calls_counted_when_osm_enabled(monkeypatch, capsys):
+    """對照組：OSM 啟用時仍如實計數（避免上一條測試被「永遠回 0」的實作騙過）。"""
+    import app.services.geocode as geo
+
+    monkeypatch.setattr(geo, "USE_OSM", True)
+    monkeypatch.setattr(geo, "_google_enabled", lambda: False)
+    monkeypatch.setattr(geo, "_osm_geocode", lambda a: None)
+
+    geo.lookup_bulk([(None, "台北市A路1號"), (None, "台北市B路2號")])
+    assert "osm_calls=2" in _timing_line(capsys)

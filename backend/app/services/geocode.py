@@ -453,7 +453,13 @@ def lookup_bulk(
         osm_targets = [s for s in uniq_simplified if geo_map.get(s) is None]
         for s in osm_targets:
             _record(s, _osm_geocode(s))
-        n_osm_call = len(osm_targets)
+        # 只在 OSM 實際啟用時才計數。`_osm_geocode` 在 USE_OSM=False 時第一行就 return None、
+        # 不發出任何請求，但這裡若照樣把「候選數」記成 osm_calls，log 會出現
+        # 「OSM 已停用卻 osm_calls=119」這種自相矛盾的畫面。
+        # 這不是美觀問題：七-10 / 七-11 記著「OSM 對本專案地址會回看起來正常但錯誤的座標」，
+        # 所以「這批座標是不是 OSM 給的」是判讀證據時要回答的問題，log 不能誤導。
+        # 與上面 Google 分支同語意（停用時 n_google_call 維持 0）。
+        n_osm_call = len(osm_targets) if USE_OSM else 0
 
         if pending_writes:
             _sql_cache_set_bulk(pending_writes)
