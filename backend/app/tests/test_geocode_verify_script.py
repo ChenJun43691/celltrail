@@ -118,3 +118,59 @@ def test_roads_compatible_rejects_missing_side(gv):
     assert not gv.roads_compatible(None, "陽明路")
     assert not gv.roads_compatible("陽明路", None)
     assert not gv.roads_compatible("陽明路", "")
+
+
+# ── NLSC 官方行政區反查驗證器（2026-08-22）────────────────────
+def test_nlsc_ssl_context_keeps_verification_on(gv):
+    """NLSC 憑證缺 Subject Key Identifier，Python 3.13 的 VERIFY_X509_STRICT 會拒連。
+
+    只關 strict 旗標，**憑證鏈與主機名驗證必須保留**：反查結果正是我們判斷
+    「這個座標可不可信」的依據，驗證器本身被中間人騙了，整套驗證就失去意義（七-11）。
+    這條測試存在的意義是防止有人日後圖方便改成 `ssl._create_unverified_context()`。
+    """
+    import ssl
+    ctx = gv._nlsc_ssl_context()
+    assert ctx.verify_mode == ssl.CERT_REQUIRED, "不得關閉憑證鏈驗證"
+    assert ctx.check_hostname is True, "不得關閉主機名檢查"
+    assert not (ctx.verify_flags & ssl.VERIFY_X509_STRICT), "須關閉 strict 旗標才連得上 NLSC"
+
+
+def test_nlsc_reverse_parses_city_and_town(gv, monkeypatch):
+    """回的是 XML（非 JSON）；只取縣市與鄉鎮。
+
+    刻意不取村里：業者地址的里名時有時無（常被承辦人刪去），拿來當驗證條件會誤殺正確結果。
+    """
+    body = ("<?xml version='1.0'?><townVillageItem><ctyCode>E</ctyCode>"
+            "<ctyName>高雄市</ctyName><townName>新興區</townName>"
+            "<villageName>成功里</villageName></townVillageItem>")
+
+    class _R:
+        status = 200
+        def read(self): return body.encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(gv.urllib.request, "urlopen", lambda *a, **k: _R())
+    monkeypatch.setattr(gv.time, "sleep", lambda s: None)
+    assert gv.reverse_nlsc(22.6273, 120.3014) == ("高雄市", "新興區")
+
+
+def test_nlsc_reverse_network_failure_is_not_fatal(gv, monkeypatch):
+    """反查失敗回 (None, None) → 上層判定為「無法驗證」而拒收該址。
+
+    關鍵是**拒收而非放行**：驗證器掛掉時放行等於沒有驗證，會讓未經確認的座標流進證據。
+    """
+    def _boom(*a, **k): raise OSError("connection reset")
+    monkeypatch.setattr(gv.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(gv.time, "sleep", lambda s: None)
+    assert gv.reverse_nlsc(22.6, 120.3) == (None, None)
+
+
+def test_nlsc_reverse_throttles_even_on_failure(gv, monkeypatch):
+    """節流必須對每次請求生效（含失敗）—— 與 geocode.py 同款修正（commit f99ea5b）。"""
+    slept = []
+    monkeypatch.setattr(gv.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(gv.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    gv.reverse_nlsc(22.6, 120.3)
+    assert slept, "失敗路徑也必須節流，否則錯誤會變成對官方 API 的洪水"

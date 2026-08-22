@@ -172,6 +172,143 @@ def _google_geocode(addr: str) -> Optional[Tuple[float, float]]:
         print(f"[geocode] Google 例外: {type(e).__name__}: {e} addr={addr!r}")
     return None
 
+# ---------- TGOS 全國門牌地址定位（內政部）----------
+# 為什麼加這條、而且排在 Google / OSM 之前（2026-08-22）：
+#   本專案的地址全部是台灣門牌，而 TGOS 整合的是**戶政機關的門牌坐標資料**——
+#   它是這批地址的權威來源，不是「盡量猜一個接近的答案」的通用地理編碼器。
+#   七-11 記著 OSM 會回「看起來正常但錯誤」的座標（模糊比對到別區的同名路），
+#   那個失效模式在 TGOS 上不存在：查無此門牌就是查無，不會給你隔壁鄉鎮的路。
+#   對政府機關免費，也不會有 Google 的費用問題（七-11 記的上月 NT$5,000）。
+#
+# 為什麼預設關閉：需要申請 AppID / APIKey（限政府機關、法人、學術單位）。
+#   沒有憑證時 `_tgos_enabled()` 回 False，**在建立任何 HTTP request 之前就返回**，
+#   與 GEO_GOOGLE_ENABLED 同一套「硬止血」語意。
+#
+# ⚠ 端點注意：舊 `.env` 裡的 `https://map.tgos.tw/TGOS/geocode/QueryAddr` **已失效（404）**，
+#   現行端點是 v30 的 QueryAddr.asmx（2026-08-22 實測舊網址 404）。
+_TGOS_URL_DEFAULT = "https://addr.tgos.tw/addrws/v30/QueryAddr.asmx/QueryAddr"
+# 已知失效的舊端點：2026-08-22 實測回 404。專案 `.env` 沿用了這個值，若照單全收，
+# 使用者好不容易申請到憑證後只會看到「TGOS 沒反應」，然後把時間花在懷疑金鑰上。
+# 故明確把它視為「未設定」→ 用現行端點。要指定自訂端點仍可設 TGOS_URL 為其他值。
+_TGOS_URL_DEAD = {"https://map.tgos.tw/tgos/geocode/queryaddr"}
+
+
+def _tgos_url() -> str:
+    u = (os.getenv("TGOS_URL") or "").strip()
+    if not u or u.rstrip("/").lower() in _TGOS_URL_DEAD:
+        return _TGOS_URL_DEFAULT
+    return u
+
+
+TGOS_URL = _tgos_url()
+TGOS_APP_ID = (os.getenv("TGOS_APP_ID") or "").strip()
+TGOS_API_KEY = (os.getenv("TGOS_API_KEY") or "").strip()
+
+
+def _tgos_enabled() -> bool:
+    """call-time 讀 env（同 `_google_enabled` 的理由：避免 module-level 常數與 runtime 不一致）。
+
+    需同時具備 AppID 與 APIKey 才算啟用；另可用 `GEO_TGOS_ENABLED=0` 明確關閉。
+    """
+    if os.getenv("GEO_TGOS_ENABLED", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return False
+    return bool((os.getenv("TGOS_APP_ID") or "").strip()
+                and (os.getenv("TGOS_API_KEY") or "").strip())
+
+
+def _tgos_geocode(addr: str) -> Optional[Tuple[float, float]]:
+    """TGOS 門牌定位。失敗一律回 None（不 raise）。
+
+    參數選擇的理由：
+      - `oSRS=EPSG:4326`：本專案全線用 WGS84 經緯度（PostGIS geom 亦然），不做座標轉換。
+      - `oFuzzyType=2`：業者交付的地址常帶「5樓頂」「(4G)」「之3」等尾綴，
+        `_simplify_addr` 已砍掉大部分，但里名、全半形、異體字仍有殘差，需要模糊比對。
+      - `oIsLockCounty` / `oIsLockTown=true`：**這是安全性設定，不是效能設定**。
+        鎖定縣市與鄉鎮後，模糊比對不得跨行政區 —— 直接消滅七-11 那個
+        「鳳山區的地址被比到路竹區」的失效模式。寧可查無，不可查錯。
+      - `oReturnMaxCount=1`：只要最佳解；多筆候選代表地址本身歧義，不該由程式挑。
+    """
+    if not _tgos_enabled() or not addr:
+        return None
+    try:
+        r = requests.get(
+            _tgos_url(),      # call-time 讀取，與 _tgos_enabled 同語意
+            params={
+                "oAPPId": os.getenv("TGOS_APP_ID", "").strip(),
+                "oAPIKey": os.getenv("TGOS_API_KEY", "").strip(),
+                "oAddress": addr,
+                "oSRS": "EPSG:4326",
+                "oFuzzyType": "2",
+                "oIsLockCounty": "true",
+                "oIsLockTown": "true",
+                "oCanIgnoreVillage": "true",
+                "oCanIgnoreNeighborhood": "true",
+                "oReturnMaxCount": "1",
+                "oResultDataType": "JSON",
+            },
+            timeout=12,
+        )
+        r.raise_for_status()
+        return _tgos_parse(r.text)
+    except Exception as e:
+        print(f"[geocode] TGOS 例外: {type(e).__name__}: {e} addr={addr!r}")
+    return None
+
+
+def _tgos_parse(body: str) -> Optional[Tuple[float, float]]:
+    """把 TGOS 回應解析成 (lat, lng)。
+
+    刻意獨立成純函式：TGOS 的 .asmx 端點會把 JSON **包在一層 XML string** 裡回傳
+    （ASP.NET WebService 的老行為），而且欄位大小寫在不同版本間有出入。
+    分開之後既能在沒有憑證的環境測解析邏輯，也讓「回應格式變了」的失敗看得出來。
+
+    座標欄位：X=經度、Y=緯度（EPSG:4326 下）。**順序寫錯就是五-X 那個 bug 的翻版**，
+    故此處明確以名稱取值、不靠位置。
+    """
+    if not body:
+        return None
+    txt = body.strip()
+    # .asmx 常見包法：<?xml ...?><string>{...json...}</string>
+    m = re.search(r"<string[^>]*>(.*)</string>", txt, re.S)
+    if m:
+        txt = m.group(1).strip()
+    txt = txt.replace("&quot;", '"').replace("&amp;", "&")
+    try:
+        j = json.loads(txt)
+    except Exception:
+        return None
+
+    def _walk(o):
+        """TGOS 不同版本把結果放在 AddressList / Addresses / results…，故遞迴找第一個帶 X/Y 的物件。"""
+        if isinstance(o, dict):
+            keys = {k.lower(): k for k in o}
+            if "x" in keys and "y" in keys:
+                try:
+                    lng = float(o[keys["x"]])
+                    lat = float(o[keys["y"]])
+                    # 台灣範圍守門：TGOS 若回了 TWD97 投影座標（單位為公尺，值以十萬計），
+                    # 直接當經緯度用會把點丟到大西洋。這裡拒收而不換算 —— 換算需要知道
+                    # 是哪個帶，猜錯一樣是錯的座標，而錯的座標在地圖上看不出來。
+                    if -90 <= lat <= 90 and -180 <= lng <= 180:
+                        return lat, lng
+                    print(f"[geocode] TGOS 回傳非經緯度座標（可能是投影座標），拒收: x={lng} y={lat}")
+                    return None
+                except (TypeError, ValueError):
+                    return None
+            for v in o.values():
+                got = _walk(v)
+                if got:
+                    return got
+        elif isinstance(o, list):
+            for v in o:
+                got = _walk(v)
+                if got:
+                    return got
+        return None
+
+    return _walk(j)
+
+
 # ---------- OSM（Nominatim）備援 ----------
 USE_OSM = os.getenv("GEO_OSM_FALLBACK") == "1"
 OSM_URL = "https://nominatim.openstreetmap.org/search"
@@ -262,7 +399,7 @@ def _lookup_from_local(cell_id: Optional[str], addr: Optional[str]) -> Optional[
 # ---------- 對外 API ----------
 def lookup(cell_id: Optional[str], cell_addr: Optional[str]) -> Optional[Tuple[float, float]]:
     """
-    查詢順序：本地對照 → 地址清洗 → Redis 快取 → Google → OSM 備援
+    查詢順序：本地對照 → 地址清洗 → Redis 快取 → SQL 快取 → **TGOS** → Google → OSM 備援
     失敗（無法定位）回 None；上層（ingest）可依此決定要不要跳過該筆。
 
     排查盲點小抄：
@@ -293,7 +430,10 @@ def lookup(cell_id: Optional[str], cell_addr: Optional[str]) -> Optional[Tuple[f
         _cache_set(addr, *sql[addr])
         return sql[addr]
 
-    ll = _google_geocode(addr) or _osm_geocode(addr)
+    # TGOS 排在 Google / OSM 之前：它是台灣門牌的權威來源（戶政門牌坐標），
+    # 而後兩者是通用地理編碼器 —— 對台灣中文地址會「盡量給個接近的答案」，
+    # 正是七-11 那個「看起來正常但錯誤」的來源。權威來源優先，通用者殿後。
+    ll = _tgos_geocode(addr) or _google_geocode(addr) or _osm_geocode(addr)
     if ll:
         _cache_set(addr, ll[0], ll[1])
         _sql_cache_set_bulk([(addr, ll[0], ll[1])])
@@ -310,6 +450,7 @@ def lookup_bulk(
     """
     批次解析 (cell_id, cell_addr) → (lat, lng)。
     優化重點（查詢順序，逐層收斂）：
+      0. （查詢順序：cell_towers → Redis → SQL 快取 → TGOS → Google → OSM）
       1. 本地 cell_towers 一次 SQL `ANY()` 全撈
       2. Redis 一次 MGET 批次（雲端通常無 Redis，視為選配）
       3. SQL geocode_cache 一次 `ANY()` 批次讀（跨請求持久快取）
@@ -411,6 +552,7 @@ def lookup_bulk(
     uniq_simplified = list({s for _, s in miss_for_google})
     geo_map: Dict[str, Optional[Tuple[float, float]]] = {}
     n_osm_call = 0
+    n_tgos_call = 0
 
     if uniq_simplified:
         import concurrent.futures as _cf
@@ -431,13 +573,27 @@ def lookup_bulk(
                     _sql_cache_set_bulk(pending_writes)
                     pending_writes.clear()
 
+        # TGOS（權威門牌來源）：排在 Google / OSM 之前。
+        # **刻意序列**：TGOS 對政府機關雖免費，但沒有公開的併發保證；打壞別人的公用服務
+        # 換來的速度不值得。真正的效能解法是把結果寫進 cell_towers / geocode_cache
+        # 一次到位（見 scripts/build_cell_towers.py），而不是在每次上傳時猛打外部 API。
+        if _tgos_enabled():
+            tgos_targets = [x for x in uniq_simplified if geo_map.get(x) is None]
+            n_tgos_call = len(tgos_targets)
+            for s_addr in tgos_targets:
+                _record(s_addr, _tgos_geocode(s_addr))
+                if len(pending_writes) >= _FLUSH_EVERY:
+                    _sql_cache_set_bulk(pending_writes)
+                    pending_writes.clear()
+
         # Google：I/O bound，並行大幅縮短總時間（thread-safe：requests + 唯讀 GMAPS_KEY）。
         # **僅在 GEO_GOOGLE_ENABLED 啟用時執行**；關閉時完全跳過 ThreadPool、不提交任何
         # _google_geocode task → 硬止血、零 Google 請求（n_google_call 維持 0）。
-        if _google_enabled():
-            workers = min(GEO_GOOGLE_CONCURRENCY, len(uniq_simplified))
+        google_targets = [x for x in uniq_simplified if geo_map.get(x) is None]
+        if _google_enabled() and google_targets:
+            workers = min(GEO_GOOGLE_CONCURRENCY, len(google_targets))
             with _cf.ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {ex.submit(_google_geocode, s): s for s in uniq_simplified}
+                futs = {ex.submit(_google_geocode, s): s for s in google_targets}
                 for fut in _cf.as_completed(futs):
                     s = futs[fut]
                     try:
@@ -446,7 +602,7 @@ def lookup_bulk(
                         print(f"[bulk_geocode] google parallel error: {type(e).__name__}: {e} addr={s!r}")
                         ll = None
                     _record(s, ll)
-            n_google_call = len(uniq_simplified)
+            n_google_call = len(google_targets)
 
         # 尚未解出者（Google 關閉時=全部；啟用時=Google 失敗者）→ OSM 備援。**刻意序列**：
         # Nominatim 政策 1 req/s（_osm_geocode 內含 sleep），並行會違規且可能被 429 封。
@@ -473,7 +629,7 @@ def lookup_bulk(
         f"[bulk_geocode][timing] total={_total*1000:.0f}ms "
         f"unique_keys={len(unique_keys)} "
         f"local_hit={n_local_hit} redis_hit={n_redis_hit} sql_hit={n_sql_hit} "
-        f"google_calls={n_google_call} osm_calls={n_osm_call} "
+        f"tgos_calls={n_tgos_call} google_calls={n_google_call} osm_calls={n_osm_call} "
         f"google_workers={GEO_GOOGLE_CONCURRENCY} no_addr={n_no_addr}"
     )
     return result

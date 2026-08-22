@@ -64,6 +64,7 @@ import csv
 import json
 import os
 import re
+import ssl
 import sys
 import time
 import urllib.parse
@@ -76,7 +77,31 @@ os.environ["GEO_OSM_FALLBACK"] = "1"          # 本腳本的存在意義就是�
 
 NOMINATIM_REVERSE = "https://nominatim.openstreetmap.org/reverse"
 SLEEP = 1.1                                    # Nominatim 政策：1 req/s
-MEMO = "地址推估座標｜已通過行政區+路名雙重反查驗證(OSM)｜非業者提供"
+
+# 內政部國土測繪中心的行政區反查：免申請、免金鑰，回傳縣市／鄉鎮／村里／地段。
+# 為什麼拿它當**主要**驗證器（2026-08-22）：這是官方行政區界資料，
+# 而 OSM 的 suburb/city_district 是社群標註、對台灣的覆蓋與命名都不穩定。
+# 驗證器本身不準，就等於沒有驗證 —— 而驗證正是七-11 之後唯一擋得住錯誤座標的東西。
+NLSC_REVERSE = "https://api.nlsc.gov.tw/other/TownVillagePointQuery"
+NLSC_SLEEP = 0.3                               # 官方未載明速率上限，仍保守節流
+
+
+def _nlsc_ssl_context():
+    """NLSC 的伺服器憑證缺少 Subject Key Identifier，Python 3.13 起預設開啟的
+    `VERIFY_X509_STRICT` 會直接拒連（curl 則照連）。
+
+    **只關掉 strict 這個旗標，不關驗證**：憑證鏈驗證（verify_mode=CERT_REQUIRED）與
+    主機名檢查（check_hostname=True）都保留。用 `ssl._create_unverified_context()`
+    圖方便會讓中間人得以竄改反查結果 —— 而反查結果正是我們用來判斷「這個座標可不可信」
+    的依據，驗證器本身被騙，整套驗證就失去意義（七-11 的教訓）。
+    """
+    ctx = ssl.create_default_context()
+    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return ctx
+
+MEMO_OSM = "地址推估座標｜已通過行政區+路名雙重反查驗證(OSM)｜非業者提供"
+MEMO_TGOS = "TGOS門牌定位座標｜已通過行政區反查驗證(NLSC)｜內政部門牌資料、非業者提供"
+MEMO = MEMO_OSM                                # 向後相容：預設 provider 仍是 osm
 
 _ADMIN_RE = re.compile(r"^(.{2,3}[市縣])(.{1,4}?[區鄉鎮市])")
 _ROAD_RE = re.compile(r"([^區鄉鎮里鄰]{1,6}?(?:路|街|大道))")
@@ -148,6 +173,27 @@ def reverse(lat: float, lng: float, ua: str):
     return dist, (a.get("road") or "")
 
 
+def reverse_nlsc(lat: float, lng: float):
+    """用 NLSC 官方 API 反查行政區 → (縣市, 鄉鎮區)。查不到回 (None, None)。
+
+    回傳的是 XML（非 JSON），故不共用 `_get`。刻意只取縣市與鄉鎮：
+    村里層級在業者地址裡時有時無（且常被承辦人刪去），拿來當驗證條件會誤殺正確結果。
+    """
+    url = f"{NLSC_REVERSE}/{lng}/{lat}/4326"
+    req = urllib.request.Request(url, headers={"User-Agent": "CellTrail-geocode-verify/1.1"})
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=_nlsc_ssl_context()) as r:
+            body = r.read().decode("utf-8", "replace")
+    except Exception:
+        return None, None
+    finally:
+        time.sleep(NLSC_SLEEP)
+    cty = re.search(r"<ctyName>(.*?)</ctyName>", body)
+    twn = re.search(r"<townName>(.*?)</townName>", body)
+    return (cty.group(1).strip() if cty else None,
+            twn.group(1).strip() if twn else None)
+
+
 def collect(paths):
     """解析檔案 → {清洗後地址: (列數, {cell_id})}。geocode 全樁掉，只要地址。"""
     from app.services import carrier_profile, geocode as G
@@ -199,12 +245,46 @@ def main() -> int:
                     help="只處理列數最多的前 N 個地址（0=全部）")
     ap.add_argument("--email", default=os.getenv("NOMINATIM_EMAIL", ""),
                     help="Nominatim 聯絡信箱（其使用政策建議提供）")
+    ap.add_argument("--provider", choices=["osm", "tgos"], default="osm",
+                    help="正向地理編碼來源。tgos=內政部全國門牌定位（需 TGOS_APP_ID / "
+                         "TGOS_API_KEY，對政府機關免費申請）；osm=Nominatim（覆蓋率低、"
+                         "且會回看起來正常但錯誤的座標，故驗證不可省）")
+    ap.add_argument("--verifier", choices=["nlsc", "osm"], default="nlsc",
+                    help="反查驗證器。nlsc=內政部官方行政區（免金鑰，預設）；"
+                         "osm=Nominatim reverse（含路名比對，但行政區欄位對台灣不穩定）")
     args = ap.parse_args()
+
+    if args.provider == "tgos":
+        # 提早失敗：沒有憑證卻指定 tgos，會安靜地一個都查不到，
+        # 使用者只會看到「全部查無結果」而不知道是憑證沒設。
+        if not (os.getenv("TGOS_APP_ID", "").strip() and os.getenv("TGOS_API_KEY", "").strip()):
+            print("✗ --provider tgos 需要 TGOS_APP_ID 與 TGOS_API_KEY（兩者都要）。\n"
+                  "  申請：https://www.tgos.tw → 註冊會員 → 申請「全國門牌地址定位服務」\n"
+                  "  （限政府機關／法人／學術單位，免費；客服 tgos@moi.gov.tw）",
+                  file=sys.stderr)
+            return 2
+        os.environ["GEO_TGOS_ENABLED"] = "1"
 
     ua = f"CellTrail-geocode-verify/1.0 ({args.email})" if args.email \
         else "CellTrail-geocode-verify/1.0"
 
-    from app.services.geocode import _osm_geocode
+    from app.services.geocode import _osm_geocode, _tgos_geocode
+
+    if args.provider == "tgos":
+        # TGOS 是門牌權威來源，不需要（也不該）像 OSM 那樣剝里再猜 —— 它認得里。
+        def forward(a):
+            return _tgos_geocode(a)
+        memo = MEMO_TGOS
+    else:
+        def forward(a):
+            # 去里版優先（實測命中率高），原式保留為後備；過度剝除只會多一次查無，
+            # 不會產生錯誤座標 —— 因為所有結果都還要過下面的驗證。
+            for q in ([strip_village(a)] if strip_village(a) != a else []) + [a]:
+                hit = _osm_geocode(q)
+                if hit:
+                    return hit
+            return None
+        memo = MEMO_OSM
 
     rows, cells = collect(args.paths)
     if not rows:
@@ -214,22 +294,32 @@ def main() -> int:
     ordered = [a for a, _ in rows.most_common()]      # 依列數排序：先處理高影響地址
     targets = ordered[:args.limit] if args.limit else ordered
     total_rows = sum(rows.values())
+    per = 1 if args.provider == "tgos" else 5      # tgos 免 Nominatim 節流，快得多
+    print(f"來源={args.provider}  驗證={args.verifier}")
     print(f"地址 {len(ordered)} 個（{total_rows:,} 列）；本次處理前 {len(targets)} 個"
-          f"，預估 {len(targets) * 5 // 60 + 1} 分鐘\n")
+          f"，預估 {len(targets) * per // 60 + 1} 分鐘\n")
 
     accepted, rej_dist, rej_road, notfound = {}, [], [], []
     for i, a in enumerate(targets, 1):
         city, dist = admin_of(a)
         want_road = road_of(a)
-        hit = None
-        # 去里版優先（實測命中率高），原式保留為後備；過度剝除只會多一次查無，
-        # 不會產生錯誤座標——因為所有結果都還要過下面兩道驗證。
-        for q in ([strip_village(a)] if strip_village(a) != a else []) + [a]:
-            hit = _osm_geocode(q)
-            if hit:
-                break
+        hit = forward(a)
         if not hit:
             notfound.append(a)
+        elif args.verifier == "nlsc":
+            # 官方行政區反查：縣市與鄉鎮都必須對得上。
+            # 這裡**不比路名** —— NLSC 這支 API 不回路名，而硬要再打一次 OSM 拿路名
+            # 等於把不可靠的來源重新引回驗證鏈，得不償失。
+            got_cty, got_twn = reverse_nlsc(hit[0], hit[1])
+            got_show = f"{got_cty or '?'}{got_twn or '?'}"
+            if not city or not dist:
+                rej_dist.append((a, "地址無法解析出縣市/區，無從驗證"))
+            elif (got_cty or "").replace("臺", "台") != city.replace("臺", "台"):
+                rej_dist.append((a, got_show))
+            elif dist not in (got_twn or ""):
+                rej_dist.append((a, got_show))
+            else:
+                accepted[a] = hit
         else:
             got_dist, got_road = reverse(hit[0], hit[1], ua)
             if not dist or dist not in (got_dist or ""):
@@ -264,7 +354,7 @@ def main() -> int:
         w.writerow(["cell_id", "lat", "lng", "memo"])
         for a, (lat, lng) in accepted.items():
             for cid in sorted(cells[a]):
-                w.writerow([cid, f"{lat:.7f}", f"{lng:.7f}", MEMO])
+                w.writerow([cid, f"{lat:.7f}", f"{lng:.7f}", memo])
                 n += 1
     print(f"\n產出 {n} 筆 cell_id 對應 → {args.out}")
     print("匯入：admin.html → 基地台座標表 → 匯入 CSV"
