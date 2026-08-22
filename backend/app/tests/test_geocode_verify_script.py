@@ -174,3 +174,32 @@ def test_nlsc_reverse_throttles_even_on_failure(gv, monkeypatch):
                         lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
     gv.reverse_nlsc(22.6, 120.3)
     assert slept, "失敗路徑也必須節流，否則錯誤會變成對官方 API 的洪水"
+
+
+# ── memo 是證據來源標註，必須如實 ──────────────────────────
+def test_memo_reflects_both_provider_and_verifier(gv):
+    """memo 會逐列寫進 cell_towers 並在稽核時被讀 —— 它必須同時如實反映
+    「座標哪裡來」與「用什麼驗過」。
+
+    這條測試源自一個實際犯過的錯：memo 曾寫死成 OSM 版，於是 `--verifier nlsc`
+    跑出來的 CSV 仍宣稱「路名雙重反查驗證(OSM)」—— 而 NLSC 那條路**根本不比對路名**。
+    對稽核者說不實的話，比不說更糟。
+    """
+    m = gv.build_memo("google", "nlsc")
+    assert "Google" in m and "NLSC" in m
+    assert "OSM" not in m, "沒用到 OSM 就不可宣稱經 OSM 驗證"
+    assert "路名" not in m, "NLSC 驗證器不比對路名，不可宣稱做過"
+
+    m2 = gv.build_memo("osm", "osm")
+    assert "OSM" in m2 and "路名" in m2
+
+    m3 = gv.build_memo("tgos", "nlsc")
+    assert "TGOS" in m3 and "NLSC" in m3
+
+
+def test_memo_always_marks_non_carrier_origin(gv):
+    """所有組合都必須標明「非業者提供」——這批座標全是推估/第三方比對的結果，
+    與業者登記的站台座標在證據上的份量不同，不可讓兩者在表裡看起來一樣。"""
+    for p in ("osm", "google", "tgos"):
+        for v in ("osm", "nlsc"):
+            assert "非業者提供" in gv.build_memo(p, v)

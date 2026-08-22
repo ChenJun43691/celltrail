@@ -99,10 +99,26 @@ def _nlsc_ssl_context():
     ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
     return ctx
 
-MEMO_OSM = "地址推估座標｜已通過行政區+路名雙重反查驗證(OSM)｜非業者提供"
-MEMO_TGOS = "TGOS門牌定位座標｜已通過行政區反查驗證(NLSC)｜內政部門牌資料、非業者提供"
-MEMO_GOOGLE = "地址地理編碼座標(Google)｜已通過行政區反查驗證(NLSC)｜非業者提供"
-MEMO = MEMO_OSM                                # 向後相容：預設 provider 仍是 osm
+# memo 是**證據來源標註**，會逐列寫進 cell_towers 並在稽核時被讀。
+# 它必須同時如實反映「座標哪裡來」與「用什麼驗過」—— 兩者是獨立選項（--provider / --verifier），
+# 所以 memo 也必須由兩者組合而成，不能寫死。曾經寫死成 OSM 版，結果用 NLSC 驗證時
+# memo 仍宣稱「路名雙重反查驗證(OSM)」，那是對稽核者說了不實的話。
+_SRC_LABEL = {
+    "osm":    "地址推估座標(OSM)",
+    "google": "地址地理編碼座標(Google)",
+    "tgos":   "TGOS門牌定位座標(內政部門牌資料)",
+}
+_VER_LABEL = {
+    "osm":  "已通過行政區+路名雙重反查驗證(OSM)",
+    "nlsc": "已通過行政區反查驗證(內政部NLSC)",
+}
+
+
+def build_memo(provider: str, verifier: str) -> str:
+    return f"{_SRC_LABEL[provider]}｜{_VER_LABEL[verifier]}｜非業者提供"
+
+
+MEMO = build_memo("osm", "osm")                 # 向後相容：舊預設組合
 
 _ADMIN_RE = re.compile(r"^(.{2,3}[市縣])(.{1,4}?[區鄉鎮市])")
 _ROAD_RE = re.compile(r"([^區鄉鎮里鄰]{1,6}?(?:路|街|大道))")
@@ -298,12 +314,10 @@ def main() -> int:
         # 所以驗證絕不能省：下面的 NLSC 官方行政區反查照跑（七-11 的教訓不因來源而異）。
         def forward(a):
             return _google_geocode(a)
-        memo = MEMO_GOOGLE
     elif args.provider == "tgos":
         # TGOS 是門牌權威來源，不需要（也不該）像 OSM 那樣剝里再猜 —— 它認得里。
         def forward(a):
             return _tgos_geocode(a)
-        memo = MEMO_TGOS
     else:
         def forward(a):
             # 去里版優先（實測命中率高），原式保留為後備；過度剝除只會多一次查無，
@@ -313,7 +327,8 @@ def main() -> int:
                 if hit:
                     return hit
             return None
-        memo = MEMO_OSM
+
+    memo = build_memo(args.provider, args.verifier)
 
     rows, cells = collect(args.paths)
     if not rows:
