@@ -1,6 +1,6 @@
-# 醒來要做的事（v23）
+# 醒來要做的事（v24）
 
-> 更新時間：2026-08-22（批次工具加上高影響地址人工確認）　｜　程式碼對齊 commit `2cc5cd0`+
+> 更新時間：2026-08-22（體檢 + 依賴升級已部署驗收）　｜　程式碼對齊 commit `d4d93e4`
 >
 > **這份檔只回答「下一步該按什麼鍵」。**任何「為什麼這樣做」「這個決策的背景」
 > 「哪個格式怎麼解」一律去查 `CLAUDE.md` —— 那才是唯一真實來源。
@@ -105,8 +105,24 @@ python3 scripts/probe_cell_towers.py --expect "../data/cell_towers_橋檢_top40_
 另外值得順手看一眼：上傳一個系統不認得的格式 → 手動對應 → 儲存為專案 →
 該筆現在應該**有** evidence（這是 Phase 2B 補上的證據鏈缺口，以前這條路沒有）。
 
-### ④ 其餘 P9 待辦（尚未動）
+### ④ 體檢後的結構待辦（我可以做，等你說）
+
+依「不做會怎樣」排序，完整版見體檢報告：
+
+1. **合併三份重複的解析路徑**（2–3 小時，低風險）——
+   `preview.py`/`upload.py`/`parse_only.py` 各自實作 records→GeoJSON、mapping 解析、
+   422 診斷。這正是 CLAUDE.md 五-P / 五-V 記載、**已經害過這個專案兩次**的形態。
+2. **三個 migration 加自動建表後盾**（1 小時）——
+   `project_members` / `account_requests` / `share_links` 沒有 `_ensure_*`，
+   新環境漏套會變成三個功能各自 500，而錯誤訊息不指向真因。
+3. **從 index.html 再抽兩塊**（4–6 小時）—— 地圖渲染、上傳編排。
+   沿用 `preview-state.js` 的模式，抽出去就能寫 Node 測試，而那些測試現在已進 CI。
+4. **訂 legacy 端點的移除判準**（1 小時 + 觀察期）——
+   加 `parse-only`/`parse-temp` 呼叫量統計，沒有判準的「暫時保留」會變永久保留。
+5. **report ACL 決策**（需你決定）——
+   現況只有系統 admin 能下載證物報告、專案 owner 被擋 403，但 docstring 寫 viewer 以上。
+
+### ⑤ 其餘 P9 待辦（尚未動）
 
 object storage A.5（5–50MB）、supervisor seal / custody ledger、
-`geocoded_cell_estimates` 推估座標分表、report ACL 決策（REPORT_ACL_SPEC_MISMATCH）、
-legacy `parse-only` / `parse-temp` / `save-records` 的實際移除（等舊快取頁面汰換）。
+`geocoded_cell_estimates` 推估座標分表。

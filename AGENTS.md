@@ -2,23 +2,20 @@
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
-> 最近一次更新：2026-08-22（**P9 Phase 2B：guest / mapping-aware Preview Artifact cutover**）：
-> ① 訪客上傳與手動欄位對應**都改走 `POST /api/preview`** —— 前端三條上傳路徑自此都不再取得 `_records`，
->    實測同檔 payload 縮減 **67–94%**（定位率 0 時達 99.99%），**待辦 #0 主體完成**；
-> ② 手動對應的檔案自此也有完整證據鏈（原本只能走 `save-records`，server 沒有原始檔也沒有 SHA-256）——
->    前置條件是新增 `ingest_auto(mapping=)`，補上「存檔路徑完全不吃 mapping」這個硬缺口；
-> ③ 訪客 artifact 以 `preview_id` 為 capability（同 P7 share_links），具名 artifact 的界線未動；
->    seal / save 維持必須登入，create / read / delete 免登入；訪客配額 20/hr/IP；
-> ④ 訪客→登入的 `sessionStorage` 交接改成只帶 `preview_id`（不再把整份解析結果留在瀏覽器），
->    並保留舊格式相容以免 rolling deploy 期間吞掉使用者資料；
-> ⑤ legacy `parse-only` / `parse-temp` 契約**刻意不動**、只標 DEPRECATED（舊快取頁面仍會讀 `_records`）。
-> 驗證：pytest **531 passed**、Node 純函式 **79 passed**、真瀏覽器 smoke **35/35**、DB-backed E2E **25/25**。
-> 同輪另完成待辦 #1 的匯入前驗證（七-12）：那份 116 筆推估座標預檢 116/0/0、離群站點查證為真實軌跡、
-> 本機真 DB 匯入無欄序錯誤，實測可把「蘇」系列從定位 0 推到約四成（「陳」系列僅 3–5%）。
-> 並完成**全 34 檔盤點（七-13）**：解析成功 21 檔 / 120,203 列、已定位 23,193 列（19.3%）；
-> **13 個 PDF 完全無法解析**（遠傳／台哥大無框線版面，非欄名問題），其中 7 檔有同案 xlsx 可替代、
-> 6 檔（`0927352336`）只有 PDF —— 建議向業者索取 Excel 版而非自行重組版面。
-> **⚠ 專案最大瓶頸仍是待辦 #1：向業者取得真正的 `cell_towers` 座標表。線上該表目前仍是空的，production 定位率仍為 0。**
+> 最近一次更新：2026-08-22（**全專案體檢 + 依賴安全升級，已部署並線上驗收**）：
+> ① `pip-audit` 掃出 **76 個已知漏洞散在 16 個套件**，且都在真實路徑上 —— python-multipart
+>    （每次上傳）、starlette（HTTP 核心）、pdfminer.six（解析使用者上傳的 PDF）、cryptography
+>    （加密案件 PII）。**本輪 P9 Phase 2B 把 preview 開放給訪客，等於把前三項暴露給任何人。**
+>    升級 16 個套件（fastapi 0.115→0.141、starlette 0.38→1.6、pypdfium2 4→5 等），
+>    乾淨環境實測 **76 → 2**（剩 ecdsa 無修補但不走 ECDSA、pytest 僅開發用）。
+> ② CI 新增 `frontend-unit`（79 條）與 `audit`（pip-audit，刻意只報告不擋 build）。
+> ③ **踩到並記錄一條規則（五-L2）**：依賴驗證必須用乾淨 venv 從 requirements.txt 零安裝 ——
+>    我在改過的 venv 上驗完宣稱成功，CI 立刻抓到 `pypdfium2` 釘版不一致，Render 也裝不起來。
+> ④ 體檢其餘結論：SQL 注入 0（99 處全參數化）、版控無機密、722 測試 0 skip；
+>    三項結構風險待處理（三份重複的解析路徑、index.html 3,713 行 inline script、ingest.py 2,032 行）。
+> 線上驗收（fastapi 0.141.1 / starlette 1.6）：health·openapi·docs 200、訪客 multipart 上傳 200、
+> preview 生命週期 200→200→410、401 守衛、slowapi 限流、X-Request-ID、CORS 白名單皆正常。
+> **⚠ 專案最大瓶頸仍是定位：待辦 #1 需要 Google 金鑰或業者座標表，線上定位率仍趨近 0。**
 
 ---
 
