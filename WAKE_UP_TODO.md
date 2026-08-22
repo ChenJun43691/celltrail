@@ -1,6 +1,6 @@
-# 醒來要做的事（v21）
+# 醒來要做的事（v22）
 
-> 更新時間：2026-08-22（全樣本盤點 + TGOS/NLSC 定位路徑）　｜　程式碼對齊 commit `b49d415`
+> 更新時間：2026-08-22（定位路徑改採 Google 一次性離線批次）　｜　程式碼對齊 commit `2dff04e`
 >
 > **這份檔只回答「下一步該按什麼鍵」。**任何「為什麼這樣做」「這個決策的背景」
 > 「哪個格式怎麼解」一律去查 `CLAUDE.md` —— 那才是唯一真實來源。
@@ -28,28 +28,34 @@ Google 金鑰無效、OSM 停用（會回錯座標）、TGOS 沒憑證。
 
 ## 下一步（照順序）
 
-### ① 申請 TGOS 全國門牌地址定位服務 ← **現在最重要的一步，只有你能做**
+### ① 修好 Google 金鑰，然後在本機跑一次離線批次 ← **現在唯一可行的路**
 
-這是「全部定位」唯一實際可行的路。內政部的服務，整合**戶政機關門牌坐標**，
-對政府機關**免費**，你的 kcg.gov.tw 身分符合資格。
+> **TGOS API 走不通**：申請須綁定 1~4 個固定 IP，本專案做不到（Render 對外 IP 動態）。
+> 門牌座標也**沒有開放下載**。所以剩下的只有 Google，而它**不需要綁固定 IP**。
 
-1. https://www.tgos.tw → 註冊會員 → 申請「全國門牌地址定位服務」
-   （客服 tgos@moi.gov.tw、02-21927111）
-2. 拿到 AppID / APIKey 後，跑一次離線批次：
+**這次不會重演 NT$5,000 的帳單**，原因是上次那是架構問題不是用量問題：
+當時沒有 `cell_towers`，每次上傳都把同一批地址重查一遍。現在唯一地址只有 3,459 個
+（蘇／陳三人合計 2,440 個），查一次寫進對照表就永不重查；Google Geocoding
+**每月前 10,000 次免費** → 一次跑完通常是 **NT$0**。
 
+1. **GCP Console → APIs & Services → Credentials** 建立新金鑰、啟用 Geocoding API。
+   （現有這把是 `REQUEST_DENIED: The provided API key is invalid`，7/22 與 8/22 兩次實測皆然。
+   注意：HTTP referrer 限制對伺服器端呼叫無效，要用「無限制」或 IP 限制。）
+2. **在本機跑**（不是在 production 跑）：
    ```bash
    cd backend && source .venv/bin/activate
-   export TGOS_APP_ID=你的AppID TGOS_API_KEY=你的APIKey
+   export GOOGLE_MAPS_API_KEY=新金鑰
    python scripts/geocode_verify.py ../基地台位置範例檔案 \
-       -o ../data/towers_tgos.csv --provider tgos --verifier nlsc
+       -o ../data/towers_google.csv --provider google --verifier nlsc
    ```
-   每個結果都會用**內政部 NLSC 官方行政區**反查驗證，跨行政區的錯誤匹配會被擋下。
+   - 每個結果都會用**內政部 NLSC 官方行政區**反查驗證，跨行政區的錯誤匹配會被擋下。
+   - `--max-requests` 預設 9000（低於免費額度）作為費用護欄；結果區會印「正向查詢次數」供對帳。
+   - 想先小規模試水溫：加 `--limit 50`。
 3. `admin.html` → 基地台座標表 → 匯入產出的 CSV。
+4. production 維持 `GEO_GOOGLE_ENABLED=0`（**不要改**）—— runtime 永不呼叫 Google，
+   費用不可能從線上復燃。
 
-程式端已經寫好等你貼金鑰（`CLAUDE.md` 七-14）。**但它沒對真實服務測過**（我沒有憑證），
-第一次跑若回應格式對不上，把錯誤訊息貼給我調 `_tgos_parse`。
-
-**上限說明**：門牌型地址佔 95.0% 的列，可望全解。剩下的是「地號」（需地籍資料，約 5%）、
+**上限說明**：門牌型地址佔 95.0% 的列，可望大部分解決。剩下是「地號」（需地籍資料，約 5%）、
 「電桿」，以及 480 列的 `上網或使用VoWiFi` / `(簡訊系統發信)` —— 最後這類**本來就不是位置**，
 定位不到是正確行為。所以實際上限是 **99.6%**，不是 100%。
 

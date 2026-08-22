@@ -1316,7 +1316,7 @@ python scripts/geocode_verify.py <檔案或資料夾> -o towers.csv [--limit N] 
 | `cell_towers` | 116 筆（涵蓋 3,459 個地址中的 14 個站點）|
 | Google Geocoding | **金鑰仍無效**（`REQUEST_DENIED: The provided API key is invalid`，本日重驗，七-11 記的狀態未變）|
 | OSM / Nominatim | 停用（七-11：會回看起來正常但錯誤的座標）|
-| **TGOS 全國門牌地址定位** | **無憑證**；且 `.env` 裡的端點**已失效**（本日實測 404）|
+| **TGOS 全國門牌地址定位** | **不可行 —— API 申請須綁 1~4 個固定 IP，本專案無法提供**；另 `.env` 內端點亦已失效（404）|
 
 → **目前沒有任何一條可用的正向地理編碼路徑。** 這是行政問題（要申請帳號），不是程式問題。
 
@@ -1354,20 +1354,48 @@ python scripts/geocode_verify.py <檔案或資料夾> -o towers.csv [--limit N] 
 **3. 用 NLSC 重驗了那份 116 筆推估座標** —— **14 個站點全數相符、116/116 通過**。
 它原本只有 OSM 反查背書（七-11/七-12），現在多了一套**獨立且官方**的驗證。可安心匯入。
 
-#### E. 建議的執行順序
+#### E. 建議的執行順序（2026-08-22 更新：TGOS API 這條路已排除）
 
-1. **申請 TGOS 全國門牌地址定位服務**（https://www.tgos.tw ，限政府機關／法人／學術單位，
-   免費；客服 tgos@moi.gov.tw / 02-21927111）。拿到 AppID + APIKey 後：
+> **⚠ TGOS API 申請須綁定 1~4 個固定 IP，本專案做不到**（使用者告知；Render 對外 IP 動態，
+> 本機／辦公端也無可登記的固定 IP）。這不是「還沒申請」而是「申請不了」。
+> `_tgos_geocode` 保留無妨（預設關閉、無憑證不發請求），但**不要再把申請 TGOS API 列為待辦**。
+> 另：門牌座標**沒有開放下載**（data.gov.tw 上是民眾在請求開放，全國路名資料集不含座標），
+> 所以「下載離線資料集」目前也不存在。
+
+**改採 Google Geocoding 的一次性離線批次** —— 這是目前唯一實際可行且不需固定 IP 的路：
+
+1. **修好 Google 金鑰**：GCP Console → APIs & Services → Credentials 建新金鑰、啟用
+   Geocoding API。（目前這把是 `REQUEST_DENIED: The provided API key is invalid`，
+   2026-07-22 與 2026-08-22 兩次實測皆然。注意 HTTP referrer 限制對伺服器端呼叫無效。）
+2. **在本機跑一次離線批次**（**不是**在 production 跑）：
    ```bash
-   export TGOS_APP_ID=... TGOS_API_KEY=...
-   cd backend && python scripts/geocode_verify.py ../基地台位置範例檔案 \
-       -o ../data/towers_tgos.csv --provider tgos --verifier nlsc
+   cd backend && source .venv/bin/activate
+   export GOOGLE_MAPS_API_KEY=新金鑰
+   python scripts/geocode_verify.py ../基地台位置範例檔案 \
+       -o ../data/towers_google.csv --provider google --verifier nlsc
    ```
-   產出直接由 `admin.html` → 基地台座標表匯入。這條路可望解掉 95% 的列（門牌型）。
-2. **`地號` 那 480 個地址**需要地籍資料（NLSC 的 `ListLandSection` 免金鑰可查段代碼，
-   但段+地號→座標仍需另尋來源）。約 5% 的列，優先度低於 1。
-3. **業者座標表（待辦 #1）仍是最終解**：它是唯一不經任何推估、撐得住法庭質詢的來源。
-   TGOS 路徑產出的仍是「門牌地址的座標」，不是「業者登記的站台座標」，memo 已標明區別。
+3. 產出的 CSV 由 `admin.html` → 基地台座標表匯入。
+
+**為什麼這次不會重演 NT$5,000 的帳單**（這是本輪最重要的判斷）：
+
+- 上次的費用是**架構問題不是用量問題** —— 當時沒有 `cell_towers`、也還沒有 `geocode_cache`，
+  於是**每次上傳都把同一批地址重查一遍**，一個月累積成數萬次請求。
+- 現在唯一地址只有 **3,459 個**（蘇／陳三人合計 2,440 個），查一次寫進 `cell_towers`
+  就**永不重查**。Google Geocoding 自 2025-03 起每月前 **10,000 次免費**
+  → 一次跑完通常是 **NT$0**。
+- production 維持 `GEO_GOOGLE_ENABLED=0`，**runtime 永遠不會呼叫 Google**，
+  費用不可能從線上復燃；順帶也不受 Render 120s 請求上限影響。
+- 腳本另有 `--max-requests`（預設 9000）作為護欄：達上限即停止並印出已查次數，
+  不會安靜地跑過免費額度。結果區會印「正向查詢次數」供對帳。
+
+**驗證不因換來源而省**：Google 是**通用**地理編碼器，一樣會「盡量給個接近的答案」，
+所以 NLSC 官方行政區反查照跑（七-11 的教訓與來源無關）。
+
+**其餘兩條路**：
+- `地號` 那 480 個地址需要地籍資料（NLSC 的 `ListLandSection` 免金鑰可查段代碼，
+  但段+地號→座標仍需另尋來源）。約 5% 的列，優先度低於上述。
+- **業者座標表（待辦 #1）仍是最終解**：Google 產出的是「門牌地址的座標」，
+  不是「業者登記的站台座標」，memo 已標明區別。
 
 ---
 
