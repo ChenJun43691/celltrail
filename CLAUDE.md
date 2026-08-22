@@ -938,7 +938,7 @@ DEPRECATED；等舊頁面自然汰換後再連同 `_records` 欄位一併移除�
 |---|---|---|
 | ~~0~~ | ~~preview 路徑 payload 瘦身~~ | **✅ 2026-08-22 P9 Phase 2B 完成** —— 訪客與手動對應也切到 Preview Artifact，前端三條上傳路徑都不再取得 `_records`。實測同檔 payload 縮減 67–94%（`cell_towers` 空、定位 0 時達 99.99%）。legacy `parse-only` / `parse-temp` 的契約**刻意保留不動**（rolling deploy：舊快取頁面仍會讀 `_records`），已標 DEPRECATED，待舊頁面汰換後移除。詳見「P9 Phase 2B」節。
 | 1 | **填充 cell_towers 座標表** | 架構（P4.1）已就緒但表是空的；向業者取得基地台座標 CSV 匯入，可徹底解決純數字 cell_id 的 geocode 問題（消 geocode 時間牆，但七-8 記憶體牆仍在，需配 #0）。**2026-07-21 盤點**：手邊 16 檔共需 **6,620 個唯一 cell_id**，其中 96.1% 的列有 cell_id → 這條路的涵蓋上限最高。匯入前務必先看 **五-X**（匯入欄序 bug 已修，但仍有短碼唯一性問題）。**2026-08-22 已對手上那份 116 筆推估座標做完匯入預檢與本機實測，見七-12** |
-| 2 | **P3–P6 API 補自動化測試** | auth / members / parse-only / format-reports / cell-towers 目前只有手動驗證 |
+| 2 | **P3–P6 API 補自動化測試** | **2026-08-22 大部分完成**（`test_api_admin_endpoints.py` 33 條，行為層而非只驗路由註冊）。已覆蓋：cell-towers 三端點（含 `?confirm=true` 破壞性護欄、匯入的逐列拒絕不中斷整批）、users 兩條自我鎖定守衛（不能降級/停用自己）+ 重設密碼不回 hash、account-requests 的重複核准 404 / 帳號衝突 409 / reject rowcount 分支 / 公開 check-phone 不外洩個資、carrier-profile 空欄名驗證、audit 的 admin-only + 參數化查詢 + page_size 上限。**三條關鍵守衛與兩條 audit 守衛已做突變測試驗證**（拿掉守衛測試會紅）。`members.py` 已由 `test_members_business_logic.py` 16 條函式層覆蓋，未重複寫 HTTP 層。**尚缺**：`stats.py`（計數器，風險低）、users/carrier-profile 的成功寫入路徑、`report.py`。|
 | 3 | **carrier_profile DB 同步** | 把 `_RAW2CANON` 所有 key 補進 DB `mapping_json`（讓 DB 真正成為 SoT）。注意：雲端 active_map 用 `{**_RAW2CANON, **db_profile}` 合併，新增別名只要 push+redeploy 即生效、**不需** Supabase migration |
 
 ### 長期
