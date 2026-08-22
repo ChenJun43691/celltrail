@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 > 最近一次更新：2026-08-22（狀態盤點輪，**無程式行為變更**：① 以免憑證探針實測確認 **線上 `cell_towers` 仍是空的**、production 定位率仍為 0（七-10 已更新，附 30 筆抽樣證據）；② 新增可重複使用的驗收工具 `backend/scripts/probe_cell_towers.py`（不需 admin token 即可驗證對照表是否生效，並比對座標防五-X 類欄序錯誤）；③ `AGENTS.md` 改由 `scripts/sync_agents_md.sh` 自 CLAUDE.md 產生，杜絕兩份文件 drift；④ `WAKE_UP_TODO.md` 汰換（原內容停在 2026-05-26 已嚴重誤導），改為指向本檔的當前待辦清單。程式碼對齊 commit 4de8b38（2026-07-22 資料韌性強化輪：遠傳別名、SCAN_WINDOW→60、multiset 子集分頁去重、cell_towers 匯入欄序修復、訪客未定位揭露、OSM 錯誤座標發現七-11、`geocode_verify.py`）。P9 Phase 2A（commit 5b501e0）判定「有條件可部署」。**⚠ 本專案目前最大瓶頸仍是待辦 #1：填 `cell_towers`；在此之前解析再準，地圖上也不會有點。**）
 
@@ -54,7 +54,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### 雲端部署架構（production）— **使用者主要在這裡測試**
 
 > ⚠️ 重要：repo 內沒記這塊，但**系統實際對外服務跑在雲端**。本機 8000 多半沒在跑。
-> 症狀「Claude 沙箱能解、但使用者線上失敗」≠ 程式沒修好，而是**改動還沒部署**。
+> 症狀「Codex 沙箱能解、但使用者線上失敗」≠ 程式沒修好，而是**改動還沒部署**。
 > 判斷：`curl localhost:8000/api/health` + `ps aux|grep uvicorn` 確認本機沒跑 →
 > 使用者吃雲端 → 需 `git push origin main` 觸發 Render 自動 redeploy（約 2–5 分鐘）。
 
@@ -68,7 +68,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 雲端密鑰 env 名是 **`JWT_SECRET`**（不是本機 `SECRET_KEY`）；`security.SECRET_KEY = getenv("SECRET_KEY") or getenv("JWT_SECRET")`，production fail-fast。另有 `AUTH_ENABLED` / `CORS_ORIGINS` / `GOOGLE_MAPS_API_KEY` / `GEO_OSM_FALLBACK`。
 - **active_map 合併**：`carrier_profile.get_active_header_map()` 用 `{**_RAW2CANON, **db_profile}`（code 當底、DB 疊上補空缺）→ **新增欄名別名只要 push+redeploy 即生效，不需動 Supabase**。
 - **前端 API base 切換**（`api.js`）：本機 hostname（localhost/127.0.0.1/區網）→ `localhost:8000`；否則 → 雲端 `celltrail-api.onrender.com`。
-- 由 Claude 直接改 Render（env / 重部署 / 看 log）需使用者臨時給一把 **Render API key**（`https://api.render.com/v1/services/{id}/...`），用完請 Revoke。
+- 由 Codex 直接改 Render（env / 重部署 / 看 log）需使用者臨時給一把 **Render API key**（`https://api.render.com/v1/services/{id}/...`），用完請 Revoke。
 - **雲端大檔上限**：parse-only 限 **20 req/hr/IP**；單次上傳 >~5000 筆會 OOM 502（見七-8）。
 
 ---
@@ -963,12 +963,12 @@ Verification:
 
 Risk: <0/低/中/高> + 說明為什麼
 
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Co-Authored-By: Codex Opus 4.8 <noreply@anthropic.com>
 ```
 
 ---
 
-## 九、與 Claude 工作的偏好
+## 九、與 Codex 工作的偏好
 
 使用者明確要求（見 `<user_preferences>`）：
 
@@ -1066,10 +1066,8 @@ backend/scripts/
 
 根目錄三份文件的分工（避免再度 drift）：
 
-<!-- sync:verbatim-start -->
 | 檔案 | 角色 |
 |---|---|
 | `CLAUDE.md` | 專案狀態與決策的**唯一真實來源**（給 Claude Code） |
 | `AGENTS.md` | 上者的 Codex 鏡像，**由 `bash scripts/sync_agents_md.sh` 產生 —— 不要手動編輯**，改了會在下次同步被覆蓋 |
 | `WAKE_UP_TODO.md` | 只回答「下一步該按什麼鍵」，任何細節一律回頭查 `CLAUDE.md` |
-<!-- sync:verbatim-end -->

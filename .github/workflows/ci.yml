@@ -44,3 +44,11 @@ jobs:
 
       - name: Run pytest
         run: pytest app/tests/ -v
+
+      # AGENTS.md 是 CLAUDE.md 的機械產物（見 scripts/sync_agents_md.sh）。
+      # 兩份曾在 2026-07-08～08-22 之間 drift 一個多月，導致 Codex 讀到的版本
+      # 缺少「OSM 會回傳錯誤座標」這條最危險的警告 —— 那不是文件不整齊，
+      # 而是讓另一個 agent 重蹈已知的坑。故在 CI 直接擋下不同步的 commit。
+      - name: Check AGENTS.md is in sync with CLAUDE.md
+        working-directory: .
+        run: bash scripts/sync_agents_md.sh --check

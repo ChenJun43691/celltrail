@@ -1,162 +1,101 @@
-# 醒來要做的事（v17 — #2/#3/#7/#8 全清、UI smoke 32 條、drift 守護就位）
+# 醒來要做的事（v18）
 
-> 更新時間：2026-05-26
-> 狀態：✅ 203/203 pytest ｜ 32/32 frontend smoke ｜ 證據完整性 9.7/10
-
----
-
-## 本輪（2026-05-24 ～ 05-26）大事記
-
-| Commit | 內容 |
-|---|---|
-| `3db9696` | **test**：carrier_profile seed/code drift CI 守護 — **完成 #3**（+4 條，方向轉成防 drift） |
-| `798f553` | **test**：frontend smoke +4 守護登入後 UX（跳模式 modal + 進階設定 hint） |
-| `7d657aa` | **feat**：進階設定標題依資料動態加掛「✦ 含方位角資料」提示 |
-| `a713d38` | **fix**：已登入使用者跳過「請選擇使用模式」modal，自動進專案管理 |
-| `fe71904` | **feat**：L3 手動定位（PATCH manual-locate + 前端 pin mode）— **完成 #8**，+10 backend tests |
-| `b4ec912` | **fix+test**：format_reports anonymous admin FK guard + 業務邏輯測試 +9 |
-| `5eb48da` | **test**：members API 業務邏輯（owner 守衛 + revoke 自鎖防線 + 軟刪 audit）+16 |
-| `22898fa` | **chore**：backfill_hex_celladdr.py 舊資料補救 script（WAKE_UP_TODO #9 ready，等 --apply） |
-| `8e9806b` | **test**：專案層權限安全核心（assert_project_access + _PERM_LEVELS + optional auth）— +17 |
-| `101474b` | **test**：write_audit 業務邏輯（safe 合約 + 欄位組裝 + payload_hash 一致性）— +9 |
-| `a5eb683` | **fix**：ingest cell_addr 拒絕 hex 短碼（addr_geocode_failed 真因，**完成 WAKE_UP_TODO #7**）+7 守護測試 |
-
-**本輪重點補述**：
-- WAKE_UP_TODO **#2 全清**：audit / security / members / format_reports 四
-  個業務邏輯層全部補完（共 +51 測試）。
-- WAKE_UP_TODO **#3 完成**（方向轉換）：實測 47=47 已同步，重點改為**防
-  未來 drift** —— 加 4 條 CI test 守住 `_RAW2CANON` 與 schema.sql seed
-  的雙向一致 + canonical typo 白名單檢查。
-- WAKE_UP_TODO **#7 完成**：ingest cell_addr hex 短碼防呆（`a5eb683`）。
-- WAKE_UP_TODO **#8 完成**：L3 手動定位端到端（backend PATCH + 前端 pin
-  mode + 10 unit + 1 contract test）。
-- 前端兩件 UX 改良：跳模式選擇 modal (`a713d38`)、進階設定動態 hint
-  (`7d657aa`)；同步補 4 條 playwright smoke 守住。
-- pytest 131 → **203**（+72）；frontend smoke 28 → **32**（+4）。
-- 補測試時意外發現 latent bug：`format_reports.py` 對 anonymous admin
-  (id=0) 未做 FK 容錯 —— grant_member / delete_project 都有處理但這支
-  忘了，AUTH_ENABLED=false 開發環境每次回報 / 處理回報都會炸
-  IntegrityError。production AUTH_ENABLED=true 不受影響。同 commit
-  `b4ec912` 已修。
-- 這個經驗印證：補業務邏輯測試的副作用是會逼出 latent bug —— 因為
-  測試必須對齊「該行為應該是什麼」，而非「它目前是什麼」。
-
-**uvicorn 注意**：本機若 uvicorn 是 v15 之前 session 啟的，需重啟才會載入
-新 PATCH 端點 manual-locate（task #5 spawn bug，無法用 --reload；手動 kill
-後重啟）。
-
-**本輪重點**：
-- WAKE_UP_TODO #7 **完成**：0517test 案件 69 筆 addr_geocode_failed 真因
-  是台哥大-第二類.xlsx 有 ≥2 欄都映 cell_addr（「起址」吐 hex、「基地台
-  位址」吐真地址），W1.5「空值不覆蓋」紀律下 1866 列被真地址覆蓋、
-  69 列真地址空 → hex 殘留。`_normalize_row` Pass 1 加 hex 短碼 guard
-  攔截 6–12 字純 hex 改寫到 sector_id，coverage 改歸 cellid_only。
-  既有資料未洗（不會回頭洗 DB）、未來上傳止血。
-- WAKE_UP_TODO #2 **部分完成**：補了 audit（write_audit）與 security
-  （assert_project_access / optional auth / anonymous admin 範本隔離）
-  兩塊業務邏輯測試（+26）。剩 members API（_require_project_owner /
-  revoke_member）、軟刪流程、format_reports 處理流程等。
-- 全套 pytest：131 → **164**（+33）。
+> 更新時間：2026-08-22　｜　程式碼對齊 commit `4de8b38`，本地與 `origin/main` 同步
+>
+> **這份檔只回答「下一步該按什麼鍵」。**任何「為什麼這樣做」「這個決策的背景」
+> 「哪個格式怎麼解」一律去查 `CLAUDE.md` —— 那才是唯一真實來源。
+>
+> v1–v17（2026-05-26 以前）的逐輪大事記已移除：內容停在三個月前、與現況嚴重
+> 不符，留著只會誤導。需要回溯請用 `git log --oneline` 或 `git show <sha>:WAKE_UP_TODO.md`。
 
 ---
 
-## 上輪（2026-05-17 ～ 05-23）大事記
+## 一句話現況
 
-| Commit | 內容 |
-|---|---|
-| `c2d7c1b` | **P7**：專案分享連結（匿名唯讀檢視；`share_links` 表 + `api/share.py` + `share.html`） |
-| `7c89754` | 案件下拉選單 + 分享連結簡化（30 分鐘一鍵分享） |
-| `43bb800` | docs：新增完整專案技術文件 |
-| `b2a7e83` / `d4dcbe0` | 登入流程三頁背景影片改走 Cloudflare R2 CDN |
-| `e55d69e` | fix：schema.sql 自足化 + 正式環境部署檢查清單 |
-| `675864d` | feat：後端啟動設定安全自檢 |
-| `1353b09` | **test**：P3–P7 API 契約與 auth 守衛測試（92 → **125**） |
-| `7b82358` | fix：修復 bug 掃描發現的 6 項問題（map 靜默截斷 / 使用者列舉 / 權限文件等） |
-| `a72e20b` | feat：Supabase 保活機制（APScheduler 每 6h ping 一次 DB） |
-| `14499f1` | feat：欄名對照表顯示 code 預設 + 帳號申請改為使用者自訂密碼 |
-| `c059908` | feat：全 admin 操作稽核覆蓋 + 專案軟刪 API |
-| `9f13704` | feat：admin 介面分頁化 + api.js 單一來源 + XSS/401 強化 |
-| `04e7100` | test：前端 UI smoke test（playwright-core 驅動系統 Chrome） |
-| **本輪** | **feat：上傳定位透明化（coverage 端點 + L1 收據 + L2 banner + L3 詳細 modal）** |
+**解析已經很好，定位是 0。**
+
+ingest pipeline 手邊 16 個真實樣本全數 100% 或達資料物理上限、無已知未修的 silent bug；
+但線上 `cell_towers` 是空表、Google 停用、OSM 停用（會回錯座標，見 `CLAUDE.md` 七-11）
+→ **上傳成功、解析成功、地圖沒有點**。所有其他待辦的實際價值都被這一件事壓著。
 
 ---
 
-## ⭐ 本輪重點：上傳定位透明化（2026-05-23 下午）
+## 下一步（照順序）
 
-**動機**：同事反應「上傳 300 筆只跳 200 筆」。實測 `0517test` 案件
-**9129 / 9129** 寫入但 **145 筆未定位**（76 cellid_only + 69 addr 失敗）
-—— 過去使用者完全看不到這個落差，違反證據完整性原則。
+### ① 把手上那 116 筆推估座標匯進線上，然後驗收 ← **投報率最高**
 
-**做了**：
-- 後端 3 端點：`/coverage`（聚合）、`/unlocated`（加 reason 標籤 + filter）、
-  `/unlocated.csv`（下載；UTF-8 BOM 給 Excel）。三類 reason 純依既有欄位
-  推導，不需 migration。
-- 前端三層 UI：L1 上傳完成 receipt（4 個數字 + 3 原因 + 下載鈕）、L2 地圖
-  頂部常駐 banner（`without_geom > 0` 才顯示）、L3 詳細 modal（按原因
-  collapsible + 每段「排除方式」說明 + 列表 + CSV）。
+`data/` 底下有一份 `geocode_verify.py` 產出的已驗證推估座標 CSV（116 筆 / 14 個站點，
+通過行政區＋路名雙重反查）。格式已檢查可直接匯入。
 
-**驗證**：131/131 pytest（+6 契約）；對 0517test 真實案件實打三端點數字
-正確；playwright 驗 L2 banner 與 L3 modal 渲染（145 / 9129、76 + 69 兩段
-正確展開）。
+1. 先確認你接受它的限度：**這是地址推估值、不是業者座標，精度為「路名正確」而非
+   「門牌正確」**，點會落在該路某處。每列 memo 都已標註來源，日後業者對照表到手
+   直接重匯即覆蓋（`ON CONFLICT DO UPDATE`）。
+2. `admin.html` → 基地台座標表 → 匯入 CSV（需 admin 登入；`/api/cell-towers/import`）。
+3. 驗收（**不需要 token**，跑在本機就行）：
 
-**遺留 finding**：addr_geocode_failed 那 69 筆的 cell_addr 是 sector
-代碼（`0E2921B7` 之類），是 normalize / dialect 把錯欄位塞進 cell_addr。
-下次處理（待辦新增第 7 條）。
+   ```bash
+   cd backend
+   python3 scripts/probe_cell_towers.py --expect ../data/<那份>.csv --sample 30
+   ```
+
+   它會抽樣打 production 的訪客端點，確認：**(a)** 這些 cell_id 真的能定位了、
+   **(b)** 回傳座標與 CSV 相符 —— 後者是在抓「匯進去了但經緯度對調」這種
+   在地圖上看起來完全正常的錯誤（`CLAUDE.md` 五-X）。
+
+> 2026-08-22 實測基準：匯入前 **0/30 定位成功**。匯入後若沒變，先確認匯入回應的
+> `inserted` 數字，再確認 cell_id 字面是否完全一致（前後空白、科學記號變形）。
+
+### ② 待辦 #1 正題：向業者索取真正的基地台座標表
+
+①只是過渡。手邊 16 檔共需 **6,620 個唯一 cell_id**、96.1% 的列帶 cell_id
+→ 這條路一旦通，**定位率與速度問題同時消失**，且完全不依賴任何外部 geocoding 服務，
+也是唯一撐得住法庭質詢的來源。索取時注意 `CLAUDE.md` 五-X 記的短碼唯一性問題
+（中華上網方言的 3–5 碼編號可能需附 LAC/TAC 或原調閱案號才能定位到唯一站台）。
+
+### ③ 待辦 #0：preview 路徑 payload 瘦身
+
+`parse-only` / `parse-temp` 仍同時回 `_records` + GeoJSON（記憶體 ×2），大檔預覽仍可能 502。
+正式 `/upload` 已由 P8.1 chunking 解決，**只剩預覽路徑**。方向：移除 `_records` 重複、
+或改 `?include_records=1` 才回、或分頁／NDJSON。
+
+### ④ 一個等你拍板的產品決策：`REPORT_ACL_SPEC_MISMATCH`
+
+`api/report.py` 的 `evidence_report` docstring 寫「需 viewer 以上」，實作卻是 admin-only
+（實測 project owner → 403、admin → 200）。**兩邊擇一改**：(a) 只有 admin 能出報告 → 改
+docstring；(b) 應該 viewer+ → 改 guard 為 `assert_project_access(viewer)`。
 
 ---
 
-## 快速啟動
+## 千萬別做的兩件事
+
+1. **不要把 OSM (`GEO_OSM_FALLBACK`) 開回去當定位主力。** 它對台灣地址會回傳
+   「看起來完全正常但錯誤」的座標（實測偏差可達 26 公里、甚至比對到別的行政區的同名路）。
+   要用必須加反查驗證層 —— 那正是 `geocode_verify.py` 在做的事，且它慢到只能離線跑。
+   完整案例見 `CLAUDE.md` 七-11。
+2. **不要匯入 `cell_towers_from_addr.csv` 那類未經反查驗證的推估座標。**
+   同上，命中率數字漂亮但其中一半是錯的。
+
+---
+
+## 環境開機順序（本機）
 
 ```bash
-open -a Docker
-docker compose -f infra/docker-compose.yml up -d db
-cd "/Users/chenguanjun/Desktop/Python程序開發/CellTrail/backend"
-source .venv/bin/activate
-uvicorn app.main:app --port 8000 &
-cd ../frontend && python3 -m http.server 5501
-# 登入頁：http://127.0.0.1:5501/login.html
-# 主系統：http://127.0.0.1:5501/index.html
+open -a Docker                                              # 等鯨魚 icon 穩定
+docker compose -f infra/docker-compose.yml up -d db         # 等 (healthy)
+cd backend && source .venv/bin/activate && uvicorn app.main:app --port 8000 --reload
+cd frontend && python3 -m http.server 5501                  # 另開一個終端
 ```
 
-> ⚠️ 本機 `.env` 目前 `AUTH_ENABLED=true` —— index.html 不再自動匿名 admin，
-> 需先登入取得 token。無已知密碼時可用後端金鑰自行鑄 token：
-> `python -c "import app.main; from app.security import create_access_token; print(create_access_token({'sub':'CIDadmin'}))"`
-> （`CIDadmin` 為目前唯一在用的 active admin 帳號）。
+測試：`cd backend && pytest app/tests/ -v`（2026-08-22 實測 **503 passed**，約 13 秒，不需 DB/Redis/Google）
 
-> 全新環境需套 **三個** migration（schema.sql 不含）：
-> `migration_permissions.sql`、`migration_account_requests.sql`、
-> `migration_share_links.sql`（見 CLAUDE.md 第三節）。
+> 提醒：**使用者主要在雲端測**。本機改好不等於線上好了 —— 要 `git push origin main`
+> 觸發 Render 自動 redeploy（約 2–5 分鐘）。
 
 ---
 
-## 待辦（依優先級）
+## 文件維護
 
-### 中期
-
-| # | Task | 說明 |
-|---|---|---|
-| 1 | **填充 cell_towers 座標表** | 架構（P4.1）就緒但表是空的；向業者取得基地台座標 CSV 匯入 |
-| ~~2~~ | ~~**P3–P6 API 補自動化測試**~~ | **✅ 2026-05-25 全清** — audit + security + members + format_reports 四塊業務邏輯全補（共 +51 測試，pytest 131 → 189）。剩 list_members / list_reports 等純查詢端點（業務邏輯薄、回歸風險低，不急著補）。 |
-| ~~3~~ | ~~**carrier_profile DB 同步**~~ | **✅ 2026-05-26** — 實測 `_RAW2CANON` 與 schema.sql seed 已 47=47 完全同步。重點轉成**防未來 drift**：新增 `test_carrier_profile_seed_sync.py`（4 條 CI 守護：key set 相等 / 同 key 同值 / count 對齊 / canonical 值在已知 schema 欄位內），未來改一邊忘了改另一邊就會在 CI 被擋。 |
-
-### 長期
-
-| # | Task | 說明 |
-|---|---|---|
-| 4 | **檢警分艙 / 案件分艙細緻權限** | 目前 admin/user + project_members 三級已可用，尚無組織層隔離 |
-| ~~5~~ | ~~uvicorn `--reload` Python 3.13 macOS spawn bug~~ | **✅ 2026-05-31 已解** — `uvicorn==0.30.6` + `watchfiles==1.1.0` 改用 watchfiles，spawn bug 不復現，`--reload` 實測可正常熱重載 |
-| ~~6~~ | ~~前端 UI smoke test 擴充~~ | **✅ 2026-06-02 擴充** — `frontend/tests/smoke.js` 達 **40 條**（不帶 token 25 / 帶 token 40）。新增地圖互動深度覆蓋：訪客 parse-only 上傳→渲染 marker、marker popup 內容（cell_id/精度）、測距工具開關、訪客/登入按鈕群組可見性（走 parse-only 不寫 DB，靠 `window.__ctTest` seam 讀 popup 內容）。之後新增頁面/互動時補上對應 assertion |
-| ~~7~~ | ~~**`addr_geocode_failed` 真因**~~ | **✅ 2026-05-24 完成（`a5eb683`）** — 真因是 ≥2 欄都映 cell_addr，hex 在真地址空時殘留；`_normalize_row` Pass 1 加 hex 短碼 guard 改寫到 sector_id。+7 守護測試。既有 DB 資料未洗（需另寫 backfill script）。 |
-| ~~8~~ | ~~**手動定位（L3 Phase 2）**~~ | **✅ 2026-05-25 完成（`fe71904`）** — PATCH /api/projects/{p}/raw-traces/{id}/manual-locate（collaborator+；ST_MakePoint(lng,lat) OGC 順序；不加 schema 欄、audit_logs 為 SoT、prev_lat/lng 保留可重建任一時間點狀態）。L3 每列加📍按鈕 → 主地圖 pin mode（crosshair + banner + ESC 取消）→ confirm modal → reload + 重開 L3 連續處理。+10 backend tests + 1 contract test。**uvicorn 上輪 session 已啟者需重啟才會載入新端點**。 |
-| **9** | **舊資料 hex backfill** | **🟡 2026-05-24 script 完成（`22898fa`），等使用者 --apply** — `backend/scripts/backfill_hex_celladdr.py`，DRY RUN 預設。對本機 DB 驗證 0517test 案件正好 69 列可搬（與 #7 預測完全吻合）、0 列 sector_id 已佔用。使用者本機需手動跑 `--apply` 才會實際更新 DB + 寫 audit（一支 audit per project，action='backfill.hex_celladdr'）。 |
-
----
-
-## 提醒
-
-- 本機 `.env`：`AUTH_ENABLED=true`、`GEO_OSM_FALLBACK=1`，Google API key /
-  `SECRET_KEY` 已設。
-- Redis 離線不致命（geocode 已全包 try-catch）；本輪 session Redis 未啟動。
-- 正式 DB 為 Supabase，後端有保活機制（每 6h ping）；本機開發用 Docker PostGIS。
-- 案件資料 / `Pic/` 素材已在 `.gitignore`，不會被 commit。
-- 詳細架構與 onboard checklist 見 `CLAUDE.md`。
+- `AGENTS.md` **不要手改**：`bash scripts/sync_agents_md.sh` 由 `CLAUDE.md` 產生
+  （`--check` 可驗證是否同步）。這兩份曾 drift 一個多月，導致 Codex 讀到的版本
+  缺少七-11 的錯誤座標警告。
+- 這份 `WAKE_UP_TODO.md` 一輪結束時更新；**細節寫進 `CLAUDE.md`，這裡只留動作**。

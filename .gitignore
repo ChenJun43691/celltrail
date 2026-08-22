@@ -25,3 +25,7 @@ data/uploads/*
 Pic/
 
 .DS_Store
+
+# Claude Code / Codex 的本機 session 設定（含機器專屬絕對路徑與個人 allowlist，
+# 對他人無意義且會不斷變動；專案級規則若日後要共用再單獨解禁 settings.json）
+.claude/
