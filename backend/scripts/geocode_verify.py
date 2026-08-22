@@ -101,6 +101,7 @@ def _nlsc_ssl_context():
 
 MEMO_OSM = "地址推估座標｜已通過行政區+路名雙重反查驗證(OSM)｜非業者提供"
 MEMO_TGOS = "TGOS門牌定位座標｜已通過行政區反查驗證(NLSC)｜內政部門牌資料、非業者提供"
+MEMO_GOOGLE = "地址地理編碼座標(Google)｜已通過行政區反查驗證(NLSC)｜非業者提供"
 MEMO = MEMO_OSM                                # 向後相容：預設 provider 仍是 osm
 
 _ADMIN_RE = re.compile(r"^(.{2,3}[市縣])(.{1,4}?[區鄉鎮市])")
@@ -245,14 +246,36 @@ def main() -> int:
                     help="只處理列數最多的前 N 個地址（0=全部）")
     ap.add_argument("--email", default=os.getenv("NOMINATIM_EMAIL", ""),
                     help="Nominatim 聯絡信箱（其使用政策建議提供）")
-    ap.add_argument("--provider", choices=["osm", "tgos"], default="osm",
-                    help="正向地理編碼來源。tgos=內政部全國門牌定位（需 TGOS_APP_ID / "
-                         "TGOS_API_KEY，對政府機關免費申請）；osm=Nominatim（覆蓋率低、"
-                         "且會回看起來正常但錯誤的座標，故驗證不可省）")
+    ap.add_argument("--provider", choices=["osm", "google", "tgos"], default="osm",
+                    help="正向地理編碼來源。"
+                         "google=Google Geocoding（台灣門牌覆蓋率最高；每月 10,000 次免費額度，"
+                         "本專案唯一地址約 3,459 → 一次跑完通常不產生費用）；"
+                         "tgos=內政部全國門牌定位（**API 版須綁 1~4 個固定 IP，本專案做不到**）；"
+                         "osm=Nominatim（覆蓋率低、且會回看起來正常但錯誤的座標，故驗證不可省）")
+    ap.add_argument("--max-requests", type=int, default=9000,
+                    help="正向查詢次數上限（預設 9000）。這是**費用護欄**：Google 每月前 10,000 次"
+                         "免費，超過才 $5/1000。達到上限即停止並如實印出已查次數，"
+                         "不會安靜地一直跑下去。0=不設限（明確表示你接受可能的費用）")
     ap.add_argument("--verifier", choices=["nlsc", "osm"], default="nlsc",
                     help="反查驗證器。nlsc=內政部官方行政區（免金鑰，預設）；"
                          "osm=Nominatim reverse（含路名比對，但行政區欄位對台灣不穩定）")
     args = ap.parse_args()
+
+    if args.provider == "google":
+        # 提早失敗：金鑰無效時 Google 對每一筆都回 REQUEST_DENIED，使用者只會看到
+        # 「全部查無結果」，然後懷疑是地址有問題。先用一個公開地址探路，把真正原因講清楚。
+        if not os.getenv("GOOGLE_MAPS_API_KEY", "").strip():
+            print("✗ --provider google 需要 GOOGLE_MAPS_API_KEY", file=sys.stderr)
+            return 2
+        os.environ["GEO_GOOGLE_ENABLED"] = "1"
+        from app.services.geocode import _google_geocode as _probe
+        if _probe("高雄市苓雅區四維三路2號") is None:
+            print("✗ Google 金鑰探測失敗（上面應有 status / error_message）。\n"
+                  "  常見原因：金鑰已刪除或輪替、未啟用 Geocoding API、或設了 HTTP referrer 限制\n"
+                  "  （referrer 限制對伺服器端呼叫無效）。\n"
+                  "  修法：GCP Console → APIs & Services → Credentials 建新金鑰並啟用 Geocoding API。",
+                  file=sys.stderr)
+            return 2
 
     if args.provider == "tgos":
         # 提早失敗：沒有憑證卻指定 tgos，會安靜地一個都查不到，
@@ -268,9 +291,15 @@ def main() -> int:
     ua = f"CellTrail-geocode-verify/1.0 ({args.email})" if args.email \
         else "CellTrail-geocode-verify/1.0"
 
-    from app.services.geocode import _osm_geocode, _tgos_geocode
+    from app.services.geocode import _osm_geocode, _tgos_geocode, _google_geocode
 
-    if args.provider == "tgos":
+    if args.provider == "google":
+        # Google 對台灣門牌覆蓋率最高，但它是**通用**地理編碼器 —— 一樣會「盡量給個接近的答案」。
+        # 所以驗證絕不能省：下面的 NLSC 官方行政區反查照跑（七-11 的教訓不因來源而異）。
+        def forward(a):
+            return _google_geocode(a)
+        memo = MEMO_GOOGLE
+    elif args.provider == "tgos":
         # TGOS 是門牌權威來源，不需要（也不該）像 OSM 那樣剝里再猜 —— 它認得里。
         def forward(a):
             return _tgos_geocode(a)
@@ -294,15 +323,24 @@ def main() -> int:
     ordered = [a for a, _ in rows.most_common()]      # 依列數排序：先處理高影響地址
     targets = ordered[:args.limit] if args.limit else ordered
     total_rows = sum(rows.values())
-    per = 1 if args.provider == "tgos" else 5      # tgos 免 Nominatim 節流，快得多
+    # osm 受 Nominatim 1 req/s 政策約束（每址最多 4 次查詢 + 1 次反查）；
+    # google / tgos 無此限制，瓶頸只剩 NLSC 反查的保守節流。
+    per = 5 if args.provider == "osm" else 1
     print(f"來源={args.provider}  驗證={args.verifier}")
     print(f"地址 {len(ordered)} 個（{total_rows:,} 列）；本次處理前 {len(targets)} 個"
           f"，預估 {len(targets) * per // 60 + 1} 分鐘\n")
 
     accepted, rej_dist, rej_road, notfound = {}, [], [], []
+    n_forward = 0                     # 實際送出的正向查詢次數（費用護欄用，且要如實回報）
     for i, a in enumerate(targets, 1):
         city, dist = admin_of(a)
         want_road = road_of(a)
+        if args.max_requests and n_forward >= args.max_requests:
+            print(f"\n  ⚠ 已達 --max-requests 上限 {args.max_requests}，停止查詢"
+                  f"（尚有 {len(targets) - i + 1} 個地址未處理）。", flush=True)
+            targets = targets[:i - 1]
+            break
+        n_forward += 1
         hit = forward(a)
         if not hit:
             notfound.append(a)
@@ -338,6 +376,8 @@ def main() -> int:
 
     acc_rows = _rows(accepted)
     print("\n=== 結果 ===")
+    print(f"  正向查詢次數        : {n_forward:>4}"
+          + ("（Google 每月前 10,000 次免費）" if args.provider == "google" else ""))
     print(f"  採用（雙重驗證通過）: {len(accepted):>4} 址 / {acc_rows:>7,} 列 "
           f"({acc_rows / total_rows * 100:.1f}%)")
     print(f"  拒絕・行政區不符    : {len(rej_dist):>4} 址 / {_rows(a for a, _ in rej_dist):>7,} 列")
