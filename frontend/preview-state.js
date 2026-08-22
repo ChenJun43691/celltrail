@@ -8,9 +8,12 @@
 //   revokePreview / onFeatures…），即可零依賴在 Node 測試（不需 jsdom）。
 //   index.html 只保留薄 glue：把 DOM 事件接到這裡、把回呼接回 DOM。
 //
-// 範圍鎖定（Phase 2A.2）：
-//   - 只服務「已登入 + _sessionMode==='temp' + 自動辨識成功」→ Preview Artifact。
-//   - guest / manual-mapping 仍走舊 _tempRecordsStore（本檔不碰）。
+// 範圍（Phase 2A.2 建立；Phase 2B 擴充）：
+//   - 2A.2：「已登入 + _sessionMode==='temp' + 自動辨識成功」→ Preview Artifact。
+//   - 2B  ：**訪客**與**手動欄位對應**也走同一條路。三條上傳路徑自此共用同一組
+//           編排函式，前端不再有任何一條路需要保存 `_records`。
+//           - 訪客：後端以 created_by IS NULL + 不可猜測的 preview_id 承接。
+//           - 手動對應：mapping 隨 create 送出並存進 artifact 的 provenance。
 //   - 一個 target 可對應多個 preview（多檔）→ store value 為陣列，不覆蓋前一檔。
 //   - 前端「絕不」保存 `_records`：buildPreviewItem 走 allowlist，只留 metadata。
 //
@@ -137,10 +140,12 @@
     return item;
   }
 
-  // ── temp 自動辨識上傳編排 ──────────────────────────────────
-  // deps: { createPreview(file,targetId)->resp, store,
+  // ── 上傳編排（訪客 / 登入 temp / 手動對應共用）──────────────
+  // deps: { createPreview(file,targetId,mapping)->resp, store,
   //         onFeatures(features), onDiagnosis(file,err), onError(file,err),
-  //         targetIdOf?(file) }
+  //         targetIdOf?(file), mapping? }
+  //  - `mapping`（Phase 2B，選填）：手動對應重試時整批共用同一組對應。
+  //    它只在**建立**時送出；之後 read/save 用的是 server 存下的那一份。
   // 回傳彙總；建立失敗（含 422 diagnosis）不留任何半成品 preview state。
   async function runTempPreviewUpload(files, deps) {
     var summary = {
@@ -152,7 +157,7 @@
       var file = list[i];
       var targetId = deps.targetIdOf ? deps.targetIdOf(file) : stripExt(file && file.name);
       try {
-        var resp = await deps.createPreview(file, targetId);
+        var resp = await deps.createPreview(file, targetId, deps.mapping);
         // 只取 allowlist 欄位進 state；features 只交給渲染回呼、不保存。
         var item = buildPreviewItem(resp, file && file.name);
         addPreviewItem(deps.store, targetId, item);
@@ -257,6 +262,87 @@
     return res;
   }
 
+  // ── 訪客 → 登入 的交接（Phase 2B）──────────────────────────
+  // 舊作法把**完整解析結果**（含每一列的時間與基地台地址）塞進 sessionStorage：
+  //   ① 大檔會直接撞上 sessionStorage 容量上限而整批遺失；
+  //   ② 等於把案件資料留在瀏覽器儲存區，關掉分頁也未必清除。
+  // 改成只交接 preview_id + 幾個計數：資料留在 server 的加密 artifact 裡，
+  // 登入後憑 id 向 server 重新要一次 features 即可。
+  function serializePreviewStore(store) {
+    var out = {};
+    if (!store) return out;
+    store.forEach(function (items, targetId) {
+      var keep = (items || []).filter(function (it) {
+        return it && it.preview_id && !it.saved && it.status === STATUS.READY;
+      }).map(function (it) {
+        return {
+          preview_id: it.preview_id,
+          filename:   it.filename || null,
+          expires_at: it.expires_at || null,
+          total:      it.total || 0,
+          plotted:    it.plotted || 0,
+          skipped:    it.skipped || 0,
+        };
+      });
+      if (keep.length) out[targetId] = keep;
+    });
+    return out;
+  }
+
+  // 還原成 store items。**同時接受舊格式**（value 是 records 陣列）——
+  // rolling deploy 期間，使用者可能帶著舊版寫下的 sessionStorage 進到新版頁面；
+  // 舊格式在此原樣回報給呼叫端走 legacy 路徑，不可直接丟掉（那等於吞掉使用者的資料）。
+  function deserializePreviewStore(raw) {
+    var res = { previews: {}, legacyRecords: {} };
+    var obj;
+    try { obj = (typeof raw === 'string') ? JSON.parse(raw) : raw; } catch (e) { return res; }
+    if (!obj || typeof obj !== 'object') return res;
+    Object.keys(obj).forEach(function (tid) {
+      var v = obj[tid];
+      if (!Array.isArray(v) || !v.length) return;
+      if (v[0] && typeof v[0] === 'object' && v[0].preview_id) {
+        res.previews[tid] = v.map(function (it) {
+          return buildPreviewItem(it, it.filename);
+        });
+      } else {
+        res.legacyRecords[tid] = v;      // 舊格式：整包 records
+      }
+    });
+    return res;
+  }
+
+  // 依還原出來的 preview items 向 server 重新取回 features。
+  // deps: { getPreview(previewId)->{features,total,plotted,skipped}, store, onFeatures(features,targetId) }
+  //  - 逐筆獨立處理：某筆過期不該讓其他筆一起消失。
+  //  - 失效的項目仍留在 store 並標上狀態，讓 UI 說得出「哪一筆過期了」。
+  async function runRestorePreviews(previewsByTarget, deps) {
+    var res = { restored: 0, failed: [], totals: { total: 0, plotted: 0, skipped: 0 } };
+    var tids = Object.keys(previewsByTarget || {});
+    for (var i = 0; i < tids.length; i++) {
+      var tid = tids[i];
+      var items = previewsByTarget[tid] || [];
+      for (var j = 0; j < items.length; j++) {
+        var item = items[j];
+        addPreviewItem(deps.store, tid, item);
+        try {
+          var r = await deps.getPreview(item.preview_id);
+          item.total   = (r && r.total) || 0;
+          item.plotted = (r && r.plotted) || 0;
+          item.skipped = (r && r.skipped) || 0;
+          if (deps.onFeatures) deps.onFeatures((r && r.features) || [], tid);
+          res.restored++;
+          res.totals.total   += item.total;
+          res.totals.plotted += item.plotted;
+          res.totals.skipped += item.skipped;
+        } catch (err) {
+          applyErrorToItem(item, err && err.kind);
+          res.failed.push({ targetId: tid, preview_id: item.preview_id, kind: (err && err.kind) || 'generic' });
+        }
+      }
+    }
+    return res;
+  }
+
   window.CT_PREVIEW_FLOW = {
     STATUS: STATUS,
     stripExt: stripExt,
@@ -274,5 +360,8 @@
     runPreviewSaveForTarget: runPreviewSaveForTarget,
     collectPendingPreviews: collectPendingPreviews,
     runRevokePending: runRevokePending,
+    serializePreviewStore: serializePreviewStore,
+    deserializePreviewStore: deserializePreviewStore,
+    runRestorePreviews: runRestorePreviews,
   };
 })();

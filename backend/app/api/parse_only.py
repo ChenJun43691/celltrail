@@ -1,6 +1,13 @@
 # backend/app/api/parse_only.py
 """
-訪客解析端點（parse-only）
+訪客解析端點（parse-only）—— **DEPRECATED（P9 Phase 2B，2026-08-22）**
+
+新的訪客路徑是 `POST /api/preview`（guest preview）：原始檔以加密形式留在 server，
+回應只有 GeoJSON `features`，不再夾帶完整的 `_records`。前端已全面切換過去。
+
+**為什麼還留著這支**：rolling deploy 期間，使用者瀏覽器可能還快取著舊版
+`index.html`，那份程式碼會打這裡並讀取 `_records`。現在移掉它等於讓那些人的
+訪客上傳靜默變成 0 筆。等舊頁面自然汰換後再移除本端點與 `_records` 欄位。
 
 無需 JWT 驗證，供訪客免登入體驗使用。
 解析 + geocode，但完全不寫入任何 DB 資料表。

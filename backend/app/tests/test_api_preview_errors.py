@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main_mod
 import app.services.preview_artifact as pa
-from app.security import get_current_user
+from app.security import get_current_user, get_current_user_optional
 from app.services.crypto_box import PreviewKeyError
 
 app = main_mod.app
@@ -43,7 +43,10 @@ def _meta(**over):
 
 
 def _auth(user):
+    # Phase 2B 起 read/delete 改用 get_current_user_optional（訪客也能持 preview_id 存取），
+    # 兩支都要 override，否則「已登入」的測試案例會被當成訪客。
     app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_current_user_optional] = lambda: user
 
 
 @pytest.fixture(autouse=True)

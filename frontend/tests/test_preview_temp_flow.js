@@ -361,15 +361,36 @@ function previewError(kind, message) {
     assert.strictEqual(msg.indexOf('Bearer'), -1);
   });
 
-  // 24. 既有 guest / sessionStorage 行為未回歸（index.html 靜態守護）
-  await test('24. index.html 仍保留 guest / sessionStorage 舊行為', () => {
+  // 24. guest 路徑已切到 Preview Artifact（Phase 2B；本測試在 2A.2 時斷言的是相反的事）
+  await test('24. doGuestUpload 走 preview、不再打 parse-only、不存 _records', () => {
     assert.ok(INDEX.indexOf('doGuestUpload') !== -1, 'doGuestUpload 應仍存在');
-    assert.ok(INDEX.indexOf('ct_guest_store') !== -1, 'guest sessionStorage 應仍存在');
-    assert.ok(INDEX.indexOf('parse-only') !== -1, 'guest parse-only 應仍存在');
-    // guest 路徑不得改呼叫 CT_PREVIEW.createPreview（doGuestUpload 內不出現）
+    assert.ok(INDEX.indexOf('ct_guest_store') !== -1, 'guest sessionStorage 交接應仍存在');
     const guestFn = INDEX.slice(INDEX.indexOf('async function doGuestUpload'));
     const guestBody = guestFn.slice(0, guestFn.indexOf('\n    }\n'));
-    assert.strictEqual(guestBody.indexOf('CT_PREVIEW'), -1, 'guest flow 不得呼叫 CT_PREVIEW');
+    assert.ok(guestBody.indexOf('runTempPreviewUpload') !== -1, 'guest 應走 runTempPreviewUpload');
+    assert.ok(guestBody.indexOf('CT_PREVIEW.createPreview') !== -1, 'guest 應呼叫 createPreview');
+    assert.strictEqual(guestBody.indexOf('parse-only/'), -1, 'guest 不得再打 parse-only 端點');
+    assert.strictEqual(guestBody.indexOf('_tempRecordsStore'), -1, 'guest 不得寫 _tempRecordsStore');
+    assert.strictEqual(guestBody.indexOf('_records'), -1, 'guest 不得觸碰 _records');
+  });
+
+  // 24b. 手動對應也切到 preview —— 它原本是唯一一條繞過證據鏈的路
+  await test('24b. retryUploadWithMapping 走 preview 並帶 mapping', () => {
+    const fn = INDEX.slice(INDEX.indexOf('async function retryUploadWithMapping'));
+    const body = fn.slice(0, fn.indexOf('\n    }\n'));
+    assert.ok(body.indexOf('runTempPreviewUpload') !== -1, '應走 runTempPreviewUpload');
+    assert.ok(body.indexOf('mapping') !== -1, '應把 mapping 傳下去');
+    assert.strictEqual(body.indexOf('upload/parse-temp'), -1, '不得再打 parse-temp');
+    assert.strictEqual(body.indexOf('parse-only/'), -1, '不得再打 parse-only');
+    assert.strictEqual(body.indexOf('_tempRecordsStore'), -1, '不得寫 _tempRecordsStore');
+  });
+
+  // 24c. 訪客 → 登入 的交接只帶 preview_id，不得把整份解析結果寫進 sessionStorage
+  await test('24c. saveGuestDataAndLogin 交接 preview_id 而非 records', () => {
+    const fn = INDEX.slice(INDEX.indexOf('function saveGuestDataAndLogin'));
+    const body = fn.slice(0, fn.indexOf('\n    }\n'));
+    assert.ok(body.indexOf('serializePreviewStore') !== -1, '應用 serializePreviewStore');
+    assert.ok(body.indexOf('ct_guest_store') !== -1, '仍寫同一個 sessionStorage key');
   });
 
   // 25. index.html 佈線守護：doTempUpload 走 createPreview、載入 preview-state.js
@@ -381,6 +402,96 @@ function previewError(kind, message) {
     assert.ok(tempBody.indexOf('CT_PREVIEW.createPreview') !== -1, 'doTempUpload 應呼叫 createPreview');
     assert.strictEqual(tempBody.indexOf('_tempRecordsStore'), -1, 'doTempUpload 不得寫 _tempRecordsStore');
     assert.strictEqual(tempBody.indexOf('upload/parse-temp'), -1, 'doTempUpload 不得再打 /upload/parse-temp 端點');
+  });
+
+  // ═══ P9 Phase 2B：訪客交接 / mapping 傳遞 ═══
+
+  await test('B1. serializePreviewStore 只留 preview_id 與計數，不含 features/records', (F) => {
+    const store = new Map();
+    store.set('t1', [F.buildPreviewItem(
+      { preview_id: 'p1', total: 10, plotted: 7, skipped: 3, expires_at: 'Z', features: [1, 2] }, 'a.xlsx')]);
+    const out = F.serializePreviewStore(store);
+    assert.deepStrictEqual(Object.keys(out), ['t1']);
+    const it = out.t1[0];
+    assert.strictEqual(it.preview_id, 'p1');
+    assert.strictEqual(it.total, 10);
+    assert.ok(!('features' in it) && !('_records' in it), '不得夾帶解析結果');
+  });
+
+  await test('B2. serializePreviewStore 排除已儲存 / 已失效的項目', (F) => {
+    const store = new Map();
+    const saved = F.buildPreviewItem({ preview_id: 'p1' }, 'a'); saved.saved = true; saved.status = F.STATUS.SAVED;
+    const expired = F.buildPreviewItem({ preview_id: 'p2' }, 'b'); expired.status = F.STATUS.EXPIRED;
+    store.set('t1', [saved, expired]);
+    assert.deepStrictEqual(F.serializePreviewStore(store), {}, '沒有可交接的項目就不該產生 key');
+  });
+
+  await test('B3. deserializePreviewStore 認得新格式', (F) => {
+    const raw = JSON.stringify({ t1: [{ preview_id: 'p1', total: 5, plotted: 5, skipped: 0 }] });
+    const res = F.deserializePreviewStore(raw);
+    assert.strictEqual(res.previews.t1[0].preview_id, 'p1');
+    assert.deepStrictEqual(res.legacyRecords, {});
+  });
+
+  await test('B4. deserializePreviewStore 認得舊格式（rolling deploy 不可吞掉使用者資料）', (F) => {
+    const raw = JSON.stringify({ t1: [{ start_ts: 'x', lat: 22.6, lng: 120.3 }] });
+    const res = F.deserializePreviewStore(raw);
+    assert.deepStrictEqual(res.previews, {});
+    assert.strictEqual(res.legacyRecords.t1.length, 1);
+  });
+
+  await test('B5. deserializePreviewStore 對壞 JSON / 空值不炸', (F) => {
+    for (const bad of ['{not json', '', 'null', '[]', undefined]) {
+      const res = F.deserializePreviewStore(bad);
+      assert.deepStrictEqual(res.previews, {});
+      assert.deepStrictEqual(res.legacyRecords, {});
+    }
+  });
+
+  await test('B6. runRestorePreviews 逐筆獨立：一筆過期不影響其他筆', async (F) => {
+    const store = new Map();
+    const previews = {
+      t1: [F.buildPreviewItem({ preview_id: 'ok1' }, 'a'), F.buildPreviewItem({ preview_id: 'dead' }, 'b')],
+    };
+    const rendered = [];
+    const res = await F.runRestorePreviews(previews, {
+      store,
+      getPreview: async (pid) => {
+        if (pid === 'dead') { const e = new Error('gone'); e.kind = 'expired'; throw e; }
+        return { features: [{ id: pid }], total: 4, plotted: 3, skipped: 1 };
+      },
+      onFeatures: (f) => rendered.push(f),
+    });
+    assert.strictEqual(res.restored, 1);
+    assert.strictEqual(res.failed.length, 1);
+    assert.strictEqual(res.failed[0].kind, 'expired');
+    assert.strictEqual(res.totals.total, 4);
+    assert.strictEqual(rendered.length, 1, '只渲染成功的那筆');
+    // 失效的那筆仍留在 store 並標上狀態 —— UI 才說得出「哪一筆過期了」
+    assert.strictEqual(store.get('t1').length, 2);
+    assert.strictEqual(store.get('t1')[1].status, F.STATUS.EXPIRED);
+  });
+
+  await test('B7. runTempPreviewUpload 把 deps.mapping 傳給 createPreview', async (F) => {
+    const seen = [];
+    const store = new Map();
+    await F.runTempPreviewUpload([{ name: 'a.xlsx' }], {
+      store,
+      mapping: { '欄A': 'time' },
+      createPreview: async (file, tid, m) => { seen.push(m); return { preview_id: 'p1', features: [] }; },
+      onFeatures: () => {},
+    });
+    assert.deepStrictEqual(seen[0], { '欄A': 'time' });
+  });
+
+  await test('B8. 沒給 mapping 時傳 undefined（不得憑空造出空物件）', async (F) => {
+    const seen = [];
+    await F.runTempPreviewUpload([{ name: 'a.xlsx' }], {
+      store: new Map(),
+      createPreview: async (file, tid, m) => { seen.push(m); return { preview_id: 'p1', features: [] }; },
+      onFeatures: () => {},
+    });
+    assert.strictEqual(seen[0], undefined);
   });
 
   // ═══ P9 Phase 2A.3 收尾：withRequestId ═══

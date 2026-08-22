@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main_mod
 import app.services.preview_artifact as pa
-from app.security import get_current_user
+from app.security import get_current_user, get_current_user_optional
 from app.services.crypto_box import PreviewKeyError
 from app.services.preview_artifact import PreviewTooLargeError
 
@@ -53,7 +53,10 @@ def _meta(**over):
 
 
 def _auth(user):
+    # Phase 2B 起 read/delete 改用 get_current_user_optional（訪客也能持 preview_id 存取），
+    # 兩支都要 override，否則「已登入」的測試案例會被當成訪客。
     app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_current_user_optional] = lambda: user
 
 
 @pytest.fixture(autouse=True)
@@ -80,7 +83,8 @@ def svc(monkeypatch):
     monkeypatch.setattr("app.api.preview.register_evidence",
                         lambda **k: (calls["register_evidence"].append(k) or {"id": 99, "sha256_full": "sha", "size_bytes": 0, "prior_uploads": 0}))
     monkeypatch.setattr("app.api.preview.ingest_auto",
-                        lambda *a: (calls["ingest_auto"].append(a) or {"total": 1, "inserted": 1, "skipped": 0, "errors": []}))
+                        lambda *a, **kw: (calls["ingest_auto"].append((a, kw))
+                                          or {"total": 1, "inserted": 1, "skipped": 0, "errors": []}))
     monkeypatch.setattr("app.api.preview.update_evidence_stats", lambda *a: None)
     return calls
 

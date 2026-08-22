@@ -1,6 +1,6 @@
-# 醒來要做的事（v18）
+# 醒來要做的事（v19）
 
-> 更新時間：2026-08-22　｜　程式碼對齊 commit `4de8b38`，本地與 `origin/main` 同步
+> 更新時間：2026-08-22（P9 Phase 2B 後）　｜　本地已有未推送的 Phase 2B commit
 >
 > **這份檔只回答「下一步該按什麼鍵」。**任何「為什麼這樣做」「這個決策的背景」
 > 「哪個格式怎麼解」一律去查 `CLAUDE.md` —— 那才是唯一真實來源。
@@ -12,7 +12,7 @@
 
 ## 一句話現況
 
-**解析已經很好，定位是 0。**
+**解析已經很好，定位是 0。**（Phase 2B 之後，「傳輸與證據鏈」也已經很好；仍然沒有點。）
 
 ingest pipeline 手邊 16 個真實樣本全數 100% 或達資料物理上限、無已知未修的 silent bug；
 但線上 `cell_towers` 是空表、Google 停用、OSM 停用（會回錯座標，見 `CLAUDE.md` 七-11）
@@ -22,20 +22,26 @@ ingest pipeline 手邊 16 個真實樣本全數 100% 或達資料物理上限、
 
 ## 下一步（照順序）
 
-### ① 把手上那 116 筆推估座標匯進線上，然後驗收 ← **投報率最高**
+### ① 把手上那 116 筆推估座標匯進線上，然後驗收 ← **投報率最高、且只剩你能做的一步**
 
-`data/` 底下有一份 `geocode_verify.py` 產出的已驗證推估座標 CSV（116 筆 / 14 個站點，
-通過行政區＋路名雙重反查）。格式已檢查可直接匯入。
+`data/cell_towers_橋檢_top40_已驗證.csv`。**匯入前的所有能自動化的驗證都已做完**
+（2026-08-22，詳見 `CLAUDE.md` 七-12）：
 
-1. 先確認你接受它的限度：**這是地址推估值、不是業者座標，精度為「路名正確」而非
-   「門牌正確」**，點會落在該路某處。每列 memo 都已標註來源，日後業者對照表到手
-   直接重匯即覆蓋（`ON CONFLICT DO UPDATE`）。
-2. `admin.html` → 基地台座標表 → 匯入 CSV（需 admin 登入；`/api/cell-towers/import`）。
-3. 驗收（**不需要 token**，跑在本機就行）：
+- 用真實匯入邏輯離線預檢：**116 可匯入 / 0 跳過 / 0 錯誤**，欄序推導正確（未觸發五-X）。
+- 唯一的離群站點（台中，距其餘 165 km）已回原始檔查證為**真實移動軌跡**，非地理編碼假影。
+- 本機真 DB 走正式 API 匯入過一次：`inserted=116`，回查座標**未經緯度對調**。
+- 本機實測效果：`028351` 定位 **0 → 3,758（40.5%）**、`031543` **0 → 1,996（41.6%）**；
+  但 `026965` 只有 5.2%、`026962` 3.0%、`複本 031542` **0%**。
+
+先確認你接受它的限度：**這是地址推估值、不是業者座標，精度為「路名正確」而非「門牌正確」**。
+每列 memo 都已標註來源；日後業者對照表到手直接重匯即覆蓋（`ON CONFLICT DO UPDATE`）。
+
+1. `admin.html` → 基地台座標表 → 匯入 CSV（需 admin 登入；`/api/admin/cell-towers/import`）。
+2. 驗收（**不需要 token**，跑在本機就行）：
 
    ```bash
    cd backend
-   python3 scripts/probe_cell_towers.py --expect ../data/<那份>.csv --sample 30
+   python3 scripts/probe_cell_towers.py --expect "../data/cell_towers_橋檢_top40_已驗證.csv" --sample 30
    ```
 
    它會抽樣打 production 的訪客端點，確認：**(a)** 這些 cell_id 真的能定位了、
@@ -52,50 +58,29 @@ ingest pipeline 手邊 16 個真實樣本全數 100% 或達資料物理上限、
 也是唯一撐得住法庭質詢的來源。索取時注意 `CLAUDE.md` 五-X 記的短碼唯一性問題
 （中華上網方言的 3–5 碼編號可能需附 LAC/TAC 或原調閱案號才能定位到唯一站台）。
 
-### ③ 待辦 #0：preview 路徑 payload 瘦身
+### ③ 部署 P9 Phase 2B（本地已完成，等你 push）
 
-`parse-only` / `parse-temp` 仍同時回 `_records` + GeoJSON（記憶體 ×2），大檔預覽仍可能 502。
-正式 `/upload` 已由 P8.1 chunking 解決，**只剩預覽路徑**。方向：移除 `_records` 重複、
-或改 `?include_records=1` 才回、或分頁／NDJSON。
-
-### ④ 一個等你拍板的產品決策：`REPORT_ACL_SPEC_MISMATCH`
-
-`api/report.py` 的 `evidence_report` docstring 寫「需 viewer 以上」，實作卻是 admin-only
-（實測 project owner → 403、admin → 200）。**兩邊擇一改**：(a) 只有 admin 能出報告 → 改
-docstring；(b) 應該 viewer+ → 改 guard 為 `assert_project_access(viewer)`。
-
----
-
-## 千萬別做的兩件事
-
-1. **不要把 OSM (`GEO_OSM_FALLBACK`) 開回去當定位主力。** 它對台灣地址會回傳
-   「看起來完全正常但錯誤」的座標（實測偏差可達 26 公里、甚至比對到別的行政區的同名路）。
-   要用必須加反查驗證層 —— 那正是 `geocode_verify.py` 在做的事，且它慢到只能離線跑。
-   完整案例見 `CLAUDE.md` 七-11。
-2. **不要匯入 `cell_towers_from_addr.csv` 那類未經反查驗證的推估座標。**
-   同上，命中率數字漂亮但其中一半是錯的。
-
----
-
-## 環境開機順序（本機）
+待辦 #0 的主體已完成：訪客與手動欄位對應都切到 Preview Artifact，前端三條上傳路徑
+都不再取得 `_records`。實測同檔 payload 縮減 **67–94%**。
 
 ```bash
-open -a Docker                                              # 等鯨魚 icon 穩定
-docker compose -f infra/docker-compose.yml up -d db         # 等 (healthy)
-cd backend && source .venv/bin/activate && uvicorn app.main:app --port 8000 --reload
-cd frontend && python3 -m http.server 5501                  # 另開一個終端
+git push origin main      # Render 自動 redeploy，約 2–5 分鐘
 ```
 
-測試：`cd backend && pytest app/tests/ -v`（2026-08-22 實測 **503 passed**，約 13 秒，不需 DB/Redis/Google）
+**部署前確認 Render 的 `PREVIEW_ARTIFACT_KEY` 還在**（`openssl rand -hex 32` 產生的 64 字元 hex）。
+依 `CLAUDE.md` A.6 的紀錄，P9A 正式環境 smoke 曾實測 `POST /api/preview` 回 200 —— 那證明
+當時已設好。但它是 fail-closed 的：一旦缺失，preview 一律回 503，而**訪客上傳現在走的就是
+preview**，等於訪客路徑整條不能用（以前只影響登入版臨時查看）。這條路的風險等級因本輪而上升，
+所以值得在部署前看一眼，而不是假設它還在。
 
-> 提醒：**使用者主要在雲端測**。本機改好不等於線上好了 —— 要 `git push origin main`
-> 觸發 Render 自動 redeploy（約 2–5 分鐘）。
+部署後值得手動確認的三件事（都不需要特別工具）：
+1. 未登入開 `index.html` 上傳一個歷程檔 → 應照常出點、Network 面板應看到 `POST /api/preview`。
+2. 上傳一個系統不認得的格式 → 手動對應 → 儲存為專案 → 該筆應**有** evidence
+   （這是 Phase 2B 補上的證據鏈缺口，以前這條路沒有）。
+3. 訪客上傳 → 按「登入並儲存」→ 登入回來 → 資料應還在（現在是憑 preview_id 向 server 重取）。
 
----
+### ④ 其餘 P9 待辦（尚未動）
 
-## 文件維護
-
-- `AGENTS.md` **不要手改**：`bash scripts/sync_agents_md.sh` 由 `CLAUDE.md` 產生
-  （`--check` 可驗證是否同步）。這兩份曾 drift 一個多月，導致 Codex 讀到的版本
-  缺少七-11 的錯誤座標警告。
-- 這份 `WAKE_UP_TODO.md` 一輪結束時更新；**細節寫進 `CLAUDE.md`，這裡只留動作**。
+object storage A.5（5–50MB）、supervisor seal / custody ledger、
+`geocoded_cell_estimates` 推估座標分表、report ACL 決策（REPORT_ACL_SPEC_MISMATCH）、
+legacy `parse-only` / `parse-temp` / `save-records` 的實際移除（等舊快取頁面汰換）。

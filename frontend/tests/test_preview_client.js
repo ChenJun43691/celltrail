@@ -211,15 +211,33 @@ function mockFetch(resp) {
   });
 
   // 10. TOKEN 缺失時不發 request
-  await testAsync('10. 無 token → 不發 request 且拋 auth_required', async () => {
+  // Phase 2B：create / get / revoke 改為「免登入也能打」（訪客憑 preview_id）；
+  // seal / save 維持必須登入。這條界線是安全模型的一部分，值得逐支釘住。
+  await testAsync('10a. 無 token → seal/save 仍在本地擋下、不發 request', async () => {
     // 不 setToken
     const calls = mockFetch({ status: 200, body: {} });
     const P = loadPreview();
-    let thrown = null;
-    try { await P.getPreview('p1'); } catch (e) { thrown = e; }
-    assert.ok(thrown, '應拋錯');
-    assert.strictEqual(thrown.kind, 'auth_required');
+    for (const fn of [() => P.sealPreview('p1'), () => P.savePreview('p1', 'proj', 't')]) {
+      let thrown = null;
+      try { await fn(); } catch (e) { thrown = e; }
+      assert.ok(thrown, '應拋錯');
+      assert.strictEqual(thrown.kind, 'auth_required');
+    }
     assert.strictEqual(calls.length, 0, '不得發出 request');
+  });
+
+  await testAsync('10b. 無 token → create/get/revoke 照常發 request（訪客路徑）', async () => {
+    const calls = mockFetch({ status: 200, body: { preview_id: 'g1', features: [] } });
+    const P = loadPreview();
+    await P.createPreview(new Blob(['x']), 't');
+    await P.getPreview('p1');
+    await P.revokePreview('p1');
+    assert.strictEqual(calls.length, 3, '三支都應真的送出');
+    // 沒有 token 時不得送出 Authorization header（避免 Bearer null/undefined）
+    calls.forEach((c) => {
+      const h = (c.opts && c.opts.headers) || {};
+      assert.ok(!('Authorization' in h), '無 token 不應帶 Authorization');
+    });
   });
 
   // 11–19 status → kind mapping（透過 client 觸發）
@@ -415,14 +433,48 @@ function mockFetch(resp) {
 
   // 33. 所有 PreviewError 都有 code / request_id 欄位（本地產生的也是）
   await testAsync('33. 本地 auth_required 錯誤也帶 code/request_id 欄位', async () => {
-    // 不 setToken → 本地拋 auth_required（不發 request）
+    // 不 setToken → sealPreview 本地拋 auth_required（不發 request）
     const P = loadPreview();
     let thrown = null;
-    try { await P.getPreview('p1'); } catch (e) { thrown = e; }
+    try { await P.sealPreview('p1'); } catch (e) { thrown = e; }
     assert.strictEqual(thrown.kind, 'auth_required');
     assert.ok('code' in thrown && 'request_id' in thrown);
     assert.strictEqual(thrown.code, null);
     assert.strictEqual(thrown.request_id, null);
+  });
+
+  // ── Phase 2B：mapping / 配額 ────────────────────────────────
+  await testAsync('34. createPreview 帶 mapping → 以 JSON 字串放進 FormData', async () => {
+    setToken('tk');
+    const calls = mockFetch({ status: 200, body: { preview_id: 'p1', features: [] } });
+    const P = loadPreview();
+    await P.createPreview(new Blob(['x']), 't', { '欄A': 'time' });
+    const fd = calls[0].opts.body;
+    assert.strictEqual(fd.get('mapping'), '{"欄A":"time"}');
+    assert.strictEqual(fd.get('target_id'), 't');
+  });
+
+  await testAsync('35. createPreview 未給 / 給空 mapping → 完全不送該欄位', async () => {
+    setToken('tk');
+    const calls = mockFetch({ status: 200, body: { preview_id: 'p1', features: [] } });
+    const P = loadPreview();
+    await P.createPreview(new Blob(['x']), 't');
+    await P.createPreview(new Blob(['x']), 't', {});
+    assert.strictEqual(calls[0].opts.body.get("mapping"), null);
+    assert.strictEqual(calls[1].opts.body.get("mapping"), null);
+  });
+
+  await testAsync('36. 429 → rate_limited（code 與 status fallback 兩路都要通）', async () => {
+    const P = loadPreview();
+    // 新 contract：靠 machine-readable code
+    let e1 = P.parsePreviewError(429, { error: { code: 'RATE_LIMITED', message: 'x' }, request_id: 'req_1' });
+    assert.strictEqual(e1.kind, 'rate_limited');
+    assert.strictEqual(e1.request_id, 'req_1');
+    // legacy fallback：只有 status
+    let e2 = P.parsePreviewError(429, { detail: '使用次數過多' });
+    assert.strictEqual(e2.kind, 'rate_limited');
+    // 訊息必須是固定文案，不得回填後端字串（避免夾帶敏感內容）
+    assert.ok(e2.message.indexOf('登入') !== -1);
   });
 
   // ── 總結 ─────────────────────────────────────────────────

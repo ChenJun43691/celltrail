@@ -1133,7 +1133,13 @@ def _insert_records(records: List[Dict[str, Any]]) -> int:
         raise HTTPException(status_code=400, detail=f"匯入失敗：{type(e).__name__}: {e}")
 
 # ====== 主要匯入（自動判斷副檔名；PDF 直接支援） ======
-def ingest_auto(project_id: str, target_id: str, filename: str, file_bytes: bytes) -> Dict[str, Any]:
+def ingest_auto(
+    project_id: str,
+    target_id: str,
+    filename: str,
+    file_bytes: bytes,
+    mapping: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """
     前端一律呼叫這支：依副檔名自動分流
     - .csv/.txt/.tsv → 文字表格
@@ -1141,15 +1147,38 @@ def ingest_auto(project_id: str, target_id: str, filename: str, file_bytes: byte
     - .pdf → 走 PDF 解析（手機拍來的 PDF 也可）
 
     加密（密碼保護）的 Office 檔會在此被擋下並回清楚錯誤（不嘗試解密）。
+
+    `mapping`（P9 Phase 2B）：使用者「手動欄位對應」`{raw_column_name: system_field}`，
+    語意與 `parse_file_only(mapping=)` **完全一致**（同樣兩步：先把 mapping 傳進
+    `_iter_rows_excel(user_mapping=)` 讓陌生 sheet 不被規則 B 丟棄，再以
+    `_apply_user_mapping` rename 成 `_RAW2CANON` alias）。
+
+    為什麼存檔路徑也必須吃 mapping：在此之前，手動對應過的檔案**只能**走
+    `parse-temp` + `save-records`（由前端把解析後 records 送回 server）——
+    那條路沒有原始檔、沒有 SHA-256 證據鏈，且 server 無從驗證前端送回的內容。
+    讓 `ingest_auto` 收 mapping，手動對應的檔案才能與自動辨識的檔案走同一條
+    「server 重讀原檔 → 重新解析 → register_evidence → chunked ingest」路徑。
+
+    `mapping=None`（預設）時行為與改動前逐字相同，既有呼叫端零影響。
     """
     _reject_if_encrypted(file_bytes)
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext in {"csv", "txt", "tsv"}:
-        return _ingest_rows_stream(project_id, target_id, _iter_rows_csv(file_bytes))
+        rows = _iter_rows_csv(file_bytes)
+        if mapping:
+            rows = _apply_user_mapping(rows, mapping)
+        return _ingest_rows_stream(project_id, target_id, rows)
     # xlsx / xltx（Excel 範本）/ xlsm（含巨集）/ xltm（含巨集範本）皆走同一條 openpyxl 路徑
     elif ext in {"xlsx", "xltx", "xlsm", "xltm"}:
-        return _ingest_rows_stream(project_id, target_id, _iter_rows_excel(file_bytes))
+        rows = _iter_rows_excel(file_bytes, user_mapping=mapping)
+        if mapping:
+            rows = _apply_user_mapping(rows, mapping)
+        return _ingest_rows_stream(project_id, target_id, rows)
     elif ext == "pdf":
+        if mapping:
+            # 與 parse_file_only 同一條界線：PDF 內部用 _match_col_idx 直接讀 table，
+            # 沒有 raw column name 可供 rename，故手動對應對 PDF 不適用。
+            raise ValueError("PDF 暫不支援手動欄位對應，請改用 CSV/Excel")
         return ingest_pdf(project_id, target_id, file_bytes)
     else:
         raise ValueError("不支援的檔案格式：請使用 CSV / TXT / XLSX / XLTX / PDF")

@@ -70,6 +70,7 @@
     no_key:         '預覽加密服務尚未完成設定，請聯絡系統管理員。',
     server:         '伺服器發生錯誤，請稍後再試。',
     network:        '網路連線失敗，請檢查連線後重試。',
+    rate_limited:   '訪客使用次數已達上限，請登入後繼續使用。',
     generic:        '發生未預期的錯誤，請稍後再試。',
     // encrypted_file / diagnosis 刻意留白 → 改用後端 detail（見 _errMessage）。
     encrypted_file: '',
@@ -134,6 +135,7 @@
     PREVIEW_FORBIDDEN: 'forbidden',
     PREVIEW_NOT_FOUND: 'not_found',
     AUTH_REQUIRED: 'auth_required',
+    RATE_LIMITED: 'rate_limited',
     INTERNAL_ERROR: 'server',
   };
 
@@ -160,6 +162,7 @@
       return 'generic';
     }
     if (status === 413) return 'too_large';
+    if (status === 429) return 'rate_limited';
     if (status === 422) {
       if (diagnosis !== undefined && diagnosis !== null) return 'diagnosis';
       if (detail.indexOf('密碼') !== -1 || detail.indexOf('加密') !== -1) return 'encrypted_file';
@@ -235,21 +238,32 @@
   // ── API functions ──────────────────────────────────────────
 
   // POST /api/preview（multipart）→ 只回 allowlist 欄位（不含 _records）。
-  async function createPreview(file, targetId) {
+  //
+  // mapping（P9 Phase 2B，選填）：手動欄位對應 `{欄名: 系統欄位}`。送出後由 server
+  //   存進 artifact 的 provenance，之後 read / save 一律以那份重解析 —— 呼叫端事後
+  //   換不掉，封存過的 parsed_records_hash 才與實際落地內容一致。
+  // auth:false（P9 Phase 2B）：建立 preview **允許未登入**（訪客）。有 token 就照送，
+  //   沒有也不擋 —— 後端以「created_by IS NULL + 不可猜測的 preview_id」承接訪客流程，
+  //   訪客因此不必再把解析結果留在瀏覽器裡。
+  async function createPreview(file, targetId, mapping) {
     const fd = new FormData();
     fd.append('file', file);
     // target_id 有值才送（trim 後非空）；空值交後端以檔名推導。
     if (targetId !== undefined && targetId !== null && String(targetId).trim() !== '') {
       fd.append('target_id', String(targetId));
     }
+    if (mapping && typeof mapping === 'object' && Object.keys(mapping).length) {
+      fd.append('mapping', JSON.stringify(mapping));
+    }
     // 不設 Content-Type：讓瀏覽器為 multipart 產生 boundary。
-    const body = await previewFetch('/preview', { method: 'POST', body: fd });
+    const body = await previewFetch('/preview', { method: 'POST', body: fd, auth: false });
     return _pick(body, CREATE_FIELDS);
   }
 
   // GET /api/preview/{id} → 唯讀重建，只回 allowlist 欄位。
+  // auth:false —— 訪客要讀得回自己剛建立的預覽（憑 preview_id）。
   async function getPreview(previewId) {
-    const body = await previewFetch('/preview/' + encodeURIComponent(previewId), { method: 'GET' });
+    const body = await previewFetch('/preview/' + encodeURIComponent(previewId), { method: 'GET', auth: false });
     return _pick(body, READ_FIELDS);
   }
 
@@ -274,9 +288,10 @@
     return _pick(body, SAVE_FIELDS);
   }
 
-  // DELETE /api/preview/{id} → 撤銷。
+  // DELETE /api/preview/{id} → 撤銷。auth:false —— 訪客上傳錯檔案時必須能主動銷毀，
+  // 不能只能乾等 TTL 到期。seal / save 則**維持必須登入**（見 preview.py 的理由）。
   async function revokePreview(previewId) {
-    const body = await previewFetch('/preview/' + encodeURIComponent(previewId), { method: 'DELETE' });
+    const body = await previewFetch('/preview/' + encodeURIComponent(previewId), { method: 'DELETE', auth: false });
     return _pick(body, OK_FIELDS);
   }
 

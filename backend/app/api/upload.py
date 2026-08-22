@@ -203,6 +203,9 @@ async def upload_file(
 
 
 # ---------- 臨時解析端點（不寫 DB，回傳 GeoJSON）----------
+# DEPRECATED（P9 Phase 2B，2026-08-22）：登入版臨時查看與手動欄位對應都已改走
+# `POST /api/preview`。本端點只為 rolling deploy 期間仍在跑舊版 index.html 的
+# 瀏覽器保留（它們會讀回應裡的 `_records`）；舊頁面汰換後連同 `_records` 一併移除。
 @router.post("/parse-temp")
 async def parse_temp(
     file: UploadFile = File(...),

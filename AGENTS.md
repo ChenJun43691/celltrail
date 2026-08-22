@@ -2,7 +2,20 @@
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
-> 最近一次更新：2026-08-22（狀態盤點輪，**無程式行為變更**：① 以免憑證探針實測確認 **線上 `cell_towers` 仍是空的**、production 定位率仍為 0（七-10 已更新，附 30 筆抽樣證據）；② 新增可重複使用的驗收工具 `backend/scripts/probe_cell_towers.py`（不需 admin token 即可驗證對照表是否生效，並比對座標防五-X 類欄序錯誤）；③ `AGENTS.md` 改由 `scripts/sync_agents_md.sh` 自 CLAUDE.md 產生，杜絕兩份文件 drift；④ `WAKE_UP_TODO.md` 汰換（原內容停在 2026-05-26 已嚴重誤導），改為指向本檔的當前待辦清單。程式碼對齊 commit 4de8b38（2026-07-22 資料韌性強化輪：遠傳別名、SCAN_WINDOW→60、multiset 子集分頁去重、cell_towers 匯入欄序修復、訪客未定位揭露、OSM 錯誤座標發現七-11、`geocode_verify.py`）。P9 Phase 2A（commit 5b501e0）判定「有條件可部署」。**⚠ 本專案目前最大瓶頸仍是待辦 #1：填 `cell_towers`；在此之前解析再準，地圖上也不會有點。**）
+> 最近一次更新：2026-08-22（**P9 Phase 2B：guest / mapping-aware Preview Artifact cutover**）：
+> ① 訪客上傳與手動欄位對應**都改走 `POST /api/preview`** —— 前端三條上傳路徑自此都不再取得 `_records`，
+>    實測同檔 payload 縮減 **67–94%**（定位率 0 時達 99.99%），**待辦 #0 主體完成**；
+> ② 手動對應的檔案自此也有完整證據鏈（原本只能走 `save-records`，server 沒有原始檔也沒有 SHA-256）——
+>    前置條件是新增 `ingest_auto(mapping=)`，補上「存檔路徑完全不吃 mapping」這個硬缺口；
+> ③ 訪客 artifact 以 `preview_id` 為 capability（同 P7 share_links），具名 artifact 的界線未動；
+>    seal / save 維持必須登入，create / read / delete 免登入；訪客配額 20/hr/IP；
+> ④ 訪客→登入的 `sessionStorage` 交接改成只帶 `preview_id`（不再把整份解析結果留在瀏覽器），
+>    並保留舊格式相容以免 rolling deploy 期間吞掉使用者資料；
+> ⑤ legacy `parse-only` / `parse-temp` 契約**刻意不動**、只標 DEPRECATED（舊快取頁面仍會讀 `_records`）。
+> 驗證：pytest **531 passed**、Node 純函式 **79 passed**、真瀏覽器 smoke **35/35**、DB-backed E2E **25/25**。
+> 同輪另完成待辦 #1 的匯入前驗證（七-12）：那份 116 筆推估座標預檢 116/0/0、離群站點查證為真實軌跡、
+> 本機真 DB 匯入無欄序錯誤，實測可把「蘇」系列從定位 0 推到約四成（「陳」系列僅 3–5%）。
+> **⚠ 專案最大瓶頸仍是待辦 #1：向業者取得真正的 `cell_towers` 座標表。線上該表目前仍是空的，production 定位率仍為 0。**
 
 ---
 
@@ -754,14 +767,145 @@ Status: Open / pre-existing
 
 ---
 
+---
+
+## P9 Phase 2B — Guest / Mapping-aware Preview Cutover（2026-08-22）
+
+解除 P9A A.3 明文列出的兩項範圍鎖定（「只做登入版（無 guest）」「不收 mapping」）。
+完成後，**前端三條上傳路徑（訪客 / 登入臨時 / 手動欄位對應）全部走 Preview Artifact，
+沒有任何一條路需要在瀏覽器保存 `_records`**。這同時結案了待辦 #0 的主體。
+
+### 為什麼是這條路（而不是「只把 `_records` 去重」）
+
+`parse-only` / `parse-temp` 的回應**同時**帶完整 `_records` 與 GeoJSON `features`，
+已定位的列在兩處各出現一次。單純去重只把記憶體從 ×2 降到 ×1，而且在目前
+定位率趨近 0 的狀態下幾乎沒有效果（`features` 本來就是空的）。
+
+真正的問題不是重複，是**`_records` 根本不該離開 server**：
+- 大檔預覽 502 的直接原因就是把整份解析結果組成 JSON 回給瀏覽器（七-8 B）。
+- 訪客把案件資料存在瀏覽器記憶體與 `sessionStorage` 裡，離開 server 之後不受控。
+- 使用者登入後儲存的是「前端送回來的東西」（`save-records`），server 沒有原始檔、
+  沒有 SHA-256、無從驗證 —— **證據鏈是斷的**。
+
+走 Preview Artifact 三個問題一次解決：瀏覽器只拿到一個不可猜測的 `preview_id`，
+原始檔以 AES-256-GCM 加密留在 server，儲存時由 server 重讀原檔、驗 SHA-256、重新解析。
+
+### 實測 payload 縮減（本機真 DB，同一份檔案、同一組 `cell_towers`）
+
+| 檔案 | 解析 / 已定位 | `parse-only` | `POST /api/preview` | 縮減 |
+|---|---|---:|---:|---:|
+| `026965 陳1號機網路` | 11,511 / 604 | 3,823,537 B | 231,138 B | **94.0%** |
+| `028351 蘇世崇網路` | 9,281 / 3,758 | 4,740,622 B | 1,559,391 B | **67.1%** |
+| `028351`（`cell_towers` 空、定位 0）| 9,281 / 0 | 3,169,810 B | **172 B** | 99.99% |
+
+定位率愈低，縮減幅度愈大（未定位列在 preview 回應中完全不占空間，筆數仍由
+`total` / `skipped` 誠實揭露）。
+
+### 後端
+
+**guest preview** — `POST /api/preview` 改 `get_current_user_optional`：
+- `created_by IS NULL` 的 artifact 以 **`preview_id` 本身為 capability**
+  （`secrets.token_urlsafe(24)` ≈192-bit，與 P7 share_links 同一套模型）。
+  `_require_preview_owner` 只在這一支放行，**具名 artifact 的界線未動**
+  （其他登入者 / 訪客讀 → 403，已由測試逐條釘住）。
+- 為什麼不是「訪客誰都不能讀」：那樣訪客連自己剛建立的預覽都讀不回來，guest preview
+  等於不存在。風險以 TTL（預設 30 分鐘）+ 訪客配額限制，且內容就是使用者自己剛上傳的檔案。
+- **訪客 → 登入 → 儲存**：登入後憑同一個 `preview_id` 直接 save（`created_by IS NULL`
+  可被領取），不需要把解析結果留在前端。
+- **能做什麼有分**：create / read / delete 免登入；**seal 與 save 維持必須登入** ——
+  seal 的意義是「某個具名的人在某時點確認過」，匿名封存等於沒有封存。
+  delete 開放給訪客是刻意的：上傳錯檔案時必須能主動銷毀，不能只能乾等 TTL。
+
+**訪客配額** — `services/limiter.py` 的 `hit_guest_preview_quota()`（20/hour/IP）：
+- 不用 `@limiter.limit` 裝飾器，因為 slowapi 的 `exempt_when` **被呼叫時不帶任何參數**
+  （`slowapi.wrappers.Limit.is_exempt`），拿不到 request，無從判斷「這次是不是訪客」。
+  而 create 是登入與訪客共用的同一支端點：對登入偵查員套 20/hr 會誤傷辦案
+  （一個案件動輒十幾個歷程檔），不套又等於開放匿名寫入加密 artifact。
+- 改為在 handler 內判定身分後手動 hit 同一個 slowapi 計數器（同 storage、同語意），
+  key 另加前綴，與 `/api/parse-only` 的配額各自獨立。storage 故障時放行（防濫用是次要防線）。
+- 配額在**讀檔與解析之前**就擋，超額不必把 body 吃進記憶體。
+
+**mapping-aware preview** — `mapping` 隨 create 送出並存進 artifact 的 `provenance`：
+- `read` / `save` 一律以 **server 保存的那份**重解析；**刻意不接受呼叫端事後另傳 mapping** ——
+  `parsed_records_hash` 是「這份原始檔 + 這組 mapping」的雜湊，事後換一組會讓封存過的
+  雜湊失去意義。要換對應就建立新的 preview。
+- `provenance` 存的是**欄名**（表頭字串）與 target_id，不是任何一列資料 → 不含 PII。
+- `parser_type` 區分 `auto` / `manual_mapping`（證據上兩者可信度不同，需可查）。
+
+**`ingest_auto(..., mapping=None)`（`services/ingest.py`）** — 這是整輪的硬前置條件：
+- 在此之前**存檔路徑完全不吃 mapping**，手動對應過的檔案只能走 `parse-temp` +
+  `save-records`。若不補這條，手動對應的檔案在 preview 流程會「解析看得到、存檔落地 0 筆」。
+- 語意與 `parse_file_only(mapping=)` 逐字一致（同樣兩步：先傳進
+  `_iter_rows_excel(user_mapping=)` 讓陌生 sheet 不被規則 B 丟棄，再 `_apply_user_mapping`
+  rename 成 `_RAW2CANON` alias）。PDF 帶 mapping 一律**明確拒絕**而非默默忽略。
+- `mapping=None`（預設）行為與改動前逐字相同，既有呼叫端零影響（有測試釘住簽名）。
+
+**新增 error code** `RATE_LIMITED`（429）進 `core/errors.py` 的 contract 與 status 映射表。
+
+### 前端
+
+- `doGuestUpload`：`parse-only` → `POST /api/preview`，改用既有的
+  `_PF.runTempPreviewUpload`（與登入版共用同一組編排）。**五-Y 的未定位揭露全數保留**
+  （解析數 / 定位數分開累計、常駐 banner、8 秒 toast），另補「部分檔案失敗不被成功訊息蓋掉」。
+- `retryUploadWithMapping`：`parse-temp`/`parse-only` → `POST /api/preview` + mapping。
+  手動對應原本是**唯一一條繞過證據鏈的路**，而「系統不認得的格式」恰恰最需要可追溯。
+- **訪客 → 登入的交接**（`saveGuestDataAndLogin` / `restoreGuestData`）：
+  `sessionStorage` 從存「完整解析結果」改成只存 `preview_id` + 幾個計數，登入後向 server
+  重新取回 features。舊作法大檔會直接撞上 sessionStorage 容量上限而整批遺失。
+  - **`restoreGuestData` 同時接受舊格式**（value 是 records 陣列）→ 走 legacy 路徑。
+    rolling deploy 期間使用者可能在舊版頁面按「登入並儲存」、在新版頁面登入回來，
+    直接丟掉舊格式等於吞掉他剛上傳的整份案件資料。
+  - 還原失敗（多半是 TTL 過期）**明講**並保留該筆狀態 —— 使用者以為資料還在才是最糟的。
+- `api.js`：`createPreview(file, targetId, mapping)`；create / get / revoke 改
+  `auth:false`（有 token 照送、沒有也不擋），**seal / save 維持必須登入**；
+  429 → `rate_limited`（code 與 status fallback 兩路都通）。
+- `preview-state.js`：`runTempPreviewUpload` 傳遞 `deps.mapping`；新增
+  `serializePreviewStore` / `deserializePreviewStore` / `runRestorePreviews`（皆純函式，可 Node 測）。
+- `_tempRecordsStore` **已無任何上傳路徑會寫入**，只剩「還原舊版 sessionStorage」一個用途。
+
+### legacy 端點：標記 deprecated、**刻意不移除**
+
+`/api/parse-only` 與 `/api/upload/parse-temp` 的契約（含 `_records`）**原封不動**。
+理由是 rolling deploy：使用者瀏覽器可能還快取著舊版 `index.html`，那份程式碼會打這兩支
+並讀 `_records`。現在移掉等於讓那些人的上傳靜默變成 0 筆。兩支的 docstring 已標
+DEPRECATED；等舊頁面自然汰換後再連同 `_records` 欄位一併移除。
+
+### 驗證（皆為實測結果）
+
+- **backend pytest 531 passed**（原 503 → +28：`test_api_preview_guest_mapping.py` 19 條、
+  `test_ingest_auto_mapping.py` 9 條）。
+- **Node 純函式測試 79 passed**（`test_preview_client.js` 37、`test_preview_temp_flow.js` 42）。
+- **真瀏覽器 smoke 35/35 passed**（playwright-core + 系統 Chrome，訪客路徑走新的
+  `POST /api/preview` 並成功渲染 marker / popup / XSS 跳脫）。
+  - 首跑有 2 條失敗，經查是**環境因素**：該樣本的 cell_id 不在 `cell_towers`、
+    Google/OSM 皆停用 → `plotted=0`，走舊 `parse-only` 也一樣是 0。補上該檔 cell_id 的
+    座標後 35/35 全過。
+- **DB-backed E2E 25/25 passed**（本機 PostGIS + 真 HTTP + 真 JWT，`e2e_2b.py`）：
+  訪客建立/讀取/撤銷、訪客 seal→401、他人讀具名 artifact→403、admin→200、
+  訪客預覽→登入→save→evidence+2 筆落地→再讀 410 CONSUMED、
+  陌生欄名不給 mapping→422 diagnosis、帶 mapping→200 且 `parser_type=manual_mapping`、
+  重讀沿用 server 的 mapping、save 落地 2 筆（不是 0 筆）+ 建立 evidence、
+  壞 mapping→400、coverage 2/2、撤銷後→410 REVOKED。
+- **測試資料已清除**（e2e users / projects / preview_artifacts / 假 cell_towers 全數刪除，
+  本機既有 dev 資料未動）。
+
+### 尚未完成（P9 後續）
+
+- object storage A.5（5–50MB）
+- supervisor seal workflow / custody ledger
+- `geocoded_cell_estimates` 推估座標分表
+- report ACL decision（REPORT_ACL_SPEC_MISMATCH，見上節 Finding）
+- legacy `parse-only` / `parse-temp` / `save-records` 的**實際移除**（等舊頁面汰換）
+- guest preview 的 TTL 過期還原**未做真瀏覽器 E2E**（純函式與 API 契約已覆蓋）
+
 ## 六、待辦事項（依優先級）
 
 ### 中期
 
 | # | Task | 說明 |
 |---|---|---|
-| 0 | **preview 路徑 payload 瘦身（記憶體優化下一階段）** | **P8.1 已完成 persisted `/upload` chunking** → 正式存檔路徑 OOM 已解除（test3 21757 列雲端實測 200/42s，見五-T、七-8）。**剩餘**：`parse-only` / `parse-temp` 仍會**同時回完整 `_records` + GeoJSON `features`**（記憶體 ×2），大檔預覽仍可能受 payload 過大影響。下一階段目標 = preview 路徑瘦身（移除 `_records` 重複、或 `?include_records=1` 才回、或分頁/NDJSON）。 |
-| 1 | **填充 cell_towers 座標表** | 架構（P4.1）已就緒但表是空的；向業者取得基地台座標 CSV 匯入，可徹底解決純數字 cell_id 的 geocode 問題（消 geocode 時間牆，但七-8 記憶體牆仍在，需配 #0）。**2026-07-21 盤點**：手邊 16 檔共需 **6,620 個唯一 cell_id**，其中 96.1% 的列有 cell_id → 這條路的涵蓋上限最高。匯入前務必先看 **五-X**（匯入欄序 bug 已修，但仍有短碼唯一性問題）|
+| ~~0~~ | ~~preview 路徑 payload 瘦身~~ | **✅ 2026-08-22 P9 Phase 2B 完成** —— 訪客與手動對應也切到 Preview Artifact，前端三條上傳路徑都不再取得 `_records`。實測同檔 payload 縮減 67–94%（`cell_towers` 空、定位 0 時達 99.99%）。legacy `parse-only` / `parse-temp` 的契約**刻意保留不動**（rolling deploy：舊快取頁面仍會讀 `_records`），已標 DEPRECATED，待舊頁面汰換後移除。詳見「P9 Phase 2B」節。
+| 1 | **填充 cell_towers 座標表** | 架構（P4.1）已就緒但表是空的；向業者取得基地台座標 CSV 匯入，可徹底解決純數字 cell_id 的 geocode 問題（消 geocode 時間牆，但七-8 記憶體牆仍在，需配 #0）。**2026-07-21 盤點**：手邊 16 檔共需 **6,620 個唯一 cell_id**，其中 96.1% 的列有 cell_id → 這條路的涵蓋上限最高。匯入前務必先看 **五-X**（匯入欄序 bug 已修，但仍有短碼唯一性問題）。**2026-08-22 已對手上那份 116 筆推估座標做完匯入預檢與本機實測，見七-12** |
 | 2 | **P3–P6 API 補自動化測試** | auth / members / parse-only / format-reports / cell-towers 目前只有手動驗證 |
 | 3 | **carrier_profile DB 同步** | 把 `_RAW2CANON` 所有 key 補進 DB `mapping_json`（讓 DB 真正成為 SoT）。注意：雲端 active_map 用 `{**_RAW2CANON, **db_profile}` 合併，新增別名只要 push+redeploy 即生效、**不需** Supabase migration |
 
@@ -885,7 +1029,7 @@ test3.xlsx 經正式 `POST /api/upload` 實測**（CIDadmin token、非 parse-on
 
 **2026-08-22 複驗（事實）**：狀態**完全沒變**。用 `backend/scripts/probe_cell_towers.py` 對 production 抽樣 30 個 cell_id → **0/30 定位成功**，對照組（不存在的編號）亦正確未定位（證明探針有鑑別力，不是整條路壞掉）。
 
-**這支探針怎麼繞過 admin 權限**（值得記下來的手法）：`/api/cell-towers/stats` 需要 admin token，但送一個**只有時間 + 基地台編號、刻意不含地址欄**的檔案到訪客端點 `/api/parse-only`，就能間接測出來 —— 因為 geocode 的查詢鏈是 `cell_towers → geocode_cache → OSM → 放棄`，沒有地址時後面幾層全都無從施力，**有座標回來就只可能來自 `cell_towers`**。於是「定位成功」與「表裡有這筆」互為充要條件。此法不需憑證、不寫任何 DB、且測的是**真實使用路徑**而非表的 row count（表有資料但查不到，例如編號格式不符，stats 看起來會是好的）。注意 parse-only 限 20 req/hr/IP，多筆 cell_id 應塞進同一個請求。
+**這支探針怎麼繞過 admin 權限**（值得記下來的手法）：`/api/admin/cell-towers/stats` 需要 admin token，但送一個**只有時間 + 基地台編號、刻意不含地址欄**的檔案到訪客端點 `/api/parse-only`，就能間接測出來 —— 因為 geocode 的查詢鏈是 `cell_towers → geocode_cache → OSM → 放棄`，沒有地址時後面幾層全都無從施力，**有座標回來就只可能來自 `cell_towers`**。於是「定位成功」與「表裡有這筆」互為充要條件。此法不需憑證、不寫任何 DB、且測的是**真實使用路徑**而非表的 row count（表有資料但查不到，例如編號格式不符，stats 看起來會是好的）。注意 parse-only 限 20 req/hr/IP，多筆 cell_id 應塞進同一個請求。
 
 **手上已有的過渡資料（未匯入）**：`data/` 底下有一份 **116 筆**的已驗證推估座標 CSV（`geocode_verify.py` 產出，通過行政區＋路名雙重反查，涵蓋 14 個站點；`data/*.csv` 在 .gitignore 內、不入版控，故此處不記檔名以免案件資訊進公開 repo）。格式已檢查可直接匯入（欄名 `cell_id,lat,lng,memo`、cell_id 全唯一、座標無越界）。**但它是地址推估值、非業者座標，精度是「路名正確」而非「門牌正確」**，匯入前須確認此限度可被接受，見七-11。匯入後請跑：
 
@@ -940,6 +1084,53 @@ python scripts/geocode_verify.py <檔案或資料夾> -o towers.csv [--limit N] 
 - **離線執行的必要性**：嚴守 Nominatim 1 req/s，每址最多 4 次查詢 + 1 次反查（約 5 秒/址），遠超 Render 請求上限，故不可能在上傳週期內完成。
 - **殘留限制（必須告知使用者）**：精度是「**路名正確**」而非「門牌正確」，座標可能落在該路某處；產出為**地址推估值、非業者座標**，每列 memo 均標註。業者對照表到手後直接重匯即覆蓋（`cell_towers` 為 `ON CONFLICT DO UPDATE`）。
 - 純判準邏輯由 `test_geocode_verify_script.py`（11 條）守住 —— 其中 `road_of` 曾因「路竹**區**」的「路」被誤判為路名而回傳「高雄市路」，是測試抓出來的實際 bug。
+
+### 12. 那份 116 筆推估座標：匯入預檢與本機實測結果（2026-08-22）
+
+`data/cell_towers_橋檢_top40_已驗證.csv`（`geocode_verify.py` 產出，七-11 的過渡方案）
+在匯入 production 之前先做完的驗證。**以下皆為實測事實。**
+
+**① 匯入解析預檢（以 `api/cell_towers.py` 實際的欄位解析邏輯離線跑）**
+
+| 檢查項 | 結果 |
+|---|---|
+| 欄位索引推導 | `id=0, lat=1, lng=2, memo=3` —— 未觸發五-X 的 falsy-zero 路徑 |
+| 可匯入 / 跳過 / 錯誤 | **116 / 0 / 0** |
+| cell_id | 116/116 唯一、全數字、無科學記號變形；20 碼 ×42（中華）、15 碼 ×74（台哥大）|
+| 座標 | lat 22.614–24.150、lng 120.259–120.595，全數落在台灣本島框內 |
+| 唯一站點 | 14 個 |
+
+**② 離群站點查證（七-11 的教訓：必須排除「模糊比對回錯座標」）**
+
+14 個站點有 13 個在高雄（lat 22.61–22.87），一個在 **lat 24.1496 / lng 120.5950**，
+距其餘約 165 公里。到原始樣本的 `sharedStrings.xml` 反查該 cell_id `466970408128143`：
+它出現在 `026962 陳2號機網路` / `026965 陳1號機網路` / `複本 029935` 三檔，
+**相鄰編號的原始地址是「台中市南屯區文山里保安三街108號」「台中市南屯區精科五路9號」**
+→ 這是真實移動軌跡，不是地理編碼假影。
+
+**③ 本機真 DB 匯入實測（走正式 `POST /api/admin/cell-towers/import`）**
+
+`inserted=116 / updated=0 / skipped=0 / errors=[]`；回查 DB 確認
+`lat` 落在 22.6x、`lng` 落在 120.3x（**未經緯度對調**），116/116 在台灣範圍內。
+→ **五-X 那個「只在第一次真正匯入時發作」的欄序 bug，對這份 CSV 不會發作。**
+
+**④ 匯入後各檔定位率（本機，Google/OSM 皆停用 → 座標只可能來自 `cell_towers`）**
+
+| 檔案 | 解析 | 已定位 | 定位率 |
+|---|---:|---:|---:|
+| `028351 蘇世崇網路` | 9,281 | **3,758** | 40.5% |
+| `031543 蘇網路` | 4,800 | **1,996** | 41.6% |
+| `026965 陳1號機網路` | 11,511 | 604 | 5.2% |
+| `026962 陳2號機網路` | 1,491 | 45 | 3.0% |
+| `複本 031542 蘇手機通聯` | 156 | **0** | 0.0% |
+
+**怎麼讀這張表**：匯入前這五個檔全部是 **0**（七-10 的探針結果）。所以這 116 筆
+確實把「蘇」系列從完全無點推到約四成有點；但「陳」系列只有 3–5%，`複本 031542`
+（通聯而非上網歷程，基地台編號體系不同）完全沒被涵蓋。
+
+**結論**：值得匯入（從 0 到四成是實質改善，且 `ON CONFLICT DO UPDATE`，日後業者
+對照表到手直接重匯即覆蓋），但**它不是待辦 #1 的替代品** —— 精度是「路名正確」
+而非「門牌正確」，且涵蓋範圍偏在單一案件的部分門號。仍須向業者索取真正的座標表。
 
 ---
 
@@ -1026,7 +1217,7 @@ backend/app/
     health / auth / users / upload / map / targets / stats / geocode / audit / report
     members          ← /api/projects/{id}/members 專案成員權限
     requests         ← /api/account-requests 帳號申請審核
-    cell_towers      ← /api/cell-towers stats/import/delete
+    cell_towers      ← /api/admin/cell-towers stats/import/delete
     carrier_profile  ← 欄名對照表管理
     parse_only       ← /api/parse-only（純解析不寫 DB）
     format_reports   ← /api/format-reports 格式回報
