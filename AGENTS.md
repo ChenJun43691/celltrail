@@ -889,6 +889,35 @@ DEPRECATED；等舊頁面自然汰換後再連同 `_records` 欄位一併移除�
 - **測試資料已清除**（e2e users / projects / preview_artifacts / 假 cell_towers 全數刪除，
   本機既有 dev 資料未動）。
 
+### 正式環境驗收（2026-08-22，deployed commit `8af68dd`；皆為實測事實）
+
+後端 `celltrail-api` 與前端靜態站 `celltrail` **兩邊都已完成自動部署**。
+訪客路徑剛好是唯一不需要憑證就能驗的路徑，故以下全部直接打 production：
+
+| # | 驗收項 | 結果 |
+|---|---|---|
+| 1 | 訪客 `POST /api/preview`（無 token）| **200**、`parser_type` 欄位存在 → 確認跑的是新程式（舊版此處回 401）|
+| 2 | 回應不含 `_records` | ✅（`total` / `plotted` / `skipped` 照常揭露筆數）|
+| 3 | `PREVIEW_ARTIFACT_KEY` 仍在 Render | ✅ 由 #1 回 200 反證（fail-closed，缺失必回 503）|
+| 4 | 訪客憑 `preview_id` 讀回 | **200**、`total=2 plotted=2` |
+| 5 | 訪客 `seal` | **401 AUTH_REQUIRED**（封存需具名身分，符合設計）|
+| 6 | 訪客撤銷自己的預覽 | **200** |
+| 7 | 撤銷後再讀 | **410 PREVIEW_REVOKED** |
+| 8 | 陌生欄名、不給 mapping | **422 PREVIEW_PARSE_FAILED** + `details.diagnosis` |
+| 9 | 帶 mapping 重送 | **200**、`total=2 plotted=2`、`parser_type=manual_mapping` |
+| 10 | 重讀沿用 server 保存的 mapping | **200**、`total=2 plotted=2`（呼叫端未再送 mapping）|
+| 11 | 壞 mapping JSON | **400 VALIDATION_ERROR** |
+| 12 | 靜態站已是新版 | `doGuestUpload` 走 `runTempPreviewUpload`、不打 parse-only、不觸碰 `_records`；`api.js` `createPreview` 收 mapping；`preview-state.js` 有訪客交接函式 |
+
+**未在 production 驗的兩項**（刻意）：
+- **訪客配額 20/hr/IP**：要驗必須連打 21 次，會把該 IP 當小時的配額用完，
+  且每次都在 production 落一份加密 artifact。helper 本身有單元測試（第 21 次起回 False）。
+- **訪客 → 登入 → 儲存**：需要 production 的 admin/user 憑證，我方不持有。
+  本機 DB-backed E2E 已完整覆蓋（C1–C4）。**這是 production 唯一還沒被實際走過的一段。**
+
+測試期間建立的 artifact 均已 `DELETE` 撤銷；未寫入任何 `raw_traces` / `evidence_files`；
+探針檔為合成的兩列經緯度，不含任何案件資料。
+
 ### 尚未完成（P9 後續）
 
 - object storage A.5（5–50MB）
