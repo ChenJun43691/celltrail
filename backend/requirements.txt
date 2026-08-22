@@ -37,7 +37,7 @@ tzdata==2025.2
 # === PDF 支援（PDF 匯入需要） ===
 pdfminer.six==20260107
 pdfplumber==0.11.10
-pypdfium2==4.30.0
+pypdfium2==5.13.0
 pillow==12.3.0
 # reportlab：證物報告 PDF 產生器（services/report.py）；中文用內建 STSong-Light CID
 reportlab==4.2.5

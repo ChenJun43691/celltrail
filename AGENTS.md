@@ -342,6 +342,23 @@ bash scripts/rebuild_venv.sh   # 核彈級重建，約 5 分鐘
 
 geocode 前置查詢：`_lookup_from_local(cell_id, addr)` 先查 `cell_towers`（`cell_id` UNIQUE），命中即直接用，不打 Google/OSM。`ON CONFLICT(cell_id) DO UPDATE` 冪等。admin 可由 `api/cell_towers.py` 匯入 CSV。**目前表是空的** — 需向業者取得座標表填入。
 
+### L2. 驗證依賴升級必須用「乾淨安裝」，不是改過的 venv（2026-08-22 踩到）
+
+升 15 個套件時，我在**已被 pip 改動過的本機 venv** 上跑完 608 測試 + 真檔解析 + 真伺服器煙霧，
+判定「已驗證」。推上去之後 CI 立刻紅 —— `requirements.txt` 仍釘 `pypdfium2==4.30.0`，
+而 `pdfplumber 0.11.10` 要求 `>=5.9.0`。
+
+**為什麼本機測不出來**：`pip install pdfplumber==0.11.10` 會順手把 pypdfium2 升上去，
+於是本機 venv 是好的；但我更新 requirements.txt 的腳本只改了我列舉的套件，
+漏掉這個**被動升級的傳遞依賴**。requirements.txt 與實際環境自此不一致，
+而我測的一直是實際環境。**Render 的部署同樣會失敗**（線上因此停在舊版）。
+
+**規則**：依賴改動的驗證必須是
+`python3.13 -m venv <tmp> && <tmp>/bin/pip install -r requirements.txt`
+從零安裝，再用那個 venv 跑測試。跑在既有 venv 上驗到的是「我這台機器」，不是 requirements.txt。
+另外：判斷安裝成敗要看**結束碼**，別把 `pip install ... | tail` 的管線成功當成安裝成功
+（同一輪也踩到這個）。
+
 ### L. 關鍵依賴版本約束
 
 - **bcrypt 必須固定 `==4.2.1`**：passlib 1.7.4 與 bcrypt 5.x 不相容（"password cannot be longer than 72 bytes"）。
