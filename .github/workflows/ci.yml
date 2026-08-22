@@ -52,3 +52,48 @@ jobs:
       - name: Check AGENTS.md is in sync with CLAUDE.md
         working-directory: .
         run: bash scripts/sync_agents_md.sh --check
+
+  # ── 前端純函式測試（零依賴 Node，不需瀏覽器 / DB）──
+  # 為什麼要進 CI：preview-state.js / api.js 承擔的是「訪客資料交接」與「response
+  # allowlist（絕不保存 _records）」這類安全相關邏輯，先前只在本機手動跑，
+  # 破壞了不會有人發現。真瀏覽器 smoke 需要 Chrome 與後端，仍留在本機。
+  frontend-unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Preview client contract tests
+        run: node test_preview_client.js
+      - name: Preview flow / guest handoff tests
+        run: node test_preview_temp_flow.js
+
+  # ── 依賴漏洞掃描 ──
+  # 2026-08-22 體檢時實測有 **76 個已知漏洞散在 16 個套件**，其中 python-multipart
+  # （每一次檔案上傳都經過）、starlette（HTTP 核心）、pdfminer.six（解析使用者上傳的
+  # PDF）都在**未登入訪客也能觸及**的路徑上。它們能累積到這個數量，正是因為
+  # 沒有任何一道關卡在看 —— 一次性修補解決不了這件事，必須讓 CI 持續盯著。
+  #
+  # 刻意「只報告、不擋 build」（continue-on-error）：
+  #   上游幾乎天天有新通報，硬擋會讓與本次改動無關的 PR 全部變紅，
+  #   接著大家就會養成忽略紅燈的習慣 —— 那比沒有掃描更糟。
+  #   目標是讓漏洞「一直看得見」，而不是製造一個必然被繞過的關卡。
+  audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Scan pinned dependencies
+        continue-on-error: true
+        run: pip-audit -r requirements.txt --progress-spinner off
