@@ -502,7 +502,7 @@ def main() -> int:
                 n += 1
     print(f"\n產出 {n} 筆 cell_id 對應 → {args.out}")
     print("匯入：admin.html → 基地台座標表 → 匯入 CSV"
-          "（建議 source 填「地址推估(OSM)+雙重驗證」以利稽核區辨）")
+          f"（建議 source 填「{_SRC_LABEL[args.provider]}+{_VER_LABEL[args.verifier]}」以利稽核區辨）")
     return 0
 
 
