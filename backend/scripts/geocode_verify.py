@@ -145,7 +145,18 @@ def road_of(addr: str):
     return m2.group(1) if m2 else None
 
 
-_VILLAGE_RE = re.compile(r"[市縣].{1,4}?[區鄉鎮市]([一-鿿]{1,4}里)")
+# `(?!區)` 是必要的，不是保險。兩個相反方向的坑都踩過（2026-08-24 由 3,187 址全量跑實測）：
+#
+#   ① 沒有預查時：`.{1,4}?` 非貪婪，「高雄市**前鎮區**竹中里」會先讓「鎮」滿足
+#      [區鄉鎮市]，區劃被切成「高雄市＋前＋鎮」，里名從「區」開始抓 → 抓出「區竹中里」。
+#   ② 預查若寫成 `(?![區鄉鎮市])`（我的第一版修法）：「高雄市鳳山區**鎮北里**」會因為
+#      里名以「鎮」開頭而被迫回溯過頭，切成「鳳山區＋鎮」→ 抓出「北里」。
+#
+# 只排除「區」是因為：**「區」不會是里名的第一個字，但「鎮/市/鄉」會**
+#（鎮北里、鎮南里、市中里都是真實存在的里名）。這個不對稱正是解開歧義的關鍵。
+#
+# 代價不是崩潰而是假警報：抓到不存在的里名 → 與反查必然不符 → 報告把正確的定位標成可疑。
+_VILLAGE_RE = re.compile(r"[市縣].{1,4}?[區鄉鎮市](?!區)([一-鿿]{1,4}里)")
 
 
 def village_of(addr: str):
@@ -155,6 +166,27 @@ def village_of(addr: str):
     """
     m = _VILLAGE_RE.search(addr or "")
     return m.group(1) if m else None
+
+
+# 短碼 cell_id 的全域唯一性問題（2026-08-24 首次實際發生）。
+# `cell_towers` 以 cell_id 為 UNIQUE 鍵、跨案件共用一張表；但中華上網方言的「起址」
+# 是 1~5 碼的短式編號（如 `37`、`8722`），**只在單一業者的單一調閱案內有意義**。
+# 把不同案件的短碼合併進同一張全域表，同一個編號會對到不同的基地台。
+#
+# 實測（3,187 址全量跑）：長碼（8/9/15/20 碼）6,308 個 → **0 個座標衝突**；
+# 短碼（1~5 碼）3,047 個 → **400 個衝突**，衝突距離中位數 4.5 公里、最大 306 公里。
+# 1 碼的編號 88.9% 都衝突。而 `ON CONFLICT DO UPDATE` 讓「最後匯入的那筆勝出」——
+# 於是某個點會拿到 300 公里外的座標，且在地圖上看起來完全正常。
+MIN_GLOBAL_CELLID_LEN = 7
+
+
+def is_globally_keyable(cell_id: str) -> bool:
+    """這個 cell_id 能不能安全地放進以 cell_id 為全域鍵的 cell_towers。
+
+    判準刻意用長度而非「本批資料內有無衝突」：沒衝突只代表**我們手上的檔案**沒撞到，
+    不代表該短碼全域唯一。下一個案件匯入時才撞上，就已經污染了既有資料。
+    """
+    return len(str(cell_id or "").strip()) >= MIN_GLOBAL_CELLID_LEN
 
 
 def village_verdict(addr: str, got_village):
@@ -313,6 +345,9 @@ def main() -> int:
                     help="村里不符時也拒絕（預設只在報告中揭露）。里界附近的建物反查到相鄰里"
                          "是正常現象，強制拒絕會誤殺正確結果，故預設關閉；"
                          "需要最保守判定時再開。")
+    ap.add_argument("--allow-short-cellid", action="store_true",
+                    help=f"保留 < {MIN_GLOBAL_CELLID_LEN} 碼的短式 cell_id（預設排除）。"
+                         "短碼不是全域唯一，放進全域表會讓同一編號對到不同基地台。")
     ap.add_argument("--top", type=int, default=10,
                     help="報告最後列出「高影響地址」的筆數（預設 10）。"
                          "本專案前 10 大地址即涵蓋 63%% 的列 —— 這幾筆的正確性幾乎決定整張圖，"
@@ -492,14 +527,23 @@ def main() -> int:
             print(f"          → {lat:.6f}, {lng:.6f}   反查={nlsc_view.get(a, '—')}{flag}")
             print(f"          → Google Maps 目視：https://www.google.com/maps?q={lat:.6f},{lng:.6f}")
 
-    n = 0
+    n = skipped_short = 0
     with open(args.out, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
         w.writerow(["cell_id", "lat", "lng", "memo"])
         for a, (lat, lng) in accepted.items():
             for cid in sorted(cells[a]):
+                if not args.allow_short_cellid and not is_globally_keyable(cid):
+                    skipped_short += 1
+                    continue
                 w.writerow([cid, f"{lat:.7f}", f"{lng:.7f}", memo])
                 n += 1
+    if skipped_short:
+        print(f"\n  ⚠ 已排除 {skipped_short} 筆短碼 cell_id（< {MIN_GLOBAL_CELLID_LEN} 碼）")
+        print("     短碼只在單一業者的單一調閱案內有意義，放進以 cell_id 為全域鍵的")
+        print("     cell_towers 會讓同一編號對到不同基地台（實測最大相隔 306 公里）。")
+        print("     要保留請加 --allow-short-cellid（**不建議**：ON CONFLICT DO UPDATE")
+        print("     會讓最後匯入者勝出，錯誤點位在地圖上看不出來）。")
     print(f"\n產出 {n} 筆 cell_id 對應 → {args.out}")
     print("匯入：admin.html → 基地台座標表 → 匯入 CSV"
           f"（建議 source 填「{_SRC_LABEL[args.provider]}+{_VER_LABEL[args.verifier]}」以利稽核區辨）")

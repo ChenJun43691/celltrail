@@ -254,3 +254,60 @@ def test_village_verdict_unknown_is_not_ok(gv):
 
 def test_village_verdict_tolerates_whitespace(gv):
     assert gv.village_verdict("高雄市三民區本館里昌裕街1號", " 本館里 ") == "ok"
+
+
+def test_village_of_handles_district_names_containing_district_suffix(gv):
+    """區劃名本身含「區/鄉/鎮/市」時不得切錯。
+
+    2026-08-24 由 3,187 址全量跑實測抓到：`高雄市前鎮區竹中里…` 被抓成「區竹中里」。
+    根因是 `.{1,4}?` 非貪婪 —— 「前鎮區」的「鎮」先滿足了 [區鄉鎮市]，
+    於是區劃被切成「高雄市＋前＋鎮」，里名就從「區」開始抓。
+
+    代價不是崩潰而是**假警報**：拿一個不存在的里名去比對反查結果必然不符，
+    於是報告把一筆正確的定位標成可疑，讓人把注意力花在錯的地方；
+    若有人用了 `--strict-village`，還會因此拒收正確結果。
+    """
+    assert gv.village_of("高雄市前鎮區竹中里二聖一路290號") == "竹中里"
+    assert gv.village_of("台南市新市區豐華里中山路1號") == "豐華里"
+    assert gv.village_of("桃園市平鎮區高雙里復旦路三段111巷2號") == "高雙里"
+
+
+def test_village_of_handles_village_names_starting_with_district_suffix(gv):
+    """反方向的坑：里名**本身**以「鎮」開頭時不得回溯過頭。
+
+    第一版修法用 `(?![區鄉鎮市])`，結果「高雄市鳳山區**鎮北里**」被切成
+    「鳳山區＋鎮」→ 抓出「北里」。修好一個卻弄壞另一個。
+
+    最終解法只排除「區」：**「區」不會是里名的第一個字，但「鎮/市/鄉」會**
+    （鎮北里、鎮南里、市中里都真實存在）。這個不對稱正是解開歧義的關鍵。
+    """
+    assert gv.village_of("高雄市鳳山區鎮北里北榮街43號") == "鎮北里"
+    assert gv.village_of("高雄市前鎮區鎮北里成功二路25號") == "鎮北里"
+
+
+# ── 短碼 cell_id 的全域唯一性（2026-08-24）──────────────────
+@pytest.mark.parametrize("cid,ok", [
+    ("46601198530720128011", True),   # 中華 20 碼
+    ("466970820005112", True),        # 台哥大 15 碼
+    ("212750703", True),              # 9 碼
+    ("8722", False), ("13742", False), ("37", False), ("1", False),  # 中華上網方言短碼
+    ("", False), (None, False), ("  8722  ", False),
+])
+def test_is_globally_keyable(gv, cid, ok):
+    assert gv.is_globally_keyable(cid) is ok
+
+
+def test_short_cellid_rule_is_length_based_not_conflict_based(gv):
+    """判準刻意用長度，而不是「本批資料內有沒有撞到」。
+
+    實測（3,187 址全量跑）：長碼 6,308 個 → 0 個座標衝突；短碼 3,047 個 → 400 個衝突，
+    中位數相隔 4.5 公里、最大 306 公里，1 碼編號 88.9% 都衝突。
+
+    但「沒衝突」只代表**手上這批檔案**沒撞到 —— 短碼是中華上網方言的「起址」，
+    只在單一業者的單一調閱案內有意義。若因為本批沒撞到就收進來，
+    下一個案件匯入時才撞上，那時既有資料已經被污染，而且
+    `ON CONFLICT DO UPDATE` 讓最後匯入者勝出 —— 錯誤點位在地圖上看不出來。
+    """
+    assert gv.MIN_GLOBAL_CELLID_LEN == 7
+    # 未衝突的短碼一樣要被擋（這正是本測試的重點）
+    assert gv.is_globally_keyable("99999") is False
