@@ -29,3 +29,9 @@ Pic/
 # Claude Code / Codex 的本機 session 設定（含機器專屬絕對路徑與個人 allowlist，
 # 對他人無意義且會不斷變動；專案級規則若日後要共用再單獨解禁 settings.json）
 .claude/
+
+# 地理編碼查詢快取（geocode_verify.py）。
+# 內含案件地址與座標，絕不可入版控。data/*.csv 已被上面的 *.csv 規則涵蓋，
+# 但 .json 沒有 —— 2026-08-24 加快取時發現這個缺口。
+data/*.json
+data/.geocode_cache*

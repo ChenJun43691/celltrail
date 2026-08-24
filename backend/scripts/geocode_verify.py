@@ -189,6 +189,66 @@ def is_globally_keyable(cell_id: str) -> bool:
     return len(str(cell_id or "").strip()) >= MIN_GLOBAL_CELLID_LEN
 
 
+# ── 查詢快取 ────────────────────────────────────────────────
+# 為什麼需要（2026-08-24）：本腳本的 forward() 直接呼叫 `_google_geocode`，
+# **繞過 geocode.py `lookup_bulk` 的四層快取**（cell_towers → Redis → SQL → provider）。
+# 於是試跑 50 次後再跑全量 3,187 次，那 50 個被原封不動重查（實際用掉 3,237 次）；
+# Google 每月免費額度 10,000 次 —— 沒有快取每月只跑得起 3 次，
+# 日後新增案件檔更是要把已查過的全部重查一遍。
+#
+# 刻意用**檔案**而非 SQL geocode_cache：本腳本設計成離線獨立執行（DATABASE_URL 可為假值），
+# 不該為了快取而綁上資料庫。快取檔放 `data/`（已在 .gitignore），因為它含案件地址。
+#
+# 兩種都快取，用途不同：
+#   fwd — 正向查詢結果。**這是要錢的那個**，快取的主要目的。
+#   rev — NLSC 反查結果。免費，但 3,187 次 × 節流 ≈ 16 分鐘，快取讓重跑近乎即時。
+#
+# **刻意不快取「判定結果」**，只快取原始查詢回應：驗證邏輯本身還在演進
+#（village_verdict 就改過兩次），每次重跑都必須以最新規則重新判定 ——
+# 否則舊的錯誤判定會被凍結在快取裡，永遠不會被發現。
+class QueryCache:
+    def __init__(self, path: str, enabled: bool = True):
+        self.path, self.enabled, self.dirty = path, enabled, 0
+        self.data = {}
+        self.hits = self.misses = 0
+        if enabled and os.path.exists(path):
+            try:
+                self.data = json.load(open(path, encoding="utf-8"))
+            except Exception as e:
+                print(f"  [快取] 讀取失敗，視為空白重來：{type(e).__name__}", file=sys.stderr)
+
+    def get(self, key):
+        """回 (hit, value)。**負面結果也快取** —— 否則 4 個非位置字串每次重跑都再查一次。"""
+        if not self.enabled or key not in self.data:
+            self.misses += 1
+            return False, None
+        self.hits += 1
+        v = self.data[key]
+        return True, (tuple(v) if isinstance(v, list) else None)
+
+    def put(self, key, value):
+        if not self.enabled:
+            return
+        self.data[key] = list(value) if value else None
+        self.dirty += 1
+        if self.dirty >= 50:            # 增量落地：中途 Ctrl-C 也不白跑
+            self.flush()
+
+    def flush(self):
+        if not self.enabled or not self.dirty:
+            return
+        try:
+            d = os.path.dirname(os.path.abspath(self.path))
+            os.makedirs(d, exist_ok=True)
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False)
+            os.replace(tmp, self.path)   # 原子替換，中斷不會留下半截檔
+            self.dirty = 0
+        except Exception as e:
+            print(f"  [快取] 寫入失敗（不影響本次結果）：{type(e).__name__}", file=sys.stderr)
+
+
 def village_verdict(addr: str, got_village):
     """比對「地址裡的里」與「反查回來的里」→ 'ok' / 'mismatch' / 'unknown'。
 
@@ -345,6 +405,15 @@ def main() -> int:
                     help="村里不符時也拒絕（預設只在報告中揭露）。里界附近的建物反查到相鄰里"
                          "是正常現象，強制拒絕會誤殺正確結果，故預設關閉；"
                          "需要最保守判定時再開。")
+    ap.add_argument("--cache", default="../data/.geocode_cache.json",
+                    help="查詢快取檔（預設 ../data/.geocode_cache.json，已在 .gitignore）。"
+                         "重跑時已查過的地址不再打外部 API —— Google 每月免費額度 10,000 次，"
+                         "沒有快取每月只跑得起 3 次。")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="停用快取，全部重新查詢（會消耗額度）。")
+    ap.add_argument("--refresh-failed", action="store_true",
+                    help="重試先前查無結果的地址（負面結果預設也快取）。"
+                         "地址修正過、或懷疑當時是暫時性失敗時使用。")
     ap.add_argument("--allow-short-cellid", action="store_true",
                     help=f"保留 < {MIN_GLOBAL_CELLID_LEN} 碼的短式 cell_id（預設排除）。"
                          "短碼不是全域唯一，放進全域表會讓同一編號對到不同基地台。")
@@ -358,20 +427,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.provider == "google":
-        # 提早失敗：金鑰無效時 Google 對每一筆都回 REQUEST_DENIED，使用者只會看到
-        # 「全部查無結果」，然後懷疑是地址有問題。先用一個公開地址探路，把真正原因講清楚。
-        if not os.getenv("GOOGLE_MAPS_API_KEY", "").strip():
-            print("✗ --provider google 需要 GOOGLE_MAPS_API_KEY", file=sys.stderr)
-            return 2
         os.environ["GEO_GOOGLE_ENABLED"] = "1"
-        from app.services.geocode import _google_geocode as _probe
-        if _probe("高雄市苓雅區四維三路2號") is None:
-            print("✗ Google 金鑰探測失敗（上面應有 status / error_message）。\n"
-                  "  常見原因：金鑰已刪除或輪替、未啟用 Geocoding API、或設了 HTTP referrer 限制\n"
-                  "  （referrer 限制對伺服器端呼叫無效）。\n"
-                  "  修法：GCP Console → APIs & Services → Credentials 建新金鑰並啟用 Geocoding API。",
-                  file=sys.stderr)
-            return 2
 
     if args.provider == "tgos":
         # 提早失敗：沒有憑證卻指定 tgos，會安靜地一個都查不到，
@@ -410,6 +466,33 @@ def main() -> int:
 
     memo = build_memo(args.provider, args.verifier)
 
+    cache = QueryCache(args.cache, enabled=not args.no_cache)
+    api_calls = [0]                # 真正送出的外部請求數（快取命中不算）；用 list 以便閉包內累加
+    _raw_forward = forward         # 上面依 provider 決定的未快取版
+
+    # 刻意**不**沿用 `forward` / `reverse_nlsc` 這兩個名字：在 main() 內 `def reverse_nlsc`
+    # 會讓整個函式把它視為區域變數，於是 def 之前的任何讀取都 UnboundLocalError
+    #（模組層那支反而讀不到）。改用不遮蔽的名字，順便讓「這是快取版」在呼叫端一眼可見。
+    def forward_cached(a):
+        # key 帶 provider：Google / TGOS / OSM 對同一地址的答案不同，不可混用。
+        key = f"fwd|{args.provider}|{a}"
+        hit, val = cache.get(key)
+        if hit and not (val is None and args.refresh_failed):
+            return val
+        api_calls[0] += 1          # 只在真的送出請求時計數 —— 這個數字是拿來對帳的
+        val = _raw_forward(a)
+        cache.put(key, val)
+        return val
+
+    def reverse_cached(lat, lng):
+        key = f"rev|{lat:.7f},{lng:.7f}"
+        hit, val = cache.get(key)
+        if hit:
+            return val if val else (None, None, None)
+        val = reverse_nlsc(lat, lng)
+        cache.put(key, val if any(val) else None)
+        return val
+
     rows, cells = collect(args.paths)
     if not rows:
         print("找不到任何可查詢的地址", file=sys.stderr)
@@ -425,28 +508,53 @@ def main() -> int:
     print(f"地址 {len(ordered)} 個（{total_rows:,} 列）；本次處理前 {len(targets)} 個"
           f"，預估 {len(targets) * per // 60 + 1} 分鐘\n")
 
+    # 金鑰探測**延到這裡**，而且只在真的有東西要查時才做（2026-08-24）：
+    #   - 全快取的重跑一次外部請求都不會發，此時金鑰有效與否無關緊要，
+    #     卻曾因為無條件探測而被擋下 —— 而且探測本身就燒一次付費額度。
+    #   - 但仍要在「解析完檔案、進入長迴圈之前」失敗，否則使用者會等完整個迴圈
+    #     才看到「全部查無結果」，然後去懷疑地址有問題。
+    if args.provider == "google":
+        uncached = [a for a in targets if not cache.get(f"fwd|{args.provider}|{a}")[0]]
+        if uncached:
+            if not os.getenv("GOOGLE_MAPS_API_KEY", "").strip():
+                print("✗ --provider google 需要 GOOGLE_MAPS_API_KEY", file=sys.stderr)
+                return 2
+            from app.services.geocode import _google_geocode as _probe
+            if _probe("高雄市苓雅區四維三路2號") is None:
+                print("✗ Google 金鑰探測失敗（上面應有 status / error_message）。\n"
+                      "  常見原因：金鑰已刪除或輪替、未啟用 Geocoding API、或設了 HTTP referrer\n"
+                      "  限制（referrer 限制對伺服器端呼叫無效）。\n"
+                      "  修法：GCP Console → APIs & Services → Credentials 建新金鑰並啟用 Geocoding API。",
+                      file=sys.stderr)
+                return 2
+            api_calls[0] += 1        # 探測也是一次真實呼叫，要如實計入
+        else:
+            print("  （全部命中快取，不需要 Google 金鑰）\n")
+
     accepted, rej_dist, rej_road, notfound = {}, [], [], []
     rej_village = []                  # --strict-village 開啟時因里不符而拒絕
     village_warn = []                 # 已採用但里名對不上 → 報告中揭露，交人工判斷
     nlsc_view = {}                    # 採用者的 NLSC 反查結果（供高影響地址報告顯示）
-    n_forward = 0                     # 實際送出的正向查詢次數（費用護欄用，且要如實回報）
+    n_forward = 0                     # 處理過的地址數（含快取命中）
     for i, a in enumerate(targets, 1):
         city, dist = admin_of(a)
         want_road = road_of(a)
-        if args.max_requests and n_forward >= args.max_requests:
+        # 護欄要看**真實 API 呼叫數**而非處理過的地址數：全快取重跑一次外部請求都沒發出，
+        # 若拿地址數來擋，會在第 9000 個地址停下來，而實際花費是零。
+        if args.max_requests and api_calls[0] >= args.max_requests:
             print(f"\n  ⚠ 已達 --max-requests 上限 {args.max_requests}，停止查詢"
                   f"（尚有 {len(targets) - i + 1} 個地址未處理）。", flush=True)
             targets = targets[:i - 1]
             break
         n_forward += 1
-        hit = forward(a)
+        hit = forward_cached(a)
         if not hit:
             notfound.append(a)
         elif args.verifier == "nlsc":
             # 官方行政區反查：縣市與鄉鎮都必須對得上。
             # 這裡**不比路名** —— NLSC 這支 API 不回路名，而硬要再打一次 OSM 拿路名
             # 等於把不可靠的來源重新引回驗證鏈，得不償失。
-            got_cty, got_twn, got_vil = reverse_nlsc(hit[0], hit[1])
+            got_cty, got_twn, got_vil = reverse_cached(hit[0], hit[1])
             got_show = f"{got_cty or '?'}{got_twn or '?'}{got_vil or ''}"
             want_vil = village_of(a)
             vil_bad = village_verdict(a, got_vil) == "mismatch"
@@ -480,8 +588,13 @@ def main() -> int:
         return sum(rows[k] for k in keys)
 
     acc_rows = _rows(accepted)
+    cache.flush()
     print("\n=== 結果 ===")
-    print(f"  正向查詢次數        : {n_forward:>4}"
+    if not args.no_cache:
+        print(f"  快取                : 命中 {cache.hits} / 未命中 {cache.misses}"
+              f"   → {args.cache}")
+    print(f"  處理地址數          : {n_forward:>4}")
+    print(f"  **實際外部查詢**    : {api_calls[0]:>4}"
           + ("（Google 每月前 10,000 次免費）" if args.provider == "google" else ""))
     print(f"  採用（雙重驗證通過）: {len(accepted):>4} 址 / {acc_rows:>7,} 列 "
           f"({acc_rows / total_rows * 100:.1f}%)")

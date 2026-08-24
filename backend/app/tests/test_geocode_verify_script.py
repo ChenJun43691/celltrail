@@ -311,3 +311,73 @@ def test_short_cellid_rule_is_length_based_not_conflict_based(gv):
     assert gv.MIN_GLOBAL_CELLID_LEN == 7
     # 未衝突的短碼一樣要被擋（這正是本測試的重點）
     assert gv.is_globally_keyable("99999") is False
+
+
+# ── QueryCache：避免重複調用付費 API（2026-08-24）──────────
+def test_cache_roundtrip_and_miss(gv, tmp_path):
+    c = gv.QueryCache(str(tmp_path / "c.json"))
+    assert c.get("k") == (False, None)
+    c.put("k", (22.6, 120.3))
+    assert c.get("k") == (True, (22.6, 120.3))
+
+
+def test_cache_stores_negative_results(gv, tmp_path):
+    """查無結果**也要快取**。
+
+    本專案有 4 個地址永遠查不到（`上網或使用VoWiFi`、`路由:中華電信公司` 等，
+    它們本來就不是位置）。不快取負面結果的話，每次重跑都為這些必然失敗的查詢
+    再燒一次付費額度。
+    """
+    c = gv.QueryCache(str(tmp_path / "c.json"))
+    c.put("k", None)
+    hit, val = c.get("k")
+    assert hit is True and val is None, "必須能分辨『快取過但查無』與『沒快取過』"
+
+
+def test_cache_persists_across_instances(gv, tmp_path):
+    p = str(tmp_path / "c.json")
+    a = gv.QueryCache(p); a.put("k", (1.0, 2.0)); a.flush()
+    assert gv.QueryCache(p).get("k") == (True, (1.0, 2.0))
+
+
+def test_cache_write_is_atomic(gv, tmp_path):
+    """先寫 .tmp 再 os.replace —— 中途被 Ctrl-C 不會留下半截 JSON 檔。
+
+    半截檔的後果不是報錯而是**靜默失去整份快取**（下次讀取失敗 → 視為空白 →
+    重跑把三千多次查詢全部重打一遍）。
+    """
+    import pathlib
+    p = tmp_path / "c.json"
+    c = gv.QueryCache(str(p)); c.put("k", (1.0, 2.0)); c.flush()
+    assert p.exists() and not pathlib.Path(str(p) + ".tmp").exists()
+    import json
+    assert json.loads(p.read_text(encoding="utf-8"))["k"] == [1.0, 2.0]
+
+
+def test_cache_survives_corrupt_file(gv, tmp_path):
+    """快取檔壞掉時視為空白重來，不可讓整個批次崩掉。"""
+    p = tmp_path / "c.json"
+    p.write_text("{not json", encoding="utf-8")
+    c = gv.QueryCache(str(p))
+    assert c.get("k") == (False, None)
+    c.put("k", (1.0, 2.0)); c.flush()
+    assert c.get("k")[1] == (1.0, 2.0)
+
+
+def test_cache_disabled_never_reads_or_writes(gv, tmp_path):
+    p = tmp_path / "c.json"
+    c = gv.QueryCache(str(p), enabled=False)
+    c.put("k", (1.0, 2.0)); c.flush()
+    assert c.get("k") == (False, None)
+    assert not p.exists(), "--no-cache 時不該產生檔案"
+
+
+def test_cache_flushes_incrementally(gv, tmp_path):
+    """每累積 50 筆就落地：三千多址跑一小時，中途中斷不該白跑。"""
+    p = tmp_path / "c.json"
+    c = gv.QueryCache(str(p))
+    for i in range(49):
+        c.put(f"k{i}", (1.0, 2.0))
+    assert not p.exists(), "未達門檻前不必每筆都寫檔"
+    c.put("k49", (1.0, 2.0))
+    assert p.exists(), "達門檻應自動落地"
