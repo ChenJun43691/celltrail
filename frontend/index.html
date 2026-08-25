@@ -2939,6 +2939,9 @@
     }
 
     function _renderCourtDashboard(el, j, overlay) {
+      // 案件名要重新從 DOM 取：本函式與 openCourtDefenseModal 是兩個獨立作用域，
+      // 直接用那邊的區域變數會是 undefined（連結變成 ?project=undefined）。
+      const _pj = $('projectId')?.value?.trim() || '';
       const pct = j.project_unknown_pct;
       const statusColor = pct === 0 ? '#2e7d32' : pct === 100 ? '#c62828' : '#d97706';
       const statusText  = pct === 0 ? '✅ 全部已標註' : `⚠ ${pct}% 未標`;
@@ -2978,7 +2981,7 @@
             <span style="font-weight:700;font-size:15px;color:${statusColor}">${statusText}</span>
             <span style="color:#777;font-size:13px;margin-left:10px">· ${j.targets?.length || 0} 個 target</span>
           </div>
-          <a href="./audit.html" target="_blank" style="font-size:12px;color:#0b5ed7;text-decoration:none" title="開啟完整稽核紀錄">📋 稽核紀錄 ↗</a>
+          <a href="./audit.html${_pj ? '?project=' + encodeURIComponent(_pj) : ''}" target="_blank" style="font-size:12px;color:#0b5ed7;text-decoration:none" title="開啟完整稽核紀錄（可在該頁匯出證物報告 PDF）">📋 稽核紀錄 / 匯出報告 ↗</a>
         </div>
         ${pct > 0 ? `<div style="font-size:12px;color:#c62828;background:#fff5f5;border:1px solid #ffcdd2;border-radius:6px;padding:8px 12px;margin-bottom:14px">
           ⚠ 未標 target 在法庭上無法回答「此方位角北方基準為何」。台灣高雄磁偏角約 −4°～−5°（IGRF），500 m 距離下磁北 vs 真北差距≈ 45 m，建議出庭前完成標註。

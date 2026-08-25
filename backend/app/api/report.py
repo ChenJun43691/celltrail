@@ -4,7 +4,18 @@
 ============================================================
 GET /api/projects/{project_id}/evidence-report?target_id=...
 
-權限：admin（敏感資料：含完整 audit 時間軸 + SHA-256 全字串）
+權限：**該專案的 viewer 以上**（2026-08-25 決策，見下）。
+
+  原本實作是 `require_admin` + `assert_project_access(viewer)` 兩者都要 ——
+  於是專案 owner 自己也下載不了自己案件的報告，只有系統 admin 能出。
+  而同一支函式的 docstring 一直寫著「需 viewer 以上」，規格與實作矛盾了
+  一個多月（P9 Phase 2A 列為 REPORT_ACL_SPEC_MISMATCH，因屬產品決策而未逕行修改）。
+
+  改採 viewer+ 的理由：偵查實務上承辦人要為自己的案件出報告，
+  每份都得找系統管理員代勞並不合理。存取邊界仍在 —— `assert_project_access`
+  會擋掉所有非該專案成員；而報告內容（audit 時間軸、SHA-256）本就是該案成員
+  在系統內看得到的資料，不因匯出成 PDF 而變得更敏感。
+  每次下載仍寫 `audit_logs`（action='export_report'），誰在何時匯出留有紀錄。
 回傳：application/pdf StreamingResponse
 副作用：寫入 audit_logs（action='export_report'）
 """
@@ -16,7 +27,7 @@ from fastapi.responses import StreamingResponse
 
 import io
 
-from app.security import assert_project_access, get_current_user, require_admin
+from app.security import assert_project_access, get_current_user
 from app.services.audit import write_audit
 from app.services.report import build_evidence_report
 
@@ -25,7 +36,6 @@ router = APIRouter()
 
 @router.get(
     "/projects/{project_id}/evidence-report",
-    dependencies=[Depends(require_admin)],
 )
 def evidence_report(
     project_id: str,
@@ -33,7 +43,10 @@ def evidence_report(
     target_id: Optional[str] = Query(None, description="留空 = 全部 target"),
     current_user: dict = Depends(get_current_user),
 ):
-    """產出 PDF 報告。下載檔名：CellTrail_{project_id}_{YYYYmmdd_HHMMSS}.pdf  需 viewer 以上。"""
+    """產出 PDF 報告。下載檔名：CellTrail_{project_id}_{YYYYmmdd_HHMMSS}.pdf
+
+    權限：該專案的 viewer 以上（system admin 由 assert_project_access 內部放行）。
+    """
     assert_project_access(current_user, project_id, "viewer")
     try:
         pdf_bytes = build_evidence_report(

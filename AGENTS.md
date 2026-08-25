@@ -762,7 +762,7 @@ Phase 2A 有條件可部署
 ```text
 REPORT_ACL_SPEC_MISMATCH
 Severity: Medium
-Status: Open / pre-existing
+Status: ✅ RESOLVED 2026-08-25 —— 改採「該專案 viewer 以上」（見七-19）
 ```
 
 - `api/report.py` `evidence_report` docstring 寫「需 viewer 以上」，實作為 `dependencies=[Depends(require_admin)]`（admin-only）。
@@ -1700,6 +1700,55 @@ Google 金鑰）」、`實際外部查詢 = 0`、結果照常產出。
 
 兩次產出逐字相同。另已把使用者先前花掉的 3,237 次結果回填快取
 （2,967 個地址），下次重跑為零成本。
+
+
+### 19. 證物報告：入口位置與權限決策（2026-08-25）
+
+**使用者回報**：在 `admin.html` 找不到產出報告的按鈕。
+
+#### A. 入口其實在稽核頁面，不在 admin
+
+按鈕是 `audit.html` 的 `#btnReport`（「📄 匯出 PDF 報告」），
+與「🔍 查詢」「清除條件」並排在篩選條件那一列。**且必須先填「Project ID」欄位**，
+否則按下去只跳一句 alert —— 這是它看起來「沒作用」的第二個原因。
+
+**本輪改善**：
+- 地圖頁的稽核連結改帶 `?project=`（文案也改成「稽核紀錄 / 匯出報告 ↗」），
+  `audit.html` 新增 URL 預填並自動查詢一次。沒有這個，使用者得自己記住案件名再輸入一次
+  —— 而地圖頁叫「案件名稱」、稽核頁叫「Project ID」，兩邊用詞不同更容易對不上。
+- 未填 Project ID 時把焦點送到該欄位並短暫標紅，而不是只丟一句 alert。
+- ⚠ 實作時踩到：`_renderCourtDashboard()` 與 `openCourtDefenseModal()` 是兩個獨立作用域，
+  第一版直接引用後者的區域變數 → 連結會變成 `?project=undefined`。改為在該函式內
+  重新從 DOM 取值。
+
+#### B. 報告內容（實際產出樣本確認，6 頁 A4）
+
+| 頁 | 內容 |
+|---|---|
+| 1 | 封面：專案/目標 ID、產出時間、產出者、版本 + SHA-256 與 audit 不可竄改性說明 |
+| 2 | 地圖快覽：產出時即時由 OSM 圖磚合成，各 target 不同顏色，只畫已定位點，含 OSM 版權 |
+| 3 | 一、證物檔案清單：檔名/副檔名/Target/大小/**SHA-256 前 16 字元**/列數(總·入庫·略過)/上傳者/時間 |
+| 4 | 二、軌跡資料摘要：依 target 分組的總筆數、在線、軟刪、已定位、未定位、最早/最晚 |
+| 5 | 三、方位角北方基準標註狀態：含磁北 vs 真北的法庭說明 |
+| 6 | 四、稽核時間軸：最近 200 筆 audit_logs（時間/Action/User·Role/IP/Status/**Hash 前 12 字元**）|
+
+下載檔名 `CellTrail_{project_id}_{YYYYmmdd_HHMMSS}.pdf`；可帶 `target_id` 只出單一對象。
+
+#### C. 權限決策：REPORT_ACL_SPEC_MISMATCH 結案
+
+**原狀**：`dependencies=[Depends(require_admin)]` **並且** `assert_project_access(viewer)`，
+兩者都要過 → **專案 owner 也下載不了自己案件的報告**，只有系統 admin 能出。
+而同一支函式的 docstring 一直寫「需 viewer 以上」—— 規格與實作矛盾了一個多月。
+
+**決策（使用者拍板）：改採該專案 viewer 以上**，移除 `require_admin`。
+
+理由：偵查實務上承辦人要為自己的案件出報告，每份都找系統管理員代勞不合理。
+存取邊界仍在 —— `assert_project_access` 擋掉所有非該專案成員（system admin 由其內部放行）；
+而報告內容（audit 時間軸、SHA-256）本就是該案成員在系統內看得到的資料，
+不因匯出成 PDF 而變得更敏感。每次下載仍寫 `audit_logs`（`action='export_report'`），
+這是放寬權限後唯一的事後追溯手段，故一併加測試釘住。
+
+`audit.html` 按鈕的 tooltip 原本寫「需 admin」，已同步更新（否則使用者會照著錯的說明去找 admin）。
 
 ---
 

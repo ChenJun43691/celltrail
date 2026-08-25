@@ -162,7 +162,7 @@
       <div class="filter-row">
         <button id="btnQuery">🔍 查詢</button>
         <button id="btnReset" class="secondary">清除條件</button>
-        <button id="btnReport" class="secondary" title="匯出此 project 的證物報告 PDF（需 admin）">📄 匯出 PDF 報告</button>
+        <button id="btnReport" class="secondary" title="匯出此 project 的證物報告 PDF（需先填上方 Project ID；權限為該專案成員以上）">📄 匯出 PDF 報告</button>
         <span class="summary" id="summary"></span>
       </div>
     </div>
@@ -435,7 +435,16 @@
 
     $('btnReport').addEventListener('click', async () => {
       const project = $('f_project').value.trim();
-      if (!project) { alert('請先填 Project ID'); return; }
+      if (!project) {
+        // 只丟一句 alert 的話，使用者不知道「Project ID」指的是哪個欄位。
+        // 直接把焦點送過去並標紅，讓下一步該做什麼一目了然。
+        alert('請先在上方「Project ID」欄位填入案件名稱，再匯出報告。');
+        const el = $('f_project');
+        el.focus();
+        el.style.outline = '2px solid var(--bad)';
+        setTimeout(() => { el.style.outline = ''; }, 2000);
+        return;
+      }
       const target = $('f_target').value.trim();
       const qs = new URLSearchParams();
       if (target) qs.set('target_id', target);
@@ -459,6 +468,17 @@
         alert('匯出失敗：' + e.message);
       }
     });
+    // 從地圖頁帶案件名過來（?project=...&target=...）→ 預填並自動查一次。
+    // 沒有這個，使用者得自己記住案件名再手動輸入一次，而「Project ID」在
+    // 地圖頁叫「案件名稱」—— 兩邊用詞不同，更容易對不上。
+    (function prefillFromUrl() {
+      const q = new URLSearchParams(location.search);
+      const pj = q.get('project'), tg = q.get('target');
+      if (pj) $('f_project').value = pj;
+      if (tg) $('f_target').value = tg;
+      if (pj) { query(); loadDashboard(pj); }
+    })();
+
     $('btnQuery').addEventListener('click', () => {
       state.page = 1;
       query();
