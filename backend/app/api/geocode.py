@@ -1,78 +1,80 @@
-from fastapi import APIRouter, Query, HTTPException
-import os, requests, json, re, hashlib
-import redis
+"""
+地址 → 座標端點（供前端「📍 自訂標記」的「定位 / 新增標記」使用）。
+
+GET /api/geocode?address=...
+
+2026-08-27 重寫 —— 原本這裡是**第五條獨立的地理編碼實作**，直接打 Google：
+
+  ① 它不走 `services/geocode.py`，因此拿不到 `cell_towers` / Redis / SQL 快取 /
+     TGOS / OSM 任何一層 —— 明明系統裡已經有幾千筆座標，這支卻一律重新問 Google。
+  ② **它不理會 `GEO_GOOGLE_ENABLED`**。那個開關是 2026-07-03 為了止住費用而加的
+     「硬止血」，但止不到這裡：金鑰一旦有效，這支就會照樣花錢。
+  ③ 它**不需要登入也沒有速率限制**，而前端的自訂標記面板訪客看得到 ——
+     等於對外開放一支以本專案帳單支付的 Google 地理編碼代理。
+  ④ 金鑰失效時回 `geocode failed: REQUEST_DENIED`，前端原樣顯示成
+     「定位失敗：geocode failed: REQUEST_DENIED」—— 使用者無從得知要做什麼。
+
+改為**委派給 `services.geocode.lookup()`**，與上傳/解析走同一條查詢鏈
+（cell_towers → Redis → SQL 快取 → TGOS → Google → OSM），於是上述四點一次解決：
+快取共用、開關生效、錯誤訊息可行動。速率限制另外加（見下）。
+"""
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query, Request
+
+from app.services import geocode as geo
+from app.services.limiter import limiter
 
 router = APIRouter()
 
-GOOGLE_KEY      = os.getenv("GOOGLE_MAPS_API_KEY", "")
-GEOCODE_URL     = os.getenv("GOOGLE_GEOCODE_ENDPOINT", "https://maps.googleapis.com/maps/api/geocode/json")
-GOOGLE_REGION   = os.getenv("GOOGLE_REGION", "tw")
-GOOGLE_LANGUAGE = os.getenv("GOOGLE_LANGUAGE", "zh-TW")
-REDIS_URL       = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# 為什麼要限流：本端點**無需登入**（前端自訂標記面板訪客也看得到），而它下游可能是
+# 計費的 Google API。沒有限流的話，任何人都能拿它當免費代理、帳單記在本專案頭上。
+# 60/hr 對正常使用綽綽有餘（人工一個一個標地點），對自動化濫用則不夠用。
+_RATE_LIMIT = "60/hour"
 
-rds = redis.Redis.from_url(REDIS_URL, decode_responses=True)
-
-def _norm(addr: str) -> str:
-    # 簡單正規化：去前後空白、壓縮空白
-    a = addr.strip()
-    a = re.sub(r"\s+", "", a)
-    return a
 
 @router.get("/geocode")
-def geocode(address: str = Query(..., min_length=1, description="完整門牌或地名"),
-            use_cache: bool = True):
-    if not GOOGLE_KEY:
-        raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY not configured")
+@limiter.limit(_RATE_LIMIT)
+def geocode(
+    request: Request,
+    address: str = Query(..., min_length=1, description="完整門牌或地名"),
+):
+    """把地址轉成座標。回應保留 `lat` / `lng` / `formatted_address` 供前端沿用。
 
-    addr = _norm(address)
-    cache_key = "geocode:v1:" + hashlib.sha1((addr + "|" + GOOGLE_REGION).encode("utf-8")).hexdigest()
+    查無結果時回 404，且訊息會說明**為什麼**查不到（哪些來源被停用），
+    而不是把上游的 `REQUEST_DENIED` 原樣丟給使用者。
+    """
+    addr = (address or "").strip()
+    if not addr:
+        raise HTTPException(status_code=400, detail="請輸入地址")
 
-    # Redis 沒跑時不致命：cache miss 即可，照樣走 Google API
-    if use_cache:
-        try:
-            cached = rds.get(cache_key)
-            if cached:
-                res = json.loads(cached)
-                res["cache"] = "hit"
-                return res
-        except Exception as e:
-            print(f"[geocode] redis get skipped: {type(e).__name__}: {e}")
+    # cell_id 傳 None：這是純地址查詢，沒有基地台編號可比對。
+    hit: Optional[tuple] = geo.lookup(None, addr)
+    if hit:
+        lat, lng = hit
+        return {
+            "query": address,
+            "formatted_address": addr,   # 本鏈路不回正規化地址，回填輸入值供前端顯示
+            "lat": lat,
+            "lng": lng,
+        }
 
-    params = {
-        "address": address,          # 注意：傳原字串給 Google（不要用 _norm 後的，避免過度簡化）
-        "key": GOOGLE_KEY,
-        "region": GOOGLE_REGION,
-        "language": GOOGLE_LANGUAGE,
-    }
+    # 查不到時，把「目前哪幾條路是通的」講清楚 —— 否則使用者只會看到「定位失敗」，
+    # 而真正的原因（三個來源全被停用）在畫面上完全沒有線索。
+    avail = []
+    if geo._tgos_enabled():
+        avail.append("TGOS")
+    if geo._google_enabled():
+        avail.append("Google")
+    if geo.USE_OSM:
+        avail.append("OSM")
 
-    try:
-        r = requests.get(GEOCODE_URL, params=params, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"geocode upstream error: {e}")
-
-    status = data.get("status")
-    if status != "OK" or not data.get("results"):
-        # ZERO_RESULTS / OVER_QUERY_LIMIT / REQUEST_DENIED / INVALID_REQUEST ...
-        raise HTTPException(status_code=404, detail=f"geocode failed: {status}")
-
-    res0 = data["results"][0]
-    loc = res0["geometry"]["location"]
-    result = {
-        "query": address,
-        "formatted_address": res0.get("formatted_address"),
-        "lat": loc.get("lat"),
-        "lng": loc.get("lng"),
-        "place_id": res0.get("place_id"),
-        "types": res0.get("types", []),
-        "partial_match": res0.get("partial_match", False),
-    }
-
-    if use_cache:
-        try:
-            rds.setex(cache_key, 7 * 24 * 3600, json.dumps(result))  # 快取 7 天
-        except Exception as e:
-            print(f"[geocode] redis setex skipped: {type(e).__name__}: {e}")
-    result["cache"] = "miss"
-    return result
+    if not avail:
+        detail = (
+            "查無此地址的座標。目前系統的地址定位來源全數停用"
+            "（Google / OSM / TGOS），僅能查詢已匯入基地台座標表的地點。"
+            "如需以地址定位，請聯絡管理員啟用地理編碼來源。"
+        )
+    else:
+        detail = f"查無此地址的座標（已嘗試：{'、'.join(avail)}）。請確認地址是否完整。"
+    raise HTTPException(status_code=404, detail=detail)

@@ -1750,6 +1750,56 @@ Google 金鑰）」、`實際外部查詢 = 0`、結果照常產出。
 
 `audit.html` 按鈕的 tooltip 原本寫「需 admin」，已同步更新（否則使用者會照著錯的說明去找 admin）。
 
+### 20. 自訂標記「定位失敗」：第五條獨立的地理編碼實作（2026-08-27）
+
+**使用者回報**：地圖頁「📍 自訂標記」的「定位」與「新增標記」按下去都顯示定位失敗。
+
+#### A. 表面原因與真正的問題
+
+前端呼叫 `GET /api/geocode`，線上實測回 **404 `geocode failed: REQUEST_DENIED`**
+—— Render 上的 `GOOGLE_MAPS_API_KEY` 是那把失效的舊金鑰（七-14 C 已記載）。
+
+但查下去發現 `api/geocode.py` 是**第五條獨立的地理編碼實作**，直接打 Google，
+完全不走 `services/geocode.py`。這帶來四個問題，金鑰只是其中最無害的一個：
+
+| # | 問題 | 後果 |
+|---|---|---|
+| ① | 拿不到 `cell_towers` / Redis / SQL 快取 / TGOS / OSM 任何一層 | 系統裡已有幾千筆座標，這支卻一律重新問 Google |
+| ② | **不理會 `GEO_GOOGLE_ENABLED`** | 2026-07-03 為止住費用而加的硬止血開關**對它無效** |
+| ③ | **不需登入、無速率限制**，而自訂標記面板訪客看得到 | 等於對外開放一支以本專案帳單支付的 Google 代理 |
+| ④ | 失敗時把上游 `REQUEST_DENIED` 原樣丟給使用者 | 畫面顯示「定位失敗：geocode failed: REQUEST_DENIED」，使用者無從得知該做什麼 |
+
+②③ 合起來值得特別記：**費用止血開關關不掉這條路，而這條路對外開放。**
+（是否為 2026 上半年 NT$5,000 帳單的成因之一，無從證實 —— 但形態吻合。）
+
+#### B. 修法：委派給 `services.geocode.lookup()`
+
+改成走與上傳/解析相同的查詢鏈（cell_towers → Redis → SQL 快取 → TGOS → Google → OSM），
+四個問題一次解決：快取共用、開關自然生效、錯誤訊息可行動。另加 `60/hour` 速率限制
+——正常使用（人工一個一個標地點）綽綽有餘，自動化濫用則不夠用。
+
+回應保留 `lat` / `lng` / `formatted_address` 三個欄位，前端不需改（查詢鏈不回正規化
+地址，故 `formatted_address` 回填輸入值）。
+
+#### C. ⚠ 匯入 `cell_towers` **不會**修好這個功能
+
+`_lookup_from_local()` 第一行就是 `if not cell_id: return None` ——
+`cell_towers` 以 cell_id 為鍵，**純地址查詢永遠命中不了它**。
+
+所以自訂標記能不能用，取決於：
+
+1. 該地址**剛好在 `geocode_cache` 裡**（過去某次上傳解析時查過並落地）→ 可用；
+2. 否則需要**至少一個正向地理編碼來源啟用**。目前線上三個全關
+   （Google 金鑰失效、`GEO_OSM_FALLBACK=0`、TGOS 無憑證且需固定 IP）→ 必然失敗。
+
+**要讓它恢復**：在 Render 設**有效**的 `GOOGLE_MAPS_API_KEY` 並把
+`GEO_GOOGLE_ENABLED` 設為 `1`。費用風險已由三件事壓住：本端點 60/hr/IP 限流、
+結果寫入 `geocode_cache` 不重複查、而大量的基地台定位走 `cell_towers` 不經 Google。
+自訂標記是人工逐點輸入，用量本來就極小。
+
+**若決定不啟用**，現在的錯誤訊息會明白告訴使用者「地址定位來源全數停用、
+僅能查詢已匯入基地台座標表的地點」，而不是丟一句 `REQUEST_DENIED`。
+
 ---
 
 ## 八、git commit message 風格

@@ -3986,7 +3986,9 @@
         map.setView([r.lat, r.lng], 16);
         showToast(`📍 已定位：${r.formatted_address || addr}`, 'success', 2200);
       } catch(e) {
-        showToast(`定位失敗：${e.message}`, 'error', 3000);
+        // 後端現在會說明「為什麼」查不到（例如三個地理編碼來源全被停用），
+        // 訊息比舊版長 —— 3 秒讀不完，拉長到 7 秒。
+        showToast(`定位失敗：${e.message}`, 'error', 7000);
       } finally {
         btn.disabled = false; btn.textContent = orig;
       }
@@ -4034,7 +4036,7 @@
         map.setView([r.lat, r.lng], 16);
         showToast(`已新增：${icon}${label ? ' ' + label : ''}`, 'success', 2000);
       } catch(e) {
-        showToast(`新增失敗：${e.message}`, 'error', 3000);
+        showToast(`新增失敗：${e.message}`, 'error', 7000);   // 同上：新訊息較長
       } finally {
         btn.disabled = false; btn.textContent = orig;
       }
