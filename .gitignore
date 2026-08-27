@@ -35,3 +35,19 @@ Pic/
 # 但 .json 沒有 —— 2026-08-24 加快取時發現這個缺口。
 data/*.json
 data/.geocode_cache*
+
+# ── 截圖與狀況回報資料夾（2026-08-27）──────────────────────
+# 起因：回報 bug 時把 Render Environment 頁面的截圖放進專案目錄，
+# 而那張圖裡 GOOGLE_MAPS_API_KEY / ABUSEIPDB_API_KEY / WEB_AUTH_PASS
+# 四個值全部明文可見。截圖看起來人畜無害，但它會把畫面上的一切
+# （金鑰、案件地圖、對象姓名）原封不動帶進版控，而且 git 歷史刪不乾淨。
+#
+# 規則刻意只擋「根目錄的圖片」與「螢幕截圖命名樣式」——
+# frontend/assets/ 底下的正式素材（logo.png）不受影響。
+狀況資料夾/
+/*.png
+/*.jpg
+/*.jpeg
+截圖*.png
+Screenshot*.png
+螢幕截圖*.png
